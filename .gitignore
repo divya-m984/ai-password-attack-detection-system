@@ -1,0 +1,66 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Testing / coverage
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Type checking / linting caches
+.mypy_cache/
+.ruff_cache/
+
+# Environment files — never commit secrets
+.env
+.env.local
+.env.*.local
+
+# IDE state
+.vscode/settings.json
+.idea/
+*.swp
+*.swo
+*~
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Project-specific generated content
+# Directory structure is tracked via .gitkeep files
+data/raw/*
+data/external/*
+data/interim/*
+data/processed/*
+artifacts/*
+models/*
+reports/*
+logs/
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Keep .gitkeep files that track empty directories
+!data/raw/.gitkeep
+!data/external/.gitkeep
+!data/interim/.gitkeep
+!data/processed/.gitkeep
+!artifacts/.gitkeep
+!models/.gitkeep
+!reports/.gitkeep
