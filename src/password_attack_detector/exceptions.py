@@ -6,8 +6,11 @@ __all__ = [
     "ArtifactNotFoundError",
     "ConfigurationError",
     "DataValidationError",
+    "IngestionError",
+    "ManifestVerificationError",
     "ModelNotReadyError",
     "PasswordAttackDetectorError",
+    "PseudonymizationError",
 ]
 
 
@@ -29,3 +32,15 @@ class ArtifactNotFoundError(PasswordAttackDetectorError):
 
 class ModelNotReadyError(PasswordAttackDetectorError):
     """Raised when a model is referenced before it has been trained or loaded."""
+
+
+class PseudonymizationError(PasswordAttackDetectorError):
+    """Raised when pseudonymization fails due to a missing or invalid key."""
+
+
+class IngestionError(PasswordAttackDetectorError):
+    """Raised when an ingestion adapter detects a fatal problem with the source data."""
+
+
+class ManifestVerificationError(PasswordAttackDetectorError):
+    """Raised when a dataset manifest fails integrity or path-safety verification."""

@@ -111,7 +111,11 @@ def show_config() -> None:
     settings = load_settings()
 
     lines: list[str] = []
-    for field_name in type(settings).model_fields:
+    for field_name, field_info in type(settings).model_fields.items():
+        # Skip excluded fields entirely (e.g. pseudonymization_key).
+        # Such fields must not appear in output even as a masked placeholder.
+        if getattr(field_info, "exclude", False):
+            continue
         value = getattr(settings, field_name)
         display = "**REDACTED**" if isinstance(value, SecretStr) else str(value)
         lines.append(f"[cyan]{field_name}[/cyan] = {display}")
