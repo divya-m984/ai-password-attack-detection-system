@@ -373,7 +373,7 @@ class TestDatasetPublisherHappyPath:
         published = publisher.publish(result)
         manifest = json.loads(published.manifest_path.read_text())
         assert "content_fingerprint" in manifest
-        assert "num_events" in manifest
+        assert "row_count" in manifest
 
     def test_staging_cleaned_after_success(self, tmp_path: Path) -> None:
         result = _make_tiny_result()

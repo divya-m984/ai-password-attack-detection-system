@@ -50,7 +50,9 @@ from uuid import UUID
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+from password_attack_detector.data.manifest import build_synthetic_manifest
 from password_attack_detector.data.schemas import AuthEvent, GroundTruthLabel
+from password_attack_detector.data.validation import DatasetValidator
 from password_attack_detector.exceptions import DataValidationError
 
 if TYPE_CHECKING:
@@ -478,18 +480,30 @@ def _build_manifest(
     staging_dir: Path,
     filenames: tuple[str, ...],
 ) -> dict[str, Any]:
-    file_hashes: dict[str, str] = {}
-    for fname in filenames:
-        fpath = staging_dir / fname
-        if fpath.exists():
-            file_hashes[fname] = _sha256_file(fpath)
+    """Build a ``DatasetManifest`` dict for the staged publish.
 
-    return {
-        "manifest_version": "1.0.0",
-        "generator_version": result.config.generator_version,
-        "config_fingerprint": result.config_fingerprint,
-        "content_fingerprint": content_fingerprint,
-        "num_events": len(result.events),
-        "num_labels": len(result.labels),
-        "files": file_hashes,
-    }
+    Validates the staged events Parquet to capture validation_status, then
+    delegates to ``build_synthetic_manifest`` for the full manifest model.
+    """
+    # Locate the staged events Parquet and validate it to capture status.
+    events_fname = next(
+        (f for f in filenames if Path(f).name == "events.parquet"), None
+    )
+    if events_fname is not None:
+        validator = DatasetValidator()
+        val_result = validator.validate_parquet(staging_dir / events_fname)
+        validation_status = str(val_result.status)
+    else:
+        validation_status = "valid"
+
+    manifest = build_synthetic_manifest(
+        events=result.events,
+        labels=result.labels,
+        config=result.config,
+        config_fingerprint=result.config_fingerprint,
+        content_fingerprint=content_fingerprint,
+        staging_dir=staging_dir,
+        artifact_filenames=filenames,
+        validation_status=validation_status,
+    )
+    return manifest.to_dict()
