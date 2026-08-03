@@ -1,0 +1,42 @@
+generator_version: "1.0.0"
+seed: 42
+start_time: "2024-01-01T00:00:00+00:00"
+duration_hours: 1
+num_users: 5
+num_sources: 4
+num_devices: 10
+num_applications: 2
+events_per_hour: 10
+enabled_scenarios:
+  normal: true
+  brute_force: true
+  password_spraying: false
+  credential_stuffing: false
+  distributed_brute_force: false
+  account_takeover_indicator: false
+  impossible_travel: false
+  bot_activity: false
+  novel_anomaly_holdout: false
+campaign_parameters:
+  brute_force:
+    attempts_per_campaign: 5
+    num_campaigns: 1
+  password_spraying:
+    passwords_per_round: 3
+    num_campaigns: 1
+  credential_stuffing:
+    credentials_per_batch: 5
+    num_campaigns: 1
+  distributed_brute_force:
+    attempts_per_source: 3
+    num_sources: 2
+    num_campaigns: 1
+  account_takeover_indicator:
+    num_campaigns: 1
+  impossible_travel:
+    num_campaigns: 1
+  bot_activity:
+    events_per_campaign: 5
+    num_campaigns: 1
+  novel_anomaly_holdout:
+    num_campaigns: 1

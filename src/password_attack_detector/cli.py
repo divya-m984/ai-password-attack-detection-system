@@ -18,6 +18,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from password_attack_detector import __version__
+from password_attack_detector.data.cli import data_app
 
 app = typer.Typer(
     name="password-attack-detector",
@@ -25,6 +26,8 @@ app = typer.Typer(
     add_completion=False,
     no_args_is_help=True,
 )
+
+app.add_typer(data_app, name="data")
 
 console = Console()
 err_console = Console(stderr=True)
@@ -111,7 +114,11 @@ def show_config() -> None:
     settings = load_settings()
 
     lines: list[str] = []
-    for field_name in type(settings).model_fields:
+    for field_name, field_info in type(settings).model_fields.items():
+        # Skip excluded fields entirely (e.g. pseudonymization_key).
+        # Such fields must not appear in output even as a masked placeholder.
+        if getattr(field_info, "exclude", False):
+            continue
         value = getattr(settings, field_name)
         display = "**REDACTED**" if isinstance(value, SecretStr) else str(value)
         lines.append(f"[cyan]{field_name}[/cyan] = {display}")

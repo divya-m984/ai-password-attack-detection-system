@@ -142,6 +142,19 @@ class TestShowConfigCommand:
         assert secret_value not in result.output
         assert "REDACTED" in result.output
 
+    def test_pseudonymization_key_absent_from_show_config(
+        self, fake_repo_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """pseudonymization_key must not appear in show-config output at all."""
+        _patch_repo_root(monkeypatch, fake_repo_root)
+        monkeypatch.setenv("PAD_PSEUDONYMIZATION_KEY", "ab" * 32)
+        result = runner.invoke(app, ["show-config"])
+        assert result.exit_code == 0
+        # Field must not appear as a displayed config key (format: "field_name = value").
+        # The path values may contain the test name, so check the key-display pattern.
+        assert "pseudonymization_key =" not in result.output
+        assert "ab" * 32 not in result.output
+
 
 # ---------------------------------------------------------------------------
 # Helpers

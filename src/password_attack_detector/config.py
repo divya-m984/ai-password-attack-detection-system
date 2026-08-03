@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from pydantic import SecretStr, field_validator, model_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic.fields import FieldInfo
 from pydantic_settings import (
     BaseSettings,
@@ -40,6 +40,11 @@ _VALID_ENVIRONMENTS: frozenset[str] = frozenset(
 _VALID_LOG_LEVELS: frozenset[str] = frozenset(
     {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
 )
+
+# Fields that must never be injected from a YAML config file.
+# These fields may only be set via environment variables or the untracked .env
+# file so that secret values are never committed to the repository.
+_YAML_FORBIDDEN_FIELDS: frozenset[str] = frozenset({"pseudonymization_key"})
 
 
 class _YamlConfigSource(PydanticBaseSettingsSource):
@@ -94,9 +99,16 @@ class Settings(BaseSettings):
     reports_dir: Path | None = None
     config_dir: Path | None = None
 
-    # Placeholder for future secret fields — SecretStr fields are redacted
-    # automatically by the show-config CLI command.
-    # example_secret: SecretStr | None = None
+    # Pseudonymization key used by real-data ingestion adapters.
+    # Loaded only from PAD_PSEUDONYMIZATION_KEY env var or untracked .env file.
+    # Excluded from model_dump(), model_dump_json(), and repr() so it is never
+    # serialized into logs, manifests, reports, or configuration output.
+    # Never loaded from committed YAML files (enforced in load_settings).
+    pseudonymization_key: SecretStr | None = Field(
+        default=None,
+        exclude=True,
+        repr=False,
+    )
 
     @field_validator("log_level", mode="before")
     @classmethod
@@ -161,6 +173,9 @@ def load_settings(environment: str | None = None) -> Settings:
             loaded = yaml.safe_load(fh)
             if isinstance(loaded, dict):
                 yaml_data = loaded
+
+    # Remove fields that must not be sourced from YAML (secrets, etc.).
+    yaml_data = {k: v for k, v in yaml_data.items() if k not in _YAML_FORBIDDEN_FIELDS}
 
     # Capture yaml_data in a closure so each call gets its own independent
     # source — no shared mutable state, safe for concurrent usage.

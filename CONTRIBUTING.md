@@ -45,7 +45,7 @@ Run the full verification suite and confirm every check passes:
 bash scripts/verify.sh
 ```
 
-This runs: lockfile check, ruff lint, ruff format check, mypy, pytest, and build.
+This runs: lockfile check, ruff lint, ruff format check, mypy strict, pytest (≥90% coverage), and build.
 
 ## Testing
 
@@ -56,7 +56,7 @@ uv run pytest tests/integration/       # integration tests only
 uv run pytest -v --no-cov             # verbose, no threshold enforcement
 ```
 
-Coverage threshold is 85%. New code must be accompanied by meaningful tests.
+Coverage threshold is 90%. New code must be accompanied by meaningful tests.
 
 ## Linting and type checking
 

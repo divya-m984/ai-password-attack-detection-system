@@ -48,4 +48,7 @@ def fake_repo_root(tmp_path: Path) -> Path:
     (tmp_path / "pyproject.toml").write_text('[project]\nname = "test-project"\n')
     for sub in ("configs", "data", "artifacts", "models", "reports"):
         (tmp_path / sub).mkdir()
+    # Phase 2 data subdirectories
+    for data_sub in ("raw", "interim", "processed", "external"):
+        (tmp_path / "data" / data_sub).mkdir()
     return tmp_path

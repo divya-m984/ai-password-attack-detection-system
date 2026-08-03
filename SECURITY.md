@@ -40,15 +40,27 @@ The following must never appear in this repository, in any branch or commit:
 Any configuration fields that hold sensitive values must use `pydantic.SecretStr`
 and must be redacted in all CLI output and log files.
 
-## Privacy principles for future authentication datasets
+## Privacy principles for authentication datasets (Phase 2+)
 
-When authentication event data is introduced in later phases:
+Phase 2 introduces a data engineering layer with the following guarantees:
 
-- Use only synthetic or properly anonymised datasets
-- Never store usernames, IP addresses, or session identifiers in a form that
-  allows re-identification of real individuals
-- Document the provenance of any external dataset
-- Apply data minimisation — collect only the fields required for detection
+- No plaintext passwords, password hashes, authentication tokens, cookies,
+  or real credentials are stored at any layer.
+- Source identifiers (user, source IP, device, session) are pseudonymized via
+  HMAC-SHA256 (`PseudonymService`) before any data is written to disk.
+  **Pseudonymization reduces exposure but does not guarantee anonymity.**
+  The pseudonymization key (`PAD_PSEUDONYMIZATION_KEY`) must be kept secret.
+- Prohibited sensitive field names are detected and rejected at the ingestion
+  header/key level before any values are read. The entire dataset is rejected,
+  not just the offending rows.
+- Ground-truth labels are stored separately from canonical events and are never
+  merged into the authentication-event table.
+- Synthetic data uses randomly generated pseudonym-format identifiers and never
+  calls `PseudonymService`.
+- Quality reports and manifests contain only aggregate statistics and column
+  names — never raw event values or pseudonym strings.
+
+See `docs/privacy-model.md` for the full privacy model.
 
 ## Environment file policy
 
