@@ -64,6 +64,7 @@ __all__ = [
     "DatasetPublisher",
     "PublishedDataset",
     "compute_events_fingerprint",
+    "read_events_parquet",
     "write_events_jsonl",
     "write_events_parquet",
     "write_labels_parquet",
@@ -224,6 +225,42 @@ def compute_events_fingerprint(events: Sequence[AuthEvent]) -> str:
     rows = [_event_to_fingerprint_row(e) for e in sorted_events]
     canonical = json.dumps(rows, sort_keys=True, ensure_ascii=True)
     return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def read_events_parquet(path: Path) -> list[AuthEvent]:
+    """Read a canonical events Parquet file and return ``AuthEvent`` objects.
+
+    Parameters
+    ----------
+    path:
+        Path to a Parquet file written by :func:`write_events_parquet`.
+
+    Returns
+    -------
+    list[AuthEvent]
+        Validated events in row order.
+
+    Raises
+    ------
+    DataValidationError
+        When the file cannot be read or a row fails schema validation.
+    """
+    try:
+        table = pq.read_table(path)
+    except Exception as exc:
+        raise DataValidationError(
+            f"Cannot read events Parquet ({type(exc).__name__})"
+        ) from exc
+
+    events: list[AuthEvent] = []
+    for row in table.to_pylist():
+        try:
+            events.append(AuthEvent.model_validate(row))
+        except Exception as exc:
+            raise DataValidationError(
+                f"Row validation failed ({type(exc).__name__})"
+            ) from exc
+    return events
 
 
 def write_events_parquet(events: Sequence[AuthEvent], path: Path) -> None:

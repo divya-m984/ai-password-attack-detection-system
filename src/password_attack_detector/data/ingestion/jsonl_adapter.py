@@ -131,9 +131,11 @@ class JSONLIngestionAdapter:
         self,
         policy: InvalidRowPolicy = InvalidRowPolicy.FAIL,
         pseudonym_service: PseudonymService | None = None,
+        extra_field_map: dict[str, str] | None = None,
     ) -> None:
         self._policy = policy
         self._svc = pseudonym_service
+        self._extra_field_map: dict[str, str] = extra_field_map or {}
 
     def ingest(self, path: Path) -> IngestionResult:
         """Read *path* and ingest all records as ``AuthEvent`` objects.
@@ -263,10 +265,15 @@ class JSONLIngestionAdapter:
         Returns ``(event, None)`` on success or ``(None, entry)`` on failure.
         Raw source values never appear in the returned ``QuarantineEntry``.
         """
-        # Extract only canonical fields; values are taken from the record.
-        data: dict[str, Any] = {
-            k: v for k, v in record.items() if k in _CANONICAL_FIELDS
-        }
+        # Extract only canonical fields; extra_field_map renames source keys.
+        data: dict[str, Any] = {}
+        for k, v in record.items():
+            if k in self._extra_field_map:
+                canonical = self._extra_field_map[k]
+                if canonical in _CANONICAL_FIELDS:
+                    data[canonical] = v
+            elif k in _CANONICAL_FIELDS:
+                data[k] = v
 
         # Pseudonymize identifier fields when service is provided.
         if self._svc is not None:

@@ -61,6 +61,7 @@ __all__ = [
     "ReproducibilityInfo",
     "VerificationCheck",
     "VerificationResult",
+    "build_directory_manifest",
     "build_synthetic_manifest",
     "verify_dataset",
 ]
@@ -271,6 +272,75 @@ def _find_events_artifact(manifest: DatasetManifest) -> ArtifactEntry | None:
 # ---------------------------------------------------------------------------
 # Factory
 # ---------------------------------------------------------------------------
+
+
+def build_directory_manifest(
+    directory: Path,
+    events: Any,  # Sequence[AuthEvent]
+    *,
+    source_type: str = "ingested",
+    labels_count: int = 0,
+    validation_status: str = "valid",
+    content_fingerprint: str,
+    config_fingerprint: str | None = None,
+) -> DatasetManifest:
+    """Build a ``DatasetManifest`` from artifact files in an existing directory.
+
+    Used by the ``data manifest`` CLI command to create a manifest for an
+    already-published (or recently ingested) dataset that has no manifest yet.
+
+    Parameters
+    ----------
+    directory:
+        Directory containing the artifact files.
+    events:
+        Sequence of ``AuthEvent`` objects already read from ``events.parquet``.
+    source_type:
+        ``"synthetic"`` or ``"ingested"`` (default ``"ingested"``).
+    labels_count:
+        Number of ground-truth label rows (0 when no labels are present).
+    validation_status:
+        Validation status string (e.g. ``"valid"``).
+    content_fingerprint:
+        SHA-256 hex fingerprint of the event content.
+    config_fingerprint:
+        Optional config fingerprint (``None`` for ingested data).
+    """
+    artifact_entries: list[ArtifactEntry] = []
+    for fname in ("events.parquet", "labels.parquet", "events.jsonl"):
+        fpath = directory / fname
+        if fpath.exists():
+            artifact_entries.append(
+                ArtifactEntry(relative_path=fname, sha256=_sha256_file(fpath))
+            )
+
+    earliest: str | None = None
+    latest: str | None = None
+    if events:
+        times = [e.event_time for e in events]
+        earliest = min(times).isoformat()
+        latest = max(times).isoformat()
+
+    dataset_id = str(uuid.uuid5(_NS_DATASET, content_fingerprint))
+    reproducibility = _get_reproducibility(generator_version=None, seed=None)
+
+    return DatasetManifest(
+        manifest_version=_MANIFEST_VERSION,
+        dataset_id=dataset_id,
+        schema_version=SCHEMA_VERSION,
+        source_type=source_type,
+        row_count=len(events),
+        ground_truth_row_count=labels_count if labels_count > 0 else None,
+        earliest_event_time=earliest,
+        latest_event_time=latest,
+        artifacts=artifact_entries,
+        canonical_schema_fingerprint=_schema_fingerprint(),
+        content_fingerprint=content_fingerprint,
+        config_fingerprint=config_fingerprint,
+        validation_status=validation_status,
+        created_at=datetime.now(UTC).isoformat(),
+        reproducibility=reproducibility,
+    )
 
 
 def build_synthetic_manifest(

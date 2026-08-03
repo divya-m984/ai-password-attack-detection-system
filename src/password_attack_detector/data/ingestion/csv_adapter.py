@@ -130,9 +130,11 @@ class CSVIngestionAdapter:
         self,
         policy: InvalidRowPolicy = InvalidRowPolicy.FAIL,
         pseudonym_service: PseudonymService | None = None,
+        extra_field_map: dict[str, str] | None = None,
     ) -> None:
         self._policy = policy
         self._svc = pseudonym_service
+        self._extra_field_map: dict[str, str] = extra_field_map or {}
 
     def ingest(self, path: Path) -> IngestionResult:
         """Read *path* and ingest all rows as ``AuthEvent`` objects.
@@ -244,10 +246,14 @@ class CSVIngestionAdapter:
                 f"ground-truth column(s); ingestion rejected"
             )
 
-        # Build canonical field map.
+        # Build canonical field map; extra_field_map takes precedence.
         result: dict[str, str] = {}
         for norm, raw in normalized_to_raw.items():
-            if norm in _CANONICAL_FIELDS:
+            if raw in self._extra_field_map:
+                canonical = self._extra_field_map[raw]
+                if canonical in _CANONICAL_FIELDS:
+                    result[raw] = canonical
+            elif norm in _CANONICAL_FIELDS:
                 result[raw] = norm
         return result
 

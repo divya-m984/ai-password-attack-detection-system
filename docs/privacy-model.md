@@ -1,0 +1,106 @@
+# Privacy Model
+
+## Overview
+
+The Password Attack Detector is a **defensive monitoring system**, not a
+surveillance tool. Its privacy controls are designed to reduce exposure of
+personal identifiers while preserving the signals needed for anomaly detection.
+
+## Limitations
+
+> **Pseudonymization reduces exposure but does not guarantee anonymity.**
+>
+> HMAC-SHA256 pseudonyms are stable per domain within a single key. An
+> adversary who obtains the key and a reference user identifier can recover the
+> link between a pseudonym and the original value. Pseudonymization is not
+> equivalent to anonymization.
+>
+> This system is intended for internal security operations, not for public
+> data release.
+
+## What is never stored
+
+- Plaintext passwords, password hashes, or salts
+- Authentication tokens, cookies, session secrets, or refresh tokens
+- API keys or private keys in credential files
+- Real IP addresses or hostnames (replaced by pseudonyms)
+- Real usernames or account identifiers (replaced by pseudonyms)
+- Raw device fingerprints (replaced by pseudonyms)
+
+These restrictions are enforced by `scan_prohibited_keys` and
+`PROHIBITED_GT_COLUMNS` before any data is written.
+
+## Pseudonymization
+
+Real-data ingestion pseudonymizes four identifier fields:
+
+| Field | Domain | Pseudonym prefix |
+|---|---|---|
+| `user_id` | `user` | `u:` |
+| `source_id` | `source` | `s:` |
+| `device_id` | `device` | `d:` |
+| `session_id` | `session` | `sess:` |
+
+### Algorithm
+
+Each pseudonym is computed as:
+
+```
+HMAC-SHA256(key, domain + ":" + original_value)
+```
+
+where `key` is derived from `PAD_PSEUDONYMIZATION_KEY`.
+
+Properties:
+- **Deterministic**: the same key, domain, and value always yield the same pseudonym.
+- **Cross-domain isolation**: `u:alice` and `s:alice` produce different pseudonyms,
+  preventing cross-domain linkage.
+- **Key-dependent**: without the key, pseudonyms cannot be reversed.
+
+### Key management
+
+- The key must be set via `PAD_PSEUDONYMIZATION_KEY` in the environment or an
+  untracked `.env` file.
+- The key is never stored in YAML configuration files, manifests, logs, or
+  exception messages.
+- The `show-config` command redacts the key field.
+- The key is excluded from `Settings.model_dump()` output.
+
+## Prohibited field enforcement
+
+Before any row is processed, `scan_prohibited_keys` recursively inspects all
+keys in the source record (to arbitrary nesting depth). If any key matches a
+prohibited name (after normalization), the **entire dataset** is rejected —
+not just the offending row.
+
+Ground-truth column names (`campaign_id`, `scenario`, `malicious`, etc.) are
+also rejected from canonical event files to enforce the GT-separation contract.
+
+## Synthetic data
+
+Synthetic data uses randomly generated UUIDv5 pseudonym-format identifiers and
+never calls `PseudonymService`. The pseudonymization key is not required and
+must not be used for synthetic generation.
+
+## Location data
+
+Coordinates are coarsened to one decimal place (approximately 11 km resolution)
+before storage. Raw GPS coordinates or precise location data are never stored.
+User agent strings include only family names, not version numbers.
+
+## Data minimization in reports
+
+Quality reports (`quality-report.json`, `quality-report.md`) contain only:
+- Aggregate counts and statistics
+- Column names (no data values)
+- Enum distribution counts (no identifier values)
+
+No raw event values, pseudonyms, or identifier substrings appear in reports.
+
+## Ground-truth separation
+
+Ground-truth labels (scenario, malicious flag, campaign ID) are stored in a
+separate `labels.parquet` file and are never merged into the canonical event
+table. This prevents label leakage into feature computation and keeps the
+canonical event log privacy-safe for contexts where labels should not be
+accessible.
