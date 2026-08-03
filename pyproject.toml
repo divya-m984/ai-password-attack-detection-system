@@ -1,6 +1,6 @@
 [project]
 name = "password-attack-detector"
-version = "0.2.0"
+version = "0.3.0"
 description = "AI-powered defensive system for detecting password-based attacks"
 readme = "README.md"
 license = { text = "MIT" }
@@ -40,7 +40,10 @@ dev = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "--cov=src/password_attack_detector --cov-report=term-missing --cov-fail-under=90"
+addopts = "--cov=src/password_attack_detector --cov-report=term-missing --cov-fail-under=90 -m 'not slow'"
+markers = [
+    "slow: larger-scale checks deselected by default; run with -m slow",
+]
 
 [tool.coverage.run]
 source = ["src/password_attack_detector"]

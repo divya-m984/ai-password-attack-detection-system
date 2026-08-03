@@ -19,6 +19,7 @@ from rich.table import Table
 
 from password_attack_detector import __version__
 from password_attack_detector.data.cli import data_app
+from password_attack_detector.features.cli import features_app
 
 app = typer.Typer(
     name="password-attack-detector",
@@ -28,6 +29,7 @@ app = typer.Typer(
 )
 
 app.add_typer(data_app, name="data")
+app.add_typer(features_app, name="features")
 
 console = Console()
 err_console = Console(stderr=True)

@@ -134,6 +134,12 @@ class DatasetManifest(BaseModel):
     created_at: str
     reproducibility: ReproducibilityInfo
 
+    #: File name whose Parquet row count must match ``row_count``.  Defaults to
+    #: ``events.parquet`` so manifests written before this field existed keep
+    #: verifying exactly as before; later phases that publish a differently
+    #: named primary table set it explicitly.
+    primary_artifact: str = "events.parquet"
+
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-serialisable dict of all manifest fields."""
         return self.model_dump()
@@ -261,10 +267,14 @@ def _is_safe_relative_path(rel_path: str, base_dir: Path) -> tuple[bool, str]:
     return True, "ok"
 
 
-def _find_events_artifact(manifest: DatasetManifest) -> ArtifactEntry | None:
-    """Return the first artifact entry whose path ends with 'events.parquet'."""
+def _find_primary_artifact(manifest: DatasetManifest) -> ArtifactEntry | None:
+    """Return the artifact entry whose file name is the manifest's primary table.
+
+    Which file that is comes from ``manifest.primary_artifact``, so one
+    verifier serves any dataset that follows this manifest format.
+    """
     for entry in manifest.artifacts:
-        if Path(entry.relative_path).name == "events.parquet":
+        if Path(entry.relative_path).name == manifest.primary_artifact:
             return entry
     return None
 
@@ -424,13 +434,15 @@ def build_synthetic_manifest(
 # ---------------------------------------------------------------------------
 
 
-def verify_dataset(directory: Path) -> VerificationResult:
+def verify_dataset(
+    directory: Path, *, manifest_name: str = "manifest.json"
+) -> VerificationResult:
     """Run 10 integrity and safety checks on a published dataset directory.
 
     Parameters
     ----------
     directory:
-        Path to the published dataset directory containing ``manifest.json``
+        Path to the published dataset directory containing the manifest
         and artifact files.
 
     Returns
@@ -444,7 +456,7 @@ def verify_dataset(directory: Path) -> VerificationResult:
     results with ``passed=False``.
     """
     checks: list[VerificationCheck] = []
-    manifest_path = directory / "manifest.json"
+    manifest_path = directory / manifest_name
 
     # -----------------------------------------------------------------------
     # Check 1: Manifest readable and parseable.
@@ -613,9 +625,9 @@ def verify_dataset(directory: Path) -> VerificationResult:
     # -----------------------------------------------------------------------
     # Check 9: Row count in manifest matches actual events Parquet row count.
     # -----------------------------------------------------------------------
-    events_entry = _find_events_artifact(manifest)
+    events_entry = _find_primary_artifact(manifest)
     row_count_ok = True
-    row_count_msg = "No events.parquet artifact; row count check skipped"
+    row_count_msg = f"No {manifest.primary_artifact} artifact; row count check skipped"
     if events_entry is not None and files_exist:
         events_path = directory / events_entry.relative_path
         try:
@@ -631,7 +643,9 @@ def verify_dataset(directory: Path) -> VerificationResult:
             )
         except Exception as exc:
             row_count_ok = False
-            row_count_msg = f"Cannot read events Parquet ({type(exc).__name__})"
+            row_count_msg = (
+                f"Cannot read {manifest.primary_artifact} ({type(exc).__name__})"
+            )
     checks.append(
         VerificationCheck(
             name="ROW_COUNT_MATCHES",

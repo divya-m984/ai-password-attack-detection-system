@@ -58,6 +58,20 @@ uv run pytest -v --no-cov             # verbose, no threshold enforcement
 
 Coverage threshold is 90%. New code must be accompanied by meaningful tests.
 
+Feature-layer tests share two helpers rather than rebuilding fixtures:
+
+- `tests/features/factories.py` — `make_event`, a compact `make_stream` DSL,
+  and `make_labels`. Short logical names (`"u1"`) hash to schema-valid
+  pseudonyms deterministically.
+- `tests/features/reference_engine.py` — a naive O(n^2) reimplementation of
+  every windowed and sequence feature. The production engine is checked against
+  it for **exact** equality; if you change how an aggregate is computed, change
+  both and keep the equality exact.
+
+Tests that assert the point-in-time contract (anchor exclusion, same-timestamp
+exclusion, future-mutation invariance) are the phase's core guarantee. Do not
+weaken them to make new code pass.
+
 ## Linting and type checking
 
 ```bash
