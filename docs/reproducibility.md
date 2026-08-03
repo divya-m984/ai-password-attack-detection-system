@@ -71,6 +71,28 @@ Fields that do not affect output (output paths, overwrite flags) are excluded.
 
 The config fingerprint is stored in `manifest.json` as `config_fingerprint`.
 
+## Feature-layer fingerprints (Phase 3+)
+
+| Fingerprint | Covers | Excludes |
+|---|---|---|
+| Feature configuration | Windows, thresholds, policies, nested baseline/split/geospatial settings | Output directories, overwrite flags, absolute paths, timestamps |
+| Feature catalog | Names, groups, entities, windows, aggregates, types, nullability, units, leakage classes, thresholds, ranges | `description` and `null_semantics` prose |
+| Feature content | Every cell of the feature table, rows sorted by anchor identifier | Row order, Parquet physical layout |
+| Baseline content | Fitted per-entity state, sets sorted, floats at fixed precision | `created_at` |
+| Split configuration | Mode, fractions or boundaries, purge, embargo, policies | Nothing path-dependent |
+
+Two properties are deliberate and tested:
+
+- The **configuration** fingerprint is path-independent: the same semantic
+  configuration stored in two different directories produces the same digest.
+- The **catalog** fingerprint excludes prose, so correcting a typo in a feature
+  description does not invalidate every artifact that recorded the digest.
+
+Feature computation is bit-for-bit reproducible because sums and
+sums-of-squares accumulate as exact integers rather than floats. Floating-point
+addition is not associative, so a float accumulator would make results depend
+on eviction order.
+
 ## Known limitations
 
 - Reproducibility is bounded by the committed `uv.lock` environment. The

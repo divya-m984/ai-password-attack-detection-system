@@ -97,6 +97,29 @@ Quality reports (`quality-report.json`, `quality-report.md`) contain only:
 
 No raw event values, pseudonyms, or identifier substrings appear in reports.
 
+## Feature-layer handling (Phase 3+)
+
+Feature snapshots carry no identifier other than `anchor_event_id`, and no
+coordinates. Geospatial features are published as derived distances, elapsed
+intervals, and a categorical availability status — never as latitude or
+longitude.
+
+Fitted behavioral baselines are the one Phase 3 artifact that holds
+pseudonymous identifiers. They are split by privacy class:
+
+| File | Mode | Contents |
+|---|---|---|
+| `baseline.json` | 0644 | Metadata and fingerprints only, zero pseudonyms |
+| `user_baselines.parquet` | 0600 | Pseudonymous per-user state |
+| `source_baselines.parquet` | 0600 | Pseudonymous per-source state |
+
+Reports and CLI output read only `baseline.json`. The code that renders
+summaries has no access to the other files, so "identifiers never appear in
+reports" is a structural property rather than a convention.
+
+Baseline artifacts live under git-ignored `artifacts/` and must never be
+committed. Real-data baselines require protected storage.
+
 ## Ground-truth separation
 
 Ground-truth labels (scenario, malicious flag, campaign ID) are stored in a

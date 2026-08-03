@@ -4,13 +4,16 @@ from __future__ import annotations
 
 __all__ = [
     "ArtifactNotFoundError",
+    "BaselineFitError",
     "ConfigurationError",
     "DataValidationError",
+    "FeatureComputationError",
     "IngestionError",
     "ManifestVerificationError",
     "ModelNotReadyError",
     "PasswordAttackDetectorError",
     "PseudonymizationError",
+    "SplitConfigurationError",
 ]
 
 
@@ -44,3 +47,15 @@ class IngestionError(PasswordAttackDetectorError):
 
 class ManifestVerificationError(PasswordAttackDetectorError):
     """Raised when a dataset manifest fails integrity or path-safety verification."""
+
+
+class FeatureComputationError(PasswordAttackDetectorError):
+    """Raised when feature computation produces output inconsistent with the catalog."""
+
+
+class BaselineFitError(PasswordAttackDetectorError):
+    """Raised when a behavioral baseline is fitted from events it is not permitted to see."""
+
+
+class SplitConfigurationError(ConfigurationError):
+    """Raised when a chronological split cannot be produced from the given configuration."""

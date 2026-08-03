@@ -1,0 +1,51 @@
+# Feature-engineering configuration for automated tests and CI.
+#
+# Deliberately small: the full window ladder is kept so the emitted schema
+# matches the development build, but split isolation is relaxed because a
+# CI-sized event stream is shorter than the 24h maximum window.  A strict 24h
+# purge on a 1-hour dataset would exclude every event.
+#
+# Never use this configuration for a real or development-sized build.
+
+feature_schema_version: "1.0.0"
+source_schema_version: "1.0.0"
+
+windows: ["1m", "5m", "15m", "1h", "24h"]
+cardinality_windows: ["5m", "1h", "24h"]
+dispersion_windows: ["5m", "15m", "1h", "24h"]
+device_session_windows: ["5m", "1h"]
+pair_windows: ["5m", "1h", "24h"]
+
+anchor_mode: per_event
+null_policy: null_for_undefined
+min_count_for_rate: 1
+min_history_events: 0
+
+baseline:
+  baseline_schema_version: "1.0.0"
+  enabled: true
+  min_events_per_user: 2
+  min_events_per_source: 2
+  known_set_max_size: 16
+  known_set_min_occurrences: 1
+  hour_histogram_alpha: 1.0
+  response_time_min_events: 2
+  max_response_time_zscore: 10.0
+
+split:
+  split_schema_version: "1.0.0"
+  mode: fractions
+  train_fraction: 0.60
+  validation_fraction: 0.20
+  test_fraction: 0.20
+  purge: "1m"
+  embargo: "0s"
+  strict_isolation: false
+  boundary_campaign_policy: exclude
+  normal_grouping: singleton
+  max_excluded_fraction: 1.0
+
+geospatial:
+  enabled: true
+  max_plausible_velocity_kmh: 1200.0
+  min_distance_km_for_velocity: 0.0

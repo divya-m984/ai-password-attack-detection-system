@@ -1,0 +1,67 @@
+# Feature-engineering configuration for local development builds.
+#
+# Sized for the Phase 2 development synthetic dataset (168 hours of activity).
+# Strict split isolation is enabled: the purge interval equals the maximum
+# feature window, so no event used for training has a lookback window that
+# reaches across a split boundary.
+
+feature_schema_version: "1.0.0"
+source_schema_version: "1.0.0"
+
+windows: ["1m", "5m", "15m", "1h", "24h"]
+cardinality_windows: ["5m", "1h", "24h"]
+dispersion_windows: ["5m", "15m", "1h", "24h"]
+device_session_windows: ["5m", "1h"]
+pair_windows: ["5m", "1h", "24h"]
+
+anchor_mode: per_event
+null_policy: null_for_undefined
+min_count_for_rate: 1
+min_history_events: 0
+
+baseline:
+  baseline_schema_version: "1.0.0"
+  enabled: true
+  min_events_per_user: 5
+  min_events_per_source: 5
+  known_set_max_size: 64
+  known_set_min_occurrences: 1
+  hour_histogram_alpha: 1.0
+  response_time_min_events: 5
+  max_response_time_zscore: 10.0
+
+# Fractions are 50/25/25 rather than the 70/15/15 default, because strict
+# isolation costs a fixed amount of wall-clock time at each boundary.
+#
+# The Phase 2 development dataset spans 168 hours. A 24h purge removes 24h from
+# the later side of each of the two internal boundaries, so:
+#
+#   excluded fraction  ~=  2 * purge / duration  =  48h / 168h  ~=  28.6%
+#
+# That share is the same whatever the fractions are -- but the fractions decide
+# who pays it. Under 70/15/15 the validation and test windows are only 25h
+# each, so a 24h purge leaves roughly one usable hour in each: a technically
+# valid split that is useless for evaluation. Under 50/25/25 each window is 42h
+# and about 18h survives.
+#
+# The general rule: every evaluation window must be comfortably longer than the
+# purge interval. If it is not, lengthen the dataset rather than shortening the
+# purge.
+split:
+  split_schema_version: "1.0.0"
+  mode: fractions
+  train_fraction: 0.50
+  validation_fraction: 0.25
+  test_fraction: 0.25
+  purge: "24h"
+  embargo: "0s"
+  strict_isolation: true
+  boundary_campaign_policy: exclude
+  normal_grouping: singleton
+  # Must exceed 2 * purge / duration (see above) or every build raises.
+  max_excluded_fraction: 0.35
+
+geospatial:
+  enabled: true
+  max_plausible_velocity_kmh: 1200.0
+  min_distance_km_for_velocity: 0.0

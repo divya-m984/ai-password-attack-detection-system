@@ -54,11 +54,27 @@ Phase 2 introduces a data engineering layer with the following guarantees:
   header/key level before any values are read. The entire dataset is rejected,
   not just the offending rows.
 - Ground-truth labels are stored separately from canonical events and are never
-  merged into the authentication-event table.
+  merged into the authentication-event table. The same separation holds for
+  feature snapshots: `feature_snapshots.parquet` contains model inputs only,
+  with labels and split assignments in their own tables joined by `event_id`.
+  Campaign metadata is never published in any table.
+- Fitted behavioral baselines hold pseudonymous per-entity state and are
+  therefore sensitive operational metadata. They are written only to
+  git-ignored `artifacts/` paths, with the pseudonym-bearing Parquet tables at
+  mode 0600 and a separate metadata-only `baseline.json` that reports and CLI
+  output read instead. Baseline state must never be committed, and real-data
+  baselines require protected storage with access control and retention limits
+  appropriate to the underlying authentication logs.
+- Feature validation findings and leakage audit results report column names,
+  error codes, and counts only. They never include an event identifier, a
+  pseudonym, a coordinate, or a raw row, so they are safe to place in a build
+  log or embed in a manifest.
 - Synthetic data uses randomly generated pseudonym-format identifiers and never
   calls `PseudonymService`.
 - Quality reports and manifests contain only aggregate statistics and column
-  names — never raw event values or pseudonym strings.
+  names — never raw event values or pseudonym strings. This applies equally to
+  the Phase 3 feature quality report, leakage audit, split manifest, and
+  feature manifest.
 
 See `docs/privacy-model.md` for the full privacy model.
 

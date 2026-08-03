@@ -649,10 +649,10 @@ class TestInstalledCLIEntrypoint:
         ):
             assert cmd in result.output
 
-    def test_version_shows_0_2_0(self) -> None:
+    def test_version_shows_0_3_0(self) -> None:
         result = runner.invoke(app, ["version"])
         assert result.exit_code == 0
-        assert "0.2.0" in result.output
+        assert "0.3.0" in result.output
 
     def test_schema_json_format(self) -> None:
         result = runner.invoke(app, ["data", "schema", "--format", "json"])
@@ -668,3 +668,4 @@ class TestInstalledCLIEntrypoint:
         assert "doctor" in result.output
         assert "show-config" in result.output
         assert "data" in result.output
+        assert "features" in result.output

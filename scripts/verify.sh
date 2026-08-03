@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# scripts/verify.sh — run all Phase 1 quality checks locally.
+# scripts/verify.sh — run all quality checks locally.
 # Mirrors the GitHub Actions CI pipeline so failures are caught before pushing.
 #
 # Usage:
