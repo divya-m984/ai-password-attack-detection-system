@@ -1,0 +1,205 @@
+# Rule-based detection configuration for local development runs.
+#
+# Sized for the Phase 3 development feature dataset, which is built from the
+# 168-hour synthetic event stream with the full window ladder
+# (1m, 5m, 15m, 1h, 24h).
+#
+# Every threshold below is a value for a parameter the rule catalog already
+# declares. No expression, callable, import path, or credential may appear in
+# this file: it is read with yaml.safe_load and validated against the declared
+# parameter contract, and a key that looks like a secret is rejected outright.
+#
+# Regenerate the rule reference with:
+#   uv run password-attack-detector detection catalog --format markdown
+
+detection_schema_version: "1.0.0"
+required_feature_schema_version: "1.0.0"
+rule_catalog_version: "1.0.0"
+
+enabled_rule_ids:
+  - PAD-BF-001
+  - PAD-BF-002
+  - PAD-PS-001
+  - PAD-CS-001
+  - PAD-DBF-001
+  - PAD-ATO-001
+  - PAD-GEO-001
+  - PAD-BOT-001
+  - PAD-MFA-001
+
+# Family weights scale each rule's contribution before correlation reduction.
+# Account compromise is weighted highest because a successful authentication
+# from novel context is the finding an analyst must not miss; automation is
+# weighted lowest because legitimate service accounts share its shape exactly.
+family_weights:
+  brute_force: 0.90
+  spraying: 0.85
+  stuffing: 0.85
+  account_compromise: 0.95
+  location: 0.80
+  automation: 0.70
+
+# A component reaches full strength at three times its threshold, and a rule
+# sitting exactly on its threshold reports the 0.15 floor rather than zero --
+# which is what makes "fired" and "did not fire" distinguishable by score.
+signal:
+  saturation_multiple: 3.0
+  min_signal_strength: 0.15
+
+scoring:
+  scoring_version: "1.0.0"
+  correlation_reducer: max
+  group_combiner: noisy_or
+  min_fired_risk_score: 1.0
+  round_decimals: 4
+  top_evidence_count: 3
+
+# Three strictly ordered boundaries across four levels. Positive scores below
+# `medium` are LOW -- an ordinary severity, not a suppressed one.
+severity_thresholds:
+  medium: 40.0
+  high: 65.0
+  critical: 85.0
+
+alerting:
+  alerting_version: "1.0.0"
+  grouping_window: "15m"
+  cooldown: "30m"
+  max_alerts_per_group_per_window: 5
+  # Two independent gates. The score floor of 10.0 sits well below the `medium`
+  # boundary, so the LOW alert band is reachable: a detection scoring between
+  # 10.0 and 40.0 produces an ordinary LOW alert. Raise min_alert_severity to
+  # `medium` to keep LOW findings as non-alert diagnostics instead -- that is a
+  # configuration choice, not a rule of the implementation.
+  min_alert_risk_score: 10.0
+  min_alert_severity: low
+  escalation_bypasses_cooldown: true
+  # Which pseudonymous dimension each correlation group groups on when an
+  # entity-scope table is supplied. Source-centric behaviour groups on the
+  # source; account-centric behaviour groups on the account.
+  scope_dimension:
+    credential_guessing_single_target: user
+    source_fanout: source
+    session_anomaly: user
+    location_movement: user
+    automation_timing: source
+
+# Rules that cannot see the history they declared report it rather than
+# reporting a clean negative.
+insufficient_history_policy: report
+
+rules:
+  # Concentrated guessing against one account from one source. The 5m window
+  # matches the cadence a scripted guessing run produces; the fan-out ceiling
+  # of 3 accounts is what keeps a spraying source out of this rule.
+  PAD-BF-001:
+    severity: high
+    parameters:
+      window: "5m"
+      cardinality_window: "5m"
+      min_pair_failures: 8
+      min_user_failures: 8
+      min_pair_failure_rate: 0.80
+      min_consecutive_failures: 5
+      max_source_unique_users: 3
+      max_mean_interarrival_seconds: 60.0
+      blocked_support_threshold: 2
+
+  # A success closing a failure run. Thresholds sit above PAD-BF-001's so an
+  # ordinary forgotten-password recovery does not reach it.
+  PAD-BF-002:
+    severity: high
+    parameters:
+      min_pair_failures_since_success: 6
+      min_user_failures_since_success: 8
+      max_seconds_since_previous_failure: 300.0
+
+  # Spraying is judged over an hour: the defining behaviour is breadth over
+  # time, not burst rate. Three attempts per account is the discriminator.
+  PAD-PS-001:
+    severity: high
+    parameters:
+      window: "1h"
+      cardinality_window: "1h"
+      min_unique_users: 15
+      min_source_failures: 15
+      min_source_failure_rate: 0.70
+      max_attempts_per_user: 3.0
+      min_mean_interarrival_seconds: 0.0
+
+  # Stuffing differs from spraying by its successes and its client diversity,
+  # so the failure-rate condition is dropped and successes are required.
+  PAD-CS-001:
+    severity: high
+    parameters:
+      window: "1h"
+      cardinality_window: "1h"
+      min_unique_users: 10
+      min_successes: 1
+      min_failures: 10
+      min_unique_devices: 3
+      min_unique_user_agents: 3
+      max_attempts_per_user: 4.0
+
+  # Many sources, one account, few attempts each. The per-source ceiling of 5
+  # is what separates this from one high-volume source.
+  PAD-DBF-001:
+    severity: critical
+    parameters:
+      window: "1h"
+      cardinality_window: "1h"
+      min_unique_sources: 8
+      min_user_failures: 20
+      min_user_failure_rate: 0.80
+      max_pair_attempts: 5
+      max_source_unique_users: 3
+
+  # Two novel contexts plus one behavioural deviation. One novelty alone is a
+  # new laptop; two plus a deviation is worth an analyst's attention.
+  PAD-ATO-001:
+    severity: critical
+    parameters:
+      min_novel_context_count: 2
+      min_supporting_signals: 1
+      min_prior_failures: 3
+      min_login_hour_deviation: 0.90
+      min_abs_response_time_zscore: 3.0
+      min_event_rate_ratio: 3.0
+      min_baseline_distance_km: 1000.0
+
+  # 500 km is far enough that coarse-location error cannot explain it; 900 km/h
+  # is above sustained commercial cruise, so the implied journey is not one a
+  # traveller makes.
+  PAD-GEO-001:
+    severity: high
+    parameters:
+      min_distance_km: 500.0
+      min_velocity_kmh: 900.0
+      distance_rounding_km: 10.0
+      require_country_change: false
+      zero_elapsed_policy: fire
+
+  # Twenty attempts over fifteen minutes gives the dispersion statistic enough
+  # observations to mean something; a coefficient of variation at or below 0.15
+  # is a regularity humans do not produce.
+  PAD-BOT-001:
+    severity: medium
+    parameters:
+      dispersion_window: "15m"
+      cardinality_window: "1h"
+      min_attempts: 20
+      max_interarrival_cov: 0.15
+      max_mean_interarrival_seconds: 120.0
+      max_unique_user_agents: 2
+      min_unique_users: 0
+
+  # Both the history gate and the abnormal current outcome are required, so a
+  # single ordinary challenge cannot reach a verdict at all.
+  PAD-MFA-001:
+    severity: medium
+    parameters:
+      window: "15m"
+      min_mfa_history_events: 6
+      min_mfa_observations: 3
+      min_mfa_failures: 4
+      min_challenges: 4
