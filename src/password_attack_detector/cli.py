@@ -5,6 +5,9 @@ Available commands:
     password-attack-detector version
     password-attack-detector doctor
     password-attack-detector show-config
+    password-attack-detector data ...
+    password-attack-detector features ...
+    password-attack-detector detection ...
 """
 
 from __future__ import annotations
@@ -19,6 +22,7 @@ from rich.table import Table
 
 from password_attack_detector import __version__
 from password_attack_detector.data.cli import data_app
+from password_attack_detector.detection.cli import detection_app
 from password_attack_detector.features.cli import features_app
 
 app = typer.Typer(
@@ -30,6 +34,7 @@ app = typer.Typer(
 
 app.add_typer(data_app, name="data")
 app.add_typer(features_app, name="features")
+app.add_typer(detection_app, name="detection")
 
 console = Console()
 err_console = Console(stderr=True)

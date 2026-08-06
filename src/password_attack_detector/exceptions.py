@@ -7,12 +7,14 @@ __all__ = [
     "BaselineFitError",
     "ConfigurationError",
     "DataValidationError",
+    "DetectionConfigurationError",
     "FeatureComputationError",
     "IngestionError",
     "ManifestVerificationError",
     "ModelNotReadyError",
     "PasswordAttackDetectorError",
     "PseudonymizationError",
+    "RuleEvaluationError",
     "SplitConfigurationError",
 ]
 
@@ -59,3 +61,16 @@ class BaselineFitError(PasswordAttackDetectorError):
 
 class SplitConfigurationError(ConfigurationError):
     """Raised when a chronological split cannot be produced from the given configuration."""
+
+
+class DetectionConfigurationError(ConfigurationError):
+    """Raised when a detection configuration or rule registration is invalid."""
+
+
+class RuleEvaluationError(PasswordAttackDetectorError):
+    """Raised when a detection rule is prepared or evaluated outside its contract.
+
+    Covers a rule declaring a feature the feature catalog does not provide, a
+    rule reading a prohibited column, and a feature snapshot that does not
+    supply a column the prepared rule requires.
+    """

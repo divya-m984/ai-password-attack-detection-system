@@ -652,7 +652,7 @@ class TestInstalledCLIEntrypoint:
     def test_version_shows_0_3_0(self) -> None:
         result = runner.invoke(app, ["version"])
         assert result.exit_code == 0
-        assert "0.3.0" in result.output
+        assert "0.4.0" in result.output
 
     def test_schema_json_format(self) -> None:
         result = runner.invoke(app, ["data", "schema", "--format", "json"])

@@ -72,6 +72,46 @@ Tests that assert the point-in-time contract (anchor exclusion, same-timestamp
 exclusion, future-mutation invariance) are the phase's core guarantee. Do not
 weaken them to make new code pass.
 
+## Adding a detection rule
+
+Rules are **statically registered reviewed Python**. Adding one means editing
+code and the catalog together — there is no plugin path, no discovery, and no
+configuration-supplied import.
+
+1. Add a `RuleSpec` to `detection/catalog.py` with a stable `rule_id`
+   (`PAD-XX-NNN`), a semantic `rule_version`, declared `RuleParameter`
+   thresholds with bounds, `EvidenceDefinition` templates, and honest
+   `limitations`.
+2. Implement the rule against `BaseRule` / `BasePreparedRule` in
+   `detection/rules/`, reading only catalogued features.
+3. Register it in `ALL_RULES` in `detection/rules/__init__.py`.
+4. Add a firing fixture to `FIRING_ROWS` in `tests/unit/detection/rules/
+   test_rule_matrix.py` — the shared matrix then applies automatically.
+5. Add rule-specific threshold, boundary, and false-positive-control tests, and
+   a cross-rule discrimination test if the new rule could be confused with an
+   existing one.
+6. Regenerate the catalog documentation:
+   `uv run password-attack-detector detection catalog --format markdown -o docs/rule-catalog.md`
+
+Non-negotiable for any rule:
+
+- **Never accept logic from YAML.** Configuration supplies values for declared
+  parameters and selects registered rules — nothing else. No `eval`, `exec`,
+  or dynamic import.
+- **Keep published rule IDs and versions stable.** A test pins the current set,
+  so any change is a deliberate, reviewed diff.
+- **Return `insufficient_data`, not `not_fired`, for unobserved history.** A
+  null feature means unobserved; reporting a clean negative makes a
+  false-positive rate meaningless.
+- **AND multiple conditions** and carry an explicit false-positive control.
+  A single weak threshold is not a rule.
+- **Never claim proof.** Evidence describes what was observed and what it is
+  consistent with. Proof-asserting and probability-asserting language is
+  rejected at import.
+- **Never read a label, split, campaign, entity scope, raw event, or model
+  output.** Only `detection/evaluation.py` may read ground truth, and only
+  `detection/alerts.py` may read entity scope.
+
 ## Linting and type checking
 
 ```bash

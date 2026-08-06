@@ -1,0 +1,155 @@
+# Rule-based detection configuration for automated tests and CI.
+#
+# Deliberately small. Every threshold is lowered so a CI-sized fixture of a few
+# dozen events can exercise each rule's fired, not-fired, and insufficient-data
+# paths without generating a development-sized dataset.
+#
+# The alert score floor is set to the fired floor (1.0) so the LOW alert band is
+# reachable end to end: a detection scoring between 1.0 and 40.0 produces an
+# ordinary LOW alert, which is the path the alerting tests exercise.
+#
+# Never use this configuration for a real or development-sized run. Its
+# thresholds would fire constantly on genuine traffic.
+
+detection_schema_version: "1.0.0"
+required_feature_schema_version: "1.0.0"
+rule_catalog_version: "1.0.0"
+
+enabled_rule_ids:
+  - PAD-BF-001
+  - PAD-BF-002
+  - PAD-PS-001
+  - PAD-CS-001
+  - PAD-DBF-001
+  - PAD-ATO-001
+  - PAD-GEO-001
+  - PAD-BOT-001
+  - PAD-MFA-001
+
+family_weights:
+  brute_force: 0.90
+  spraying: 0.85
+  stuffing: 0.85
+  account_compromise: 0.95
+  location: 0.80
+  automation: 0.70
+
+signal:
+  saturation_multiple: 3.0
+  min_signal_strength: 0.15
+
+scoring:
+  scoring_version: "1.0.0"
+  correlation_reducer: max
+  group_combiner: noisy_or
+  min_fired_risk_score: 1.0
+  round_decimals: 4
+  top_evidence_count: 3
+
+severity_thresholds:
+  medium: 40.0
+  high: 65.0
+  critical: 85.0
+
+alerting:
+  alerting_version: "1.0.0"
+  grouping_window: "5m"
+  cooldown: "10m"
+  max_alerts_per_group_per_window: 3
+  min_alert_risk_score: 1.0
+  min_alert_severity: low
+  escalation_bypasses_cooldown: true
+  scope_dimension:
+    credential_guessing_single_target: user
+    source_fanout: source
+    session_anomaly: user
+    location_movement: user
+    automation_timing: source
+
+insufficient_history_policy: report
+
+rules:
+  PAD-BF-001:
+    parameters:
+      window: "5m"
+      cardinality_window: "5m"
+      min_pair_failures: 3
+      min_user_failures: 3
+      min_pair_failure_rate: 0.60
+      min_consecutive_failures: 2
+      max_source_unique_users: 2
+      max_mean_interarrival_seconds: 120.0
+      blocked_support_threshold: 1
+
+  PAD-BF-002:
+    parameters:
+      min_pair_failures_since_success: 2
+      min_user_failures_since_success: 3
+      max_seconds_since_previous_failure: 600.0
+
+  PAD-PS-001:
+    parameters:
+      window: "1h"
+      cardinality_window: "1h"
+      min_unique_users: 4
+      min_source_failures: 4
+      min_source_failure_rate: 0.60
+      max_attempts_per_user: 3.0
+      min_mean_interarrival_seconds: 0.0
+
+  PAD-CS-001:
+    parameters:
+      window: "1h"
+      cardinality_window: "1h"
+      min_unique_users: 3
+      min_successes: 1
+      min_failures: 3
+      min_unique_devices: 2
+      min_unique_user_agents: 2
+      max_attempts_per_user: 4.0
+
+  PAD-DBF-001:
+    parameters:
+      window: "1h"
+      cardinality_window: "1h"
+      min_unique_sources: 3
+      min_user_failures: 4
+      min_user_failure_rate: 0.60
+      max_pair_attempts: 3
+      max_source_unique_users: 2
+
+  PAD-ATO-001:
+    parameters:
+      min_novel_context_count: 2
+      min_supporting_signals: 1
+      min_prior_failures: 2
+      min_login_hour_deviation: 0.80
+      min_abs_response_time_zscore: 2.0
+      min_event_rate_ratio: 2.0
+      min_baseline_distance_km: 100.0
+
+  PAD-GEO-001:
+    parameters:
+      min_distance_km: 100.0
+      min_velocity_kmh: 500.0
+      distance_rounding_km: 10.0
+      require_country_change: false
+      zero_elapsed_policy: fire
+
+  PAD-BOT-001:
+    parameters:
+      dispersion_window: "15m"
+      cardinality_window: "1h"
+      min_attempts: 4
+      max_interarrival_cov: 0.25
+      max_mean_interarrival_seconds: 300.0
+      max_unique_user_agents: 2
+      min_unique_users: 0
+
+  PAD-MFA-001:
+    parameters:
+      window: "15m"
+      min_mfa_history_events: 3
+      min_mfa_observations: 2
+      min_mfa_failures: 2
+      min_challenges: 2
