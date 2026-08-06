@@ -683,11 +683,30 @@ def test_entity_scope_record_requires_an_anchor() -> None:
         EntityScopeRecord(anchor_event_id="  ")
 
 
-def test_engine_and_scorer_accept_no_entity_scope() -> None:
+#: Modules that must never accept a scope argument of any kind.  Named
+#: positively rather than as an exemption list: the modules that legitimately
+#: handle scope grow over the phase -- alert construction, validation, the
+#: manifest's boolean presence flag -- while these must stay clean, and a test
+#: that listed the exceptions would quietly weaken every time one was added.
+SCOPE_FREE_MODULES: frozenset[str] = frozenset(
+    {
+        "engine.py",
+        "scoring.py",
+        "quality.py",
+        "evaluation.py",
+        "catalog.py",
+        "base.py",
+    }
+)
+
+
+def test_the_detection_path_accepts_no_entity_scope() -> None:
     """The confinement is structural: no scope parameter exists to pass.
 
-    Asserted against the whole detection package so a later milestone cannot
-    thread a scope argument into evaluation without this test failing.
+    The engine and scorer are the load-bearing cases -- neither may ever
+    receive a pseudonym -- and the reporting and evaluation modules are
+    included because a scope value reaching a report is the same disclosure by
+    a different route.
     """
     import ast
     from pathlib import Path
@@ -698,10 +717,9 @@ def test_engine_and_scorer_accept_no_entity_scope() -> None:
         / "password_attack_detector"
         / "detection"
     )
-    alerting_only = {"alerts.py", "cli.py", "schemas.py", "serialization.py"}
     offenders: list[str] = []
     for source in sorted(package.rglob("*.py")):
-        if source.name in alerting_only:
+        if source.name not in SCOPE_FREE_MODULES:
             continue
         tree = ast.parse(source.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
@@ -721,6 +739,20 @@ def test_engine_and_scorer_accept_no_entity_scope() -> None:
                 if "scope" in name and "scope_dimension" not in name
             )
     assert offenders == []
+
+
+def test_the_scope_free_module_list_names_real_modules() -> None:
+    """A typo here would silently skip the module it meant to protect."""
+    from pathlib import Path
+
+    package = (
+        Path(__file__).resolve().parents[3]
+        / "src"
+        / "password_attack_detector"
+        / "detection"
+    )
+    present = {source.name for source in package.rglob("*.py")}
+    assert present >= SCOPE_FREE_MODULES
 
 
 # ---------------------------------------------------------------------------

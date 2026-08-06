@@ -45,6 +45,19 @@ from password_attack_detector.detection.enums import (
     ScopeKind,
     Severity,
 )
+from password_attack_detector.detection.evaluation import (
+    EvaluationReport,
+    evaluate_detection_run,
+)
+from password_attack_detector.detection.manifest import (
+    DetectionManifest,
+    build_detection_manifest,
+    verify_detection_dataset,
+)
+from password_attack_detector.detection.quality import (
+    DetectionQualityReport,
+    generate_detection_quality_report,
+)
 from password_attack_detector.detection.schemas import (
     DETECTION_SCHEMA_VERSION,
     AlertingStats,
@@ -59,6 +72,14 @@ from password_attack_detector.detection.scoring import (
     SCORING_VERSION,
     RiskScorer,
     ScoringResult,
+)
+from password_attack_detector.detection.serialization import (
+    DetectionPublisher,
+    PublishedDetectionSet,
+)
+from password_attack_detector.detection.validation import (
+    DetectionValidator,
+    validate_detection_artifacts,
 )
 
 __all__ = [
@@ -75,12 +96,18 @@ __all__ = [
     "CorrelationGroup",
     "DetectionConfig",
     "DetectionEngine",
+    "DetectionManifest",
+    "DetectionPublisher",
+    "DetectionQualityReport",
+    "DetectionValidator",
     "EngineResult",
     "EngineStats",
     "EntityScopeRecord",
     "EntityScopeTable",
+    "EvaluationReport",
     "EvidenceItem",
     "FiredDetection",
+    "PublishedDetectionSet",
     "RiskAssessment",
     "RiskScorer",
     "RuleCatalog",
@@ -92,8 +119,13 @@ __all__ = [
     "ScoringResult",
     "SecurityAlert",
     "Severity",
+    "build_detection_manifest",
     "build_entity_scope_table",
     "catalog_to_markdown",
+    "evaluate_detection_run",
     "evaluate_snapshots",
+    "generate_detection_quality_report",
     "load_detection_config",
+    "validate_detection_artifacts",
+    "verify_detection_dataset",
 ]

@@ -776,11 +776,41 @@ class DetectionValidationResult(BaseModel):
 
     status: DetectionValidationStatus
     detection_schema_version: str | None = None
+    scoring_version: str | None = None
+    alerting_version: str | None = None
     detection_row_count: int = Field(default=0, ge=0)
     risk_assessment_row_count: int = Field(default=0, ge=0)
     alert_row_count: int = Field(default=0, ge=0)
     errors: tuple[DetectionValidationFinding, ...] = ()
     warnings: tuple[DetectionValidationFinding, ...] = ()
+    #: Summaries of the finding list, grouped by what kind of problem they
+    #: describe.  Carried as counts so a caller can branch on "the data is
+    #: malformed" or "the artifacts disagree" without re-deriving it from the
+    #: findings, and so a report can print them without printing messages.
+    invalid_value_count: int = Field(default=0, ge=0)
+    prohibited_column_count: int = Field(default=0, ge=0)
+    relationship_error_count: int = Field(default=0, ge=0)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return a JSON-serialisable mapping of the result.
+
+        Findings keep their codes, columns, and counts.  No message in this
+        payload can carry an identifier -- the finding model rejects one.
+        """
+        return {
+            "status": str(self.status),
+            "detection_schema_version": self.detection_schema_version,
+            "scoring_version": self.scoring_version,
+            "alerting_version": self.alerting_version,
+            "detection_row_count": self.detection_row_count,
+            "risk_assessment_row_count": self.risk_assessment_row_count,
+            "alert_row_count": self.alert_row_count,
+            "invalid_value_count": self.invalid_value_count,
+            "prohibited_column_count": self.prohibited_column_count,
+            "relationship_error_count": self.relationship_error_count,
+            "errors": [item.model_dump() for item in self.errors],
+            "warnings": [item.model_dump() for item in self.warnings],
+        }
 
     @model_validator(mode="after")
     def check_status(self) -> Self:
