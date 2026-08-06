@@ -1,0 +1,83 @@
+# Feature-engineering configuration for machine-learning development builds.
+#
+# Sized for the 30-day dataset in configs/data/synthetic-ml-development.yaml.
+#
+# The feature contract is unchanged from configs/features/feature-development.yaml:
+# the same schema version, the same window ladder, the same baseline settings,
+# the same geospatial settings. Only the split differs, because only the split
+# depends on how long the dataset is. Phase 2 and Phase 3 runtime behaviour is
+# untouched -- this file supplies different values to the same contract.
+#
+# NOTHING GENERATED FROM THIS FILE IS COMMITTED, and no workflow that consumes
+# it runs in CI.
+
+feature_schema_version: "1.0.0"
+source_schema_version: "1.0.0"
+
+windows: ["1m", "5m", "15m", "1h", "24h"]
+cardinality_windows: ["5m", "1h", "24h"]
+dispersion_windows: ["5m", "15m", "1h", "24h"]
+device_session_windows: ["5m", "1h"]
+pair_windows: ["5m", "1h", "24h"]
+
+anchor_mode: per_event
+null_policy: null_for_undefined
+min_count_for_rate: 1
+min_history_events: 0
+
+baseline:
+  baseline_schema_version: "1.0.0"
+  enabled: true
+  min_events_per_user: 5
+  min_events_per_source: 5
+  known_set_max_size: 64
+  known_set_min_occurrences: 1
+  hour_histogram_alpha: 1.0
+  response_time_min_events: 5
+  max_response_time_zscore: 10.0
+
+# 60/20/20 over 720 hours, with the same 24h purge as the 7-day configuration.
+#
+# The purge must be at least the longest feature window (24h) under strict
+# isolation, so it is not a free parameter: shortening it would isolate
+# nothing, and the cross-field check rejects it outright.
+#
+# What changes with the longer span is what the purge costs:
+#
+#     excluded fraction  ~=  2 * purge / duration  =  48h / 720h  ~=  6.7%
+#
+# against roughly 28.6% at 168 hours. That is the whole reason this dataset
+# exists. Under 60/20/20 each evaluation window spans 144 hours, of which about
+# 120 survive the purge -- five times the ~18 usable hours the 7-day
+# development configuration leaves, and enough for a per-scenario metric to be
+# computed over more than a handful of rows.
+#
+# The larger training share is deliberate too: 432 hours of training data
+# against 84 hours in the 7-day configuration. A model has more to fit on, and
+# the behavioural baselines it depends on are fitted on that training split
+# alone.
+split:
+  split_schema_version: "1.0.0"
+  mode: fractions
+  train_fraction: 0.60
+  validation_fraction: 0.20
+  test_fraction: 0.20
+  purge: "24h"
+  embargo: "0s"
+  strict_isolation: true
+  # Every event of a campaign that crosses a boundary is excluded. It is the
+  # only policy with zero leakage risk and the only one that is trivially
+  # auditable; with 88 campaigns spread over 30 days, losing a few whole
+  # campaigns to it is an acceptable price.
+  boundary_campaign_policy: exclude
+  normal_grouping: singleton
+  # Must exceed 2 * purge / duration (~6.7%) with headroom for the campaigns
+  # excluded by the boundary policy above. Set well below the 7-day
+  # configuration's 0.35 because the purge costs far less here; a build that
+  # exceeds it raises rather than quietly shipping a starved split.
+  max_excluded_fraction: 0.20
+
+geospatial:
+  enabled: true
+  max_plausible_velocity_kmh: 1200.0
+  min_distance_km_for_velocity: 0.0

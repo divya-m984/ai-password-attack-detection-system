@@ -1,0 +1,201 @@
+# Machine-learning configuration for local development runs.
+#
+# Sized for the 30-day ML development dataset described in
+# configs/data/synthetic-ml-development.yaml and the feature build in
+# configs/features/feature-ml-development.yaml. Running this configuration
+# against the shorter 168-hour Phase 2 development dataset will trip the
+# support floors below, which is the intended behaviour: a metric computed
+# over a handful of positive rows is not a measurement.
+#
+# Every fitted quantity in this file draws from the split it names and no
+# other. Calibration reads validation-A, threshold selection reads
+# validation-B, and neither can name the test split -- the enum they draw
+# from has no test member.
+
+ml_schema_version: "1.0.0"
+required_feature_schema_version: "1.0.0"
+model_catalog_version: "1.0.0"
+
+# One seed governs every stochastic estimator in the run. It is recorded in
+# every model manifest and every experiment record, because a seed that is not
+# written down is not a reproducibility control.
+seed: 42
+
+# The prior baseline is mandatory: it is the reference every candidate is
+# measured against, and enabling a candidate without it would leave the
+# improvement gate with nothing to compare to.
+#
+# M-021 (histogram gradient boosting) is deliberately absent. It is declared in
+# the catalog and may be evaluated, but its serializer reads private estimator
+# attributes and it cannot be promoted until a compatibility test settles that
+# contract. Enabling it here before then would only produce a candidate that
+# every gate rejects.
+enabled_model_families:
+  - prior_baseline
+  - single_feature_threshold
+  - logistic_regression
+  - random_forest
+  - isolation_forest
+
+# Only hyperparameters the model catalog already declares may appear here, and
+# only within their declared bounds. There is no passthrough to the estimator:
+# an unrecognised key is a typo, and it fails the load rather than being
+# silently ignored.
+family_hyperparameters:
+  logistic_regression:
+    c_inverse_regularization: 1.0
+    max_iter: 2000
+    class_weight: balanced
+  random_forest:
+    n_estimators: 300
+    max_depth: 12
+    min_samples_leaf: 5
+    class_weight: balanced
+  isolation_forest:
+    n_estimators: 200
+    max_samples: 256
+    contamination: 0.01
+
+# Every preprocessing statistic is fitted on the training split alone.
+#
+# add_missing_indicators cannot be switched off. Phase 3 distinguishes "no
+# attempts were made" (a windowed count of zero) from "no failures out of many"
+# (a null rate); imputing a null without flagging it would hand the model a
+# fabricated observation and erase a distinction the feature contract went to
+# some trouble to preserve.
+preprocessing:
+  statistics_source: train
+  numeric_imputation: median
+  add_missing_indicators: true
+  categorical_encoding: one_hot
+  # current_country_code is the only high-cardinality categorical column in the
+  # feature set. Levels observed fewer than this many times in TRAIN collapse
+  # into the rare bucket, so the encoded width cannot track dataset size.
+  min_category_frequency: 20
+  max_category_cardinality: 64
+  standardize_numeric_for_linear_models: true
+  # All three eligible leakage classes. The `key` class is not listed and
+  # cannot be: the anchor identifier, its timestamp, and the schema version are
+  # join and provenance columns, never model inputs.
+  include_leakage_classes:
+    - prior_only
+    - current_event_context
+    - baseline_derived
+
+imbalance:
+  class_weight_policy: balanced
+  computed_from: train
+  # No resampling anywhere. Synthesising or dropping rows would change data a
+  # split contract already fixed, and any resampler that looked across a split
+  # boundary would leak.
+  resampling: none
+
+# The validation split is cut on campaign-group boundaries, never at a row
+# midpoint. A midpoint cut would place a campaign's early events in the
+# partition that fits the calibrator and its later events in the partition that
+# chooses the operating point -- the same memorisation leak the Phase 3
+# splitter closes between train, validation, and test.
+validation_partition:
+  strategy: campaign_group_boundary
+  grouping_column: campaign_id
+  boundary_placement: first_group_boundary_at_or_after_target
+  ungrouped_row_policy: singleton_by_event_time
+  target_partition_a_fraction: 0.5
+  min_partition_rows: 200
+  min_partition_positive_rows: 10
+
+calibration:
+  # Isotonic over Platt: the raw outputs here are tree-ensemble leaf
+  # frequencies and a linear logit, and the distortion is not reliably
+  # sigmoidal. Isotonic needs more data, which is what the 30-day dataset and
+  # min_calibration_rows below are for.
+  method: isotonic
+  source_partition: validation_a
+  max_expected_calibration_error: 0.05
+  reliability_bin_count: 10
+  min_calibration_rows: 200
+  require_calibration_for_probability_terminology: true
+
+thresholds:
+  # A SOC's binding constraint is analyst time, not model accuracy, so the
+  # objective maximises detection subject to a false-positive ceiling rather
+  # than optimising a symmetric score.
+  objective: max_recall_at_max_fpr
+  source_partition: validation_b
+  max_false_positive_rate: 0.01
+  min_detection_rate: 0.50
+  search_grid_size: 1000
+  tie_break: lowest_threshold
+
+category:
+  enabled: true
+  fit_on: train_known_malicious
+  class_order: sorted_scenario_value
+  # Below this score the head abstains and emits `unknown` rather than naming
+  # its best guess. Forcing a row into the nearest known class would report
+  # confidence the model does not have, and would quietly convert novel
+  # behaviour into a category somebody already wrote a rule for.
+  min_category_score: 0.35
+  min_rows_per_category: 20
+  report_conditional_metrics: true
+  report_cascade_metrics: true
+
+anomaly:
+  enabled: true
+  fit_on: train_benign
+  threshold_method: train_benign_quantile
+  quantile: 0.99
+  min_fit_rows: 500
+  # Pinned off and not configurable. The anomaly probe measures generalisation
+  # to behaviour nobody labelled; a measurement that can change the thing it
+  # measures is not one.
+  influences_champion_selection: false
+
+support:
+  min_train_positive_rows: 50
+  min_validation_positive_rows: 25
+  min_validation_benign_rows: 100
+  min_rows_per_category: 20
+
+gates:
+  baseline_family: prior_baseline
+  min_pr_auc_gain_over_baseline: 0.05
+  max_false_positive_rate: 0.01
+  min_detection_rate: 0.50
+  max_expected_calibration_error: 0.05
+  require_serializer_parity: true
+  require_determinism: true
+  require_eligibility_audit_pass: true
+  parity_tolerance: 1.0e-12
+
+fusion:
+  enabled: true
+  # All three strategies are built and compared. None is assumed to win: the
+  # question of whether hybrid detection beats either system alone is the one
+  # this phase exists to answer, not to presume.
+  strategies:
+    - or_gate
+    - and_gate
+    - stacked
+  selection_partition: validation_b
+  stacked_max_iter: 1000
+
+explain:
+  enabled: true
+  partition: validation_a
+  top_k_features: 25
+  permutation_repeats: 5
+  # Local explanations are off by default. A feature value can be a country
+  # code, and widening what a report discloses should be a deliberate act.
+  max_local_explanations: 0
+  include_feature_values: false
+
+drift:
+  enabled: true
+  reference_source: train
+  quantile_count: 20
+  psi_warn_threshold: 0.10
+  psi_alert_threshold: 0.25
+  min_reference_rows: 500
+
+overwrite: false

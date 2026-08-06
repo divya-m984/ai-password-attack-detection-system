@@ -13,6 +13,7 @@ dependencies = [
     "pydantic-settings>=2.0",
     "PyYAML>=6.0",
     "rich>=13.0",
+    "scikit-learn>=1.9.0,<1.10",
     "structlog>=24.0",
     "typer>=0.12",
 ]
@@ -68,4 +69,18 @@ warn_unused_configs = true
 
 [[tool.mypy.overrides]]
 module = ["pyarrow", "pyarrow.*"]
+ignore_missing_imports = true
+
+# scikit-learn ships no py.typed marker and publishes no stub package, so every
+# `from sklearn.<submodule> import ...` is an unresolved import under strict
+# mode.  The override is deliberately narrow: only submodules of `sklearn` are
+# exempted, and bare `sklearn` is not listed because nothing imports it --
+# `warn_unused_configs` would report the entry as dead weight.
+#
+# scipy, joblib, threadpoolctl and narwhals arrive transitively and are never
+# imported by project source, so they need no override at all; a test in
+# tests/unit/ml/test_dependencies.py walks every module's syntax tree and
+# enforces that.
+[[tool.mypy.overrides]]
+module = ["sklearn.*"]
 ignore_missing_imports = true

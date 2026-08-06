@@ -1,0 +1,141 @@
+# Machine-learning configuration for CI and unit tests.
+#
+# Deliberately tiny. Every count here is sized so a test can fit a model in
+# well under a second on a micro-dataset; none of these values is appropriate
+# for a real run, and none of them should be copied into a development
+# configuration.
+#
+# The *policy* fields are identical to the development configuration on
+# purpose. Calibration still reads validation-A, thresholds still read
+# validation-B, missingness indicators are still on, and resampling is still
+# off. A test configuration that relaxed a discipline would let CI pass on a
+# pipeline that development would reject.
+
+ml_schema_version: "1.0.0"
+required_feature_schema_version: "1.0.0"
+model_catalog_version: "1.0.0"
+
+seed: 7
+
+# The tree families are excluded: fitting a forest is the slowest thing this
+# layer does, and nothing in a contract test needs one. The prior baseline is
+# mandatory, and logistic regression covers the calibratable-candidate path.
+enabled_model_families:
+  - prior_baseline
+  - single_feature_threshold
+  - logistic_regression
+
+family_hyperparameters:
+  logistic_regression:
+    c_inverse_regularization: 1.0
+    max_iter: 50
+    class_weight: balanced
+
+preprocessing:
+  statistics_source: train
+  numeric_imputation: median
+  add_missing_indicators: true
+  categorical_encoding: one_hot
+  min_category_frequency: 1
+  max_category_cardinality: 8
+  standardize_numeric_for_linear_models: true
+  include_leakage_classes:
+    - prior_only
+    - current_event_context
+
+imbalance:
+  class_weight_policy: balanced
+  computed_from: train
+  resampling: none
+
+validation_partition:
+  strategy: campaign_group_boundary
+  grouping_column: campaign_id
+  boundary_placement: first_group_boundary_at_or_after_target
+  ungrouped_row_policy: singleton_by_event_time
+  target_partition_a_fraction: 0.5
+  min_partition_rows: 1
+  min_partition_positive_rows: 1
+
+calibration:
+  # Platt rather than isotonic: a CI-sized partition carries far too few rows
+  # for a monotone piecewise fit to mean anything.
+  method: platt
+  source_partition: validation_a
+  max_expected_calibration_error: 0.5
+  reliability_bin_count: 2
+  min_calibration_rows: 1
+  require_calibration_for_probability_terminology: true
+
+thresholds:
+  objective: max_recall_at_max_fpr
+  source_partition: validation_b
+  # Loose relative to development: a micro-dataset cannot support a 1%
+  # false-positive ceiling, and a test asserting pipeline mechanics should not
+  # fail on a statistical impossibility.
+  max_false_positive_rate: 0.5
+  min_detection_rate: 0.1
+  search_grid_size: 16
+  tie_break: lowest_threshold
+
+category:
+  enabled: true
+  fit_on: train_known_malicious
+  class_order: sorted_scenario_value
+  min_category_score: 0.2
+  min_rows_per_category: 1
+  report_conditional_metrics: true
+  report_cascade_metrics: true
+
+anomaly:
+  # Off in CI: no anomaly-capable family is enabled above, and an enabled
+  # probe without one is a configuration error by design.
+  enabled: false
+  fit_on: train_benign
+  threshold_method: train_benign_quantile
+  quantile: 0.9
+  min_fit_rows: 1
+  influences_champion_selection: false
+
+support:
+  min_train_positive_rows: 1
+  min_validation_positive_rows: 1
+  min_validation_benign_rows: 1
+  min_rows_per_category: 1
+
+gates:
+  baseline_family: prior_baseline
+  min_pr_auc_gain_over_baseline: 0.0
+  max_false_positive_rate: 0.5
+  min_detection_rate: 0.1
+  max_expected_calibration_error: 0.5
+  require_serializer_parity: true
+  require_determinism: true
+  require_eligibility_audit_pass: true
+  parity_tolerance: 1.0e-12
+
+fusion:
+  enabled: true
+  strategies:
+    - or_gate
+    - and_gate
+  selection_partition: validation_b
+  stacked_max_iter: 50
+
+explain:
+  enabled: false
+  partition: validation_a
+  top_k_features: 5
+  permutation_repeats: 1
+  max_local_explanations: 0
+  include_feature_values: false
+
+drift:
+  enabled: false
+  reference_source: train
+  quantile_count: 4
+  psi_warn_threshold: 0.10
+  psi_alert_threshold: 0.25
+  min_reference_rows: 1
+
+overwrite: true

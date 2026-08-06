@@ -10,8 +10,11 @@ __all__ = [
     "DetectionConfigurationError",
     "FeatureComputationError",
     "IngestionError",
+    "MLConfigurationError",
     "ManifestVerificationError",
     "ModelNotReadyError",
+    "ModelSerializationError",
+    "ModelTrainingError",
     "PasswordAttackDetectorError",
     "PseudonymizationError",
     "RuleEvaluationError",
@@ -65,6 +68,34 @@ class SplitConfigurationError(ConfigurationError):
 
 class DetectionConfigurationError(ConfigurationError):
     """Raised when a detection configuration or rule registration is invalid."""
+
+
+class MLConfigurationError(ConfigurationError):
+    """Raised when a machine-learning configuration or model registration is invalid.
+
+    Mirrors :class:`DetectionConfigurationError` for the model layer: an
+    unknown model family, a duplicate family declaration, an out-of-range
+    hyperparameter, or a catalog entry whose implementation does not match its
+    declared specification.
+    """
+
+
+class ModelTrainingError(PasswordAttackDetectorError):
+    """Raised when a model is fitted outside its contract.
+
+    Covers fitting on a split a model may not see, a design matrix whose
+    columns do not match the declared feature order, and a task fitted with
+    insufficient class support.
+    """
+
+
+class ModelSerializationError(PasswordAttackDetectorError):
+    """Raised when a model cannot be canonically serialised or restored.
+
+    Covers a non-finite parameter, an estimator attribute the serializer
+    requires but the installed scikit-learn release does not provide, and a
+    restored model whose scores do not match the original within tolerance.
+    """
 
 
 class RuleEvaluationError(PasswordAttackDetectorError):
