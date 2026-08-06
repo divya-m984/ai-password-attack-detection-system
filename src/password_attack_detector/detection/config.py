@@ -320,25 +320,41 @@ class AlertingConfig(BaseModel):
     grouping_window: timedelta = timedelta(minutes=15)
     cooldown: timedelta = timedelta(minutes=30)
     max_alerts_per_group_per_window: int = Field(default=5, ge=1)
+    #: Horizon the per-group alert limit counts over.
+    #:
+    #: Deliberately longer than ``grouping_window``.  Two alerts for one group
+    #: are always at least one grouping window apart -- a closer assessment is
+    #: absorbed into the open alert instead of opening a new one -- so a limit
+    #: measured over the grouping window could never bite.  The limit exists to
+    #: backstop the escalation bypass, which can legitimately emit several
+    #: alerts for one group in quick succession, and that needs a horizon
+    #: spanning more than one window to be meaningful.
+    alert_limit_window: timedelta = timedelta(hours=1)
     min_alert_risk_score: float = Field(default=10.0, gt=0.0, le=100.0)
     min_alert_severity: Severity = Severity.LOW
     escalation_bypasses_cooldown: bool = True
+    #: Whether a missing scope value is fatal.  Off by default: an anchor whose
+    #: scope dimension is null degrades to category-scoped grouping and is
+    #: counted, because losing one grouping key is a worse outcome than losing
+    #: the whole alert set.  An operator who needs every alert attributable
+    #: turns this on and gets a hard failure instead.
+    strict_scope: bool = False
     scope_dimension: dict[CorrelationGroup, ScopeKind] = Field(
         default_factory=lambda: dict(_DEFAULT_SCOPE_DIMENSION)
     )
 
-    @field_validator("grouping_window", "cooldown", mode="before")
+    @field_validator("grouping_window", "cooldown", "alert_limit_window", mode="before")
     @classmethod
     def coerce_duration(cls, value: object) -> object:
         """Accept duration strings such as ``"15m"`` for timedelta fields."""
         return _coerce_duration(value)
 
-    @field_validator("grouping_window", "cooldown", mode="after")
+    @field_validator("grouping_window", "cooldown", "alert_limit_window", mode="after")
     @classmethod
     def check_positive(cls, value: timedelta) -> timedelta:
-        """Grouping and cooldown intervals must be strictly positive."""
+        """Every alerting interval must be strictly positive."""
         if value <= timedelta(0):
-            raise ValueError("grouping_window and cooldown must be strictly positive")
+            raise ValueError("alerting intervals must be strictly positive")
         return value
 
     @model_validator(mode="after")
@@ -360,9 +376,11 @@ class AlertingConfig(BaseModel):
             "grouping_window_seconds": int(self.grouping_window.total_seconds()),
             "cooldown_seconds": int(self.cooldown.total_seconds()),
             "max_alerts_per_group_per_window": self.max_alerts_per_group_per_window,
+            "alert_limit_window_seconds": int(self.alert_limit_window.total_seconds()),
             "min_alert_risk_score": self.min_alert_risk_score,
             "min_alert_severity": str(self.min_alert_severity),
             "escalation_bypasses_cooldown": self.escalation_bypasses_cooldown,
+            "strict_scope": self.strict_scope,
             "scope_dimension": {
                 str(group): str(kind)
                 for group, kind in sorted(

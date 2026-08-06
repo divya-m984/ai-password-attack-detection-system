@@ -21,6 +21,14 @@ from datetime import UTC, datetime
 from typing import Any, Final
 
 from password_attack_detector.data.enums import AuthOutcome, MFAOutcome
+from password_attack_detector.detection.catalog import RULE_CATALOG
+from password_attack_detector.detection.enums import Severity
+from password_attack_detector.detection.schemas import (
+    EntityScopeRecord,
+    EvidenceItem,
+    FiredDetection,
+    detection_identifier,
+)
 from password_attack_detector.features.catalog import (
     ANCHOR_EVENT_ID,
     ANCHOR_EVENT_TIME,
@@ -306,4 +314,69 @@ def mfa_row(catalog: FeatureCatalog | None = None, **overrides: Any) -> dict[str
             "current_mfa_outcome": str(MFAOutcome.FAILED),
             **overrides,
         },
+    )
+
+
+# ---------------------------------------------------------------------------
+# Detection and scope builders, for the scoring and alerting tests
+#
+# These bypass the rules deliberately.  A scoring test needs a detection with
+# one exact signal strength, and reaching that through a rule's arithmetic
+# would make the test about the rule rather than about the scorer.  Every
+# metadata field still comes from the registered specification, so a detection
+# built here cannot describe a rule that does not exist.
+# ---------------------------------------------------------------------------
+
+
+def fired_detection(
+    rule_id: str = "PAD-BF-001",
+    *,
+    anchor_event_id: str = ANCHOR,
+    anchor_event_time: datetime = WHEN,
+    signal_strength: float = 0.5,
+    severity: Severity | None = None,
+    evidence_count: int = 1,
+) -> FiredDetection:
+    """Build a fired detection carrying the registered metadata for *rule_id*."""
+    spec = RULE_CATALOG.get(rule_id)
+    evidence = tuple(
+        EvidenceItem(
+            evidence_code=spec.evidence[index % len(spec.evidence)].evidence_code,
+            feature_name="derived",
+            comparator=spec.evidence[index % len(spec.evidence)].comparator,
+            observed_value=float(index + 1),
+            threshold_value=1.0,
+            message=f"Observed {index + 1}, which matched the configured condition.",
+        )
+        for index in range(evidence_count)
+    )
+    return FiredDetection(
+        detection_id=detection_identifier(
+            anchor_event_id, spec.rule_id, spec.rule_version
+        ),
+        anchor_event_id=anchor_event_id,
+        anchor_event_time=anchor_event_time,
+        rule_id=spec.rule_id,
+        rule_version=spec.rule_version,
+        rule_family=spec.family,
+        attack_category=spec.attack_category,
+        severity=spec.default_severity if severity is None else severity,
+        signal_strength=signal_strength,
+        correlation_group=spec.correlation_group,
+        evidence=evidence,
+        reason_codes=tuple(item.evidence_code for item in evidence),
+    )
+
+
+def scope_record(
+    anchor_event_id: str,
+    *,
+    user: str | None = None,
+    source: str | None = None,
+) -> EntityScopeRecord:
+    """Build one entity-scope row with pseudonym-shaped values."""
+    return EntityScopeRecord(
+        anchor_event_id=anchor_event_id,
+        user_scope=None if user is None else f"u:{user:0>32}",
+        source_scope=None if source is None else f"s:{source:0>32}",
     )

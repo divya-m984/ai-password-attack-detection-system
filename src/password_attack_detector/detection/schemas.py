@@ -148,6 +148,9 @@ _RULE_ID_RE = re.compile(r"^PAD-[A-Z]{2,4}-\d{3}$")
 #: Semantic version of a rule or of the scoring/alerting contract.
 _SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+$")
 
+#: A SHA-256 hex digest, as produced by every fingerprint in this project.
+_FINGERPRINT_RE = re.compile(r"^[0-9a-f]{64}$")
+
 _REDACTED = "<redacted>"
 
 UnitInterval = Annotated[float, Field(ge=0.0, le=1.0)]
@@ -442,6 +445,24 @@ class RiskAssessment(BaseModel):
     top_evidence: tuple[EvidenceItem, ...] = ()
     insufficient_data_count: int = Field(default=0, ge=0)
     scoring_version: str
+    #: Digest of the semantic detection configuration that produced this score.
+    #: Recorded here rather than folded into ``detection_id``: a detection is
+    #: "rule R fired on anchor A" and keeps that identity across retunings,
+    #: while the *score* depends on every weight and threshold in the run.  Two
+    #: executions under different configurations therefore stay distinguishable
+    #: without destabilising the detection identifier.  Empty when an
+    #: assessment was built outside a configured run.
+    configuration_fingerprint: str = ""
+
+    @field_validator("configuration_fingerprint")
+    @classmethod
+    def check_fingerprint(cls, value: str) -> str:
+        """A recorded fingerprint must be a SHA-256 hex digest."""
+        if value and not _FINGERPRINT_RE.match(value):
+            raise ValueError(
+                "configuration_fingerprint must be a SHA-256 hex digest or empty"
+            )
+        return value
 
     @field_validator("anchor_event_time")
     @classmethod
@@ -588,10 +609,18 @@ class AlertingStats(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     grouping_mode: AlertGroupingMode
+    #: Risk assessments offered to the builder, whether or not they qualified.
+    assessment_count: int = Field(default=0, ge=0)
+    #: Assessments that cleared both configured gates and reached grouping.
+    qualifying_count: int = Field(default=0, ge=0)
     alert_count: int = Field(default=0, ge=0)
     grouped_detection_count: int = Field(default=0, ge=0)
     escalated_count: int = Field(default=0, ge=0)
     scope_missing_count: int = Field(default=0, ge=0)
+    #: Alerts grouped on a pseudonymous scope, and alerts grouped on category
+    #: alone.  Counts only -- the keys themselves never appear in these stats.
+    entity_scoped_count: int = Field(default=0, ge=0)
+    category_scoped_count: int = Field(default=0, ge=0)
     low_alert_reachable: bool = True
     suppressed_by_reason: dict[SuppressionReason, int] = Field(default_factory=dict)
     suppressed_by_category: dict[AttackCategory, int] = Field(default_factory=dict)
@@ -604,10 +633,59 @@ class AlertingStats(BaseModel):
             raise ValueError("suppression counts must not be negative")
         return value
 
+    @model_validator(mode="after")
+    def check_accounting(self) -> Self:
+        """Every qualifying assessment is grouped or suppressed, never neither.
+
+        This is the identity that makes suppression safe to reason about: an
+        alert that vanished from the output is still present in a tally.
+        """
+        if self.entity_scoped_count + self.category_scoped_count != self.alert_count:
+            raise ValueError(
+                "entity_scoped_count and category_scoped_count must sum to alert_count"
+            )
+        gated = self.suppressed_by_reason.get(
+            SuppressionReason.BELOW_SCORE_FLOOR, 0
+        ) + self.suppressed_by_reason.get(SuppressionReason.BELOW_SEVERITY_FLOOR, 0)
+        lifecycle = self.suppressed_by_reason.get(
+            SuppressionReason.COOLDOWN, 0
+        ) + self.suppressed_by_reason.get(SuppressionReason.RATE_LIMIT, 0)
+        if self.qualifying_count != self.grouped_detection_count + lifecycle:
+            raise ValueError(
+                "qualifying assessments must be grouped into an alert or "
+                "suppressed by cooldown or rate limit"
+            )
+        if self.qualifying_count + gated > self.assessment_count:
+            raise ValueError(
+                "qualifying and gate-rejected assessments cannot exceed the "
+                "assessments offered"
+            )
+        return self
+
     @property
     def suppressed_total(self) -> int:
         """Return the total number of suppressed detections."""
         return sum(self.suppressed_by_reason.values())
+
+    @property
+    def below_score_floor_count(self) -> int:
+        """Return how many assessments the alert score floor rejected."""
+        return self.suppressed_by_reason.get(SuppressionReason.BELOW_SCORE_FLOOR, 0)
+
+    @property
+    def below_severity_floor_count(self) -> int:
+        """Return how many assessments the alert severity floor rejected."""
+        return self.suppressed_by_reason.get(SuppressionReason.BELOW_SEVERITY_FLOOR, 0)
+
+    @property
+    def suppressed_by_cooldown_count(self) -> int:
+        """Return how many qualifying assessments a cooldown suppressed."""
+        return self.suppressed_by_reason.get(SuppressionReason.COOLDOWN, 0)
+
+    @property
+    def suppressed_by_rate_limit_count(self) -> int:
+        """Return how many qualifying assessments the per-group limit suppressed."""
+        return self.suppressed_by_reason.get(SuppressionReason.RATE_LIMIT, 0)
 
 
 class EntityScopeRecord(BaseModel):

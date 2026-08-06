@@ -578,18 +578,66 @@ def test_escalation_requires_a_raised_severity() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_alerting_stats_totals() -> None:
-    stats = AlertingStats(
-        grouping_mode=AlertGroupingMode.CATEGORY_SCOPED,
-        alert_count=4,
-        grouped_detection_count=11,
-        suppressed_by_reason={
+def _stats(**overrides: Any) -> AlertingStats:
+    """Build a self-consistent statistics record.
+
+    Consistency is not optional here: the model enforces an accounting
+    identity, so a fixture that under-specifies the counts is rejected -- which
+    is exactly the property that makes suppression safe to reason about.
+    """
+    data: dict[str, Any] = {
+        "grouping_mode": AlertGroupingMode.CATEGORY_SCOPED,
+        "assessment_count": 20,
+        "qualifying_count": 14,
+        "alert_count": 4,
+        "grouped_detection_count": 11,
+        "category_scoped_count": 4,
+        "suppressed_by_reason": {
             SuppressionReason.COOLDOWN: 2,
             SuppressionReason.RATE_LIMIT: 1,
         },
-    )
+    }
+    data.update(overrides)
+    return AlertingStats(**data)
+
+
+def test_alerting_stats_totals() -> None:
+    stats = _stats()
     assert stats.suppressed_total == 3
+    assert stats.suppressed_by_cooldown_count == 2
+    assert stats.suppressed_by_rate_limit_count == 1
+    assert stats.below_score_floor_count == 0
+    assert stats.below_severity_floor_count == 0
     assert stats.low_alert_reachable is True
+
+
+def test_gate_rejections_are_reported_separately() -> None:
+    stats = _stats(
+        suppressed_by_reason={
+            SuppressionReason.COOLDOWN: 2,
+            SuppressionReason.RATE_LIMIT: 1,
+            SuppressionReason.BELOW_SCORE_FLOOR: 4,
+            SuppressionReason.BELOW_SEVERITY_FLOOR: 2,
+        }
+    )
+    assert stats.below_score_floor_count == 4
+    assert stats.below_severity_floor_count == 2
+
+
+def test_the_two_grouping_mode_counts_must_sum_to_the_alert_count() -> None:
+    with pytest.raises(ValidationError, match="must sum to"):
+        _stats(entity_scoped_count=1, category_scoped_count=1)
+
+
+def test_a_qualifying_assessment_must_be_grouped_or_suppressed() -> None:
+    """No alert may vanish without leaving a tally behind."""
+    with pytest.raises(ValidationError, match="grouped into an alert or suppressed"):
+        _stats(qualifying_count=99)
+
+
+def test_gated_assessments_cannot_exceed_the_assessments_offered() -> None:
+    with pytest.raises(ValidationError, match="cannot exceed"):
+        _stats(assessment_count=1)
 
 
 def test_negative_suppression_counts_are_rejected() -> None:
