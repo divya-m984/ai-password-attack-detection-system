@@ -740,9 +740,10 @@ def test_markdown_renders_a_rule_without_a_history_requirement() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_no_concrete_rules_are_registered_yet() -> None:
-    """Concrete rule implementations arrive in the next milestone."""
-    assert ALL_RULES == ()
+def test_every_catalogued_rule_is_registered_exactly_once() -> None:
+    """Registration is a static tuple covering the catalog, with no duplicates."""
+    identifiers = [rule.spec.rule_id for rule in ALL_RULES]
+    assert sorted(identifiers) == list(RULE_CATALOG.rule_ids)
 
 
 class _StubRule:

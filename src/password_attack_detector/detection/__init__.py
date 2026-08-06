@@ -23,6 +23,12 @@ from password_attack_detector.detection.config import (
     DetectionConfig,
     load_detection_config,
 )
+from password_attack_detector.detection.engine import (
+    DetectionEngine,
+    EngineResult,
+    EngineStats,
+    evaluate_snapshots,
+)
 from password_attack_detector.detection.enums import (
     AlertGroupingMode,
     AttackCategory,
@@ -49,6 +55,9 @@ __all__ = [
     "AttackCategory",
     "CorrelationGroup",
     "DetectionConfig",
+    "DetectionEngine",
+    "EngineResult",
+    "EngineStats",
     "EvidenceItem",
     "FiredDetection",
     "RiskAssessment",
@@ -61,5 +70,6 @@ __all__ = [
     "SecurityAlert",
     "Severity",
     "catalog_to_markdown",
+    "evaluate_snapshots",
     "load_detection_config",
 ]

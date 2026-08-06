@@ -5,9 +5,11 @@ plugin path, no entry point, and no configuration-supplied import: adding a rule
 means editing reviewed Python and the catalog together, and a rule whose
 specification is not in :data:`RULE_CATALOG` cannot be registered at all.
 
-The concrete rule implementations land in a later milestone.  :data:`ALL_RULES`
-is empty until then, and :func:`build_rule_index` is already the gate every
-future entry must pass.
+:func:`build_rule_index` is the gate every entry passes.  It rejects a duplicate
+identifier, an identifier with no catalog entry, and -- the case that matters
+most -- an implementation carrying a specification that merely *looks* like the
+registered one.  That keeps the catalog the single source of rule metadata
+rather than a parallel description free to drift.
 """
 
 from __future__ import annotations
@@ -15,6 +17,9 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 from password_attack_detector.detection.catalog import RULE_CATALOG, RuleCatalog
+from password_attack_detector.detection.rules.account_takeover import (
+    AccountTakeoverRule,
+)
 from password_attack_detector.detection.rules.base import (
     BasePreparedRule,
     BaseRule,
@@ -31,18 +36,45 @@ from password_attack_detector.detection.rules.base import (
     saturate_inverse,
     weighted_strength,
 )
+from password_attack_detector.detection.rules.bot_activity import BotActivityRule
+from password_attack_detector.detection.rules.brute_force import (
+    ConcentratedBruteForceRule,
+    SuccessAfterFailureBurstRule,
+)
+from password_attack_detector.detection.rules.credential_stuffing import (
+    CredentialStuffingRule,
+)
+from password_attack_detector.detection.rules.distributed_brute_force import (
+    DistributedBruteForceRule,
+)
+from password_attack_detector.detection.rules.impossible_travel import (
+    ImpossibleTravelRule,
+)
+from password_attack_detector.detection.rules.mfa_anomaly import MFASequenceAnomalyRule
+from password_attack_detector.detection.rules.password_spraying import (
+    PasswordSprayingRule,
+)
 from password_attack_detector.exceptions import DetectionConfigurationError
 
 __all__ = [
     "ALL_RULES",
     "RULE_IMPLEMENTATIONS",
+    "AccountTakeoverRule",
     "BasePreparedRule",
     "BaseRule",
+    "BotActivityRule",
+    "ConcentratedBruteForceRule",
+    "CredentialStuffingRule",
+    "DistributedBruteForceRule",
+    "ImpossibleTravelRule",
+    "MFASequenceAnomalyRule",
+    "PasswordSprayingRule",
     "PreparedRule",
     "Rule",
     "RulePreparation",
     "SignalComponent",
     "SnapshotView",
+    "SuccessAfterFailureBurstRule",
     "build_evidence",
     "build_rule_index",
     "clamp",
@@ -88,9 +120,22 @@ def build_rule_index(
     return index
 
 
-#: Every registered rule implementation, in a fixed order.  Concrete rules
-#: arrive in the next milestone; the registry gate above is already in force.
-ALL_RULES: tuple[Rule, ...] = ()
+#: Every registered rule implementation, in a fixed order.
+#:
+#: The order here is documentation only.  The engine iterates the catalog,
+#: which is sorted by rule identifier, so no output depends on how this tuple
+#: happens to be written.
+ALL_RULES: tuple[Rule, ...] = (
+    ConcentratedBruteForceRule(),
+    SuccessAfterFailureBurstRule(),
+    PasswordSprayingRule(),
+    CredentialStuffingRule(),
+    DistributedBruteForceRule(),
+    AccountTakeoverRule(),
+    ImpossibleTravelRule(),
+    BotActivityRule(),
+    MFASequenceAnomalyRule(),
+)
 
 #: The implementations indexed by rule identifier.
 RULE_IMPLEMENTATIONS: dict[str, Rule] = build_rule_index(ALL_RULES)
