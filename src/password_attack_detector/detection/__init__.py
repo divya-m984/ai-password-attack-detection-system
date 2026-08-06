@@ -56,7 +56,9 @@ from password_attack_detector.detection.manifest import (
 )
 from password_attack_detector.detection.quality import (
     DetectionQualityReport,
+    QualityReportSource,
     generate_detection_quality_report,
+    reconstruct_detection_quality_report,
 )
 from password_attack_detector.detection.schemas import (
     DETECTION_SCHEMA_VERSION,
@@ -108,6 +110,7 @@ __all__ = [
     "EvidenceItem",
     "FiredDetection",
     "PublishedDetectionSet",
+    "QualityReportSource",
     "RiskAssessment",
     "RiskScorer",
     "RuleCatalog",
@@ -126,6 +129,7 @@ __all__ = [
     "evaluate_snapshots",
     "generate_detection_quality_report",
     "load_detection_config",
+    "reconstruct_detection_quality_report",
     "validate_detection_artifacts",
     "verify_detection_dataset",
 ]

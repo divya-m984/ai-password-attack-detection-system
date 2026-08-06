@@ -93,6 +93,43 @@ sums-of-squares accumulate as exact integers rather than floats. Floating-point
 addition is not associative, so a float accumulator would make results depend
 on eviction order.
 
+## Phase 4: detection fingerprints
+
+| Fingerprint | Covers | Excludes |
+|---|---|---|
+| Detection configuration | Enabled rules, effective per-rule parameters, family weights, signal, scoring, severity thresholds, alerting policy | `output_dir`, `reports_dir`, `overwrite` |
+| Rule catalog | Identifiers, versions, families, categories, feature templates, parameter declarations, evidence codes, minimum history | Descriptions and limitations (prose) |
+| Detection content | Every published detection row, canonically encoded | Row order, Parquet layout, path, timestamps |
+| Risk content | Every published assessment row | Same |
+| Alert content | Every published alert row | Same |
+| Report content | A report's semantic fields | Named excluded keys such as `created_at` |
+
+Content fingerprints sort rows by their semantic key and hash canonical JSON
+with floats rounded to nine decimals, so the digest depends on logical content
+and nothing else — not the order rows arrived in, not pyarrow's physical
+layout, not the directory written to, and not when it was written.
+**A creation timestamp never enters a deterministic fingerprint.**
+
+`dataset_id` for a detection set is UUIDv5 over the three content fingerprints:
+the same content always identifies the same set, on any machine, on any day.
+Never `uuid4`, never a wall clock, never machine identity.
+
+Detection identifiers are `uuid5(anchor_event_id | rule_id | rule_version)`, so
+a detection keeps its identity across configuration retunings. The
+configuration fingerprint that produced a *score* is recorded on the
+`RiskAssessment` instead, which is what keeps two executions distinguishable.
+
+Alert identifiers are `uuid5` over the alerting version, the grouping key, and
+the alert's own `first_seen` — deliberately excluding the contributing rule
+set, so an alert that later absorbs one more rule keeps its identity.
+
+Detection is deterministic end to end: rules are prepared once and iterated in
+sorted catalog order, snapshots are evaluated in
+`(anchor_event_time, anchor_event_id)` order, correlation groups are sorted
+before the noisy-OR product fixes float multiplication order, and alerts are
+grouped in one ordered pass. Re-running with the same inputs and configuration
+produces byte-identical Parquet files.
+
 ## Known limitations
 
 - Reproducibility is bounded by the committed `uv.lock` environment. The

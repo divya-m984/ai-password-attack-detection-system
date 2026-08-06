@@ -23,7 +23,7 @@ import json
 import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from enum import StrEnum
 from typing import Any, Final
 
 from password_attack_detector.detection.alerts import ALERTING_VERSION, AlertingResult
@@ -38,17 +38,73 @@ from password_attack_detector.detection.enums import (
 from password_attack_detector.detection.schemas import (
     DETECTION_SCHEMA_VERSION,
     DetectionValidationResult,
+    FiredDetection,
+    RiskAssessment,
     SecurityAlert,
 )
 from password_attack_detector.detection.scoring import SCORING_VERSION, ScoringResult
 
 __all__ = [
     "DEFINITIONS",
+    "RECONSTRUCTED_WARNING_CODE",
+    "RECONSTRUCTION_NOTE",
+    "UNAVAILABLE_LABEL",
+    "UNAVAILABLE_WHEN_RECONSTRUCTED",
     "DetectionQualityReport",
+    "QualityReportSource",
     "generate_detection_quality_report",
+    "reconstruct_detection_quality_report",
     "report_to_json",
     "report_to_markdown",
 ]
+
+
+class QualityReportSource(StrEnum):
+    """Where a quality report's numbers came from.
+
+    The distinction is load-bearing.  A live run observes every rule
+    evaluation and every suppression decision; a report rebuilt from published
+    artifacts sees only what those artifacts persist.  Recording which one
+    produced a report is what lets a reader tell a measured zero from a number
+    nobody measured.
+    """
+
+    LIVE_RUN = "live_run"
+    PUBLISHED_ARTIFACTS = "published_artifacts"
+
+
+#: Warning code attached to every report rebuilt from published artifacts.
+RECONSTRUCTED_WARNING_CODE: Final[str] = "Q001"
+
+#: What that warning means, rendered into both output formats.
+RECONSTRUCTION_NOTE: Final[str] = (
+    "This report was reconstructed from published artifacts. Counters that "
+    "only a live run observes -- rule evaluations that did not fire, disabled "
+    "rules, suppression decisions, and gate rejections -- are reported as "
+    "unavailable rather than zero, because the published tables do not record "
+    "them and zero would assert that they never happened."
+)
+
+#: How an unavailable counter renders in Markdown.  JSON uses ``null``.
+UNAVAILABLE_LABEL: Final[str] = "Unavailable from published artifacts"
+
+#: Counters a published artifact set cannot supply.  Named here rather than
+#: inferred, so a field added later carries a deliberate decision about whether
+#: it survives reconstruction.
+UNAVAILABLE_WHEN_RECONSTRUCTED: Final[tuple[str, ...]] = (
+    "input_snapshot_count",
+    "total_rule_evaluation_count",
+    "not_fired_count",
+    "disabled_rule_count",
+    "grouped_detection_count",
+    "suppressed_by_cooldown_count",
+    "suppressed_by_rate_limit_count",
+    "suppressed_total",
+    "escalated_count",
+    "below_score_floor_count",
+    "below_severity_floor_count",
+    "scope_missing_count",
+)
 
 #: What every number in this report does and does not mean.  Rendered into
 #: both output formats so a reader never has to assume.
@@ -110,13 +166,17 @@ class DetectionQualityReport:
     scoring_version: str
     alerting_version: str
 
+    #: ``None`` means *unavailable*, never zero.  Every counter typed
+    #: ``int | None`` below is one a published artifact set cannot supply; see
+    #: :data:`UNAVAILABLE_WHEN_RECONSTRUCTED`.
+    report_source: QualityReportSource
     input_snapshot_count: int | None
     evaluated_snapshot_count: int
-    total_rule_evaluation_count: int
+    total_rule_evaluation_count: int | None
     fired_count: int
-    not_fired_count: int
+    not_fired_count: int | None
     insufficient_data_count: int
-    disabled_rule_count: int
+    disabled_rule_count: int | None
 
     per_rule_trigger_counts: dict[str, int]
     per_family_trigger_counts: dict[str, int]
@@ -128,14 +188,14 @@ class DetectionQualityReport:
     alert_count: int
     grouping_mode: str
     grouping_mode_counts: dict[str, int]
-    grouped_detection_count: int
-    suppressed_by_cooldown_count: int
-    suppressed_by_rate_limit_count: int
-    suppressed_total: int
-    escalated_count: int
-    below_score_floor_count: int
-    below_severity_floor_count: int
-    scope_missing_count: int
+    grouped_detection_count: int | None
+    suppressed_by_cooldown_count: int | None
+    suppressed_by_rate_limit_count: int | None
+    suppressed_total: int | None
+    escalated_count: int | None
+    below_score_floor_count: int | None
+    below_severity_floor_count: int | None
+    scope_missing_count: int | None
     entity_scoped_count: int
     category_scoped_count: int
     average_events_per_alert: float | None
@@ -158,10 +218,23 @@ class DetectionQualityReport:
     validation_result: dict[str, Any] | None
     warning_summary: list[str]
     definitions: dict[str, str]
+    #: Names of the counters this report could not supply, in declared order.
+    #: Empty for a live run.
+    unavailable_metrics: list[str]
+    #: Why they are unavailable.  ``None`` for a live run.
+    reconstruction_note: str | None
+
+    @property
+    def is_reconstructed(self) -> bool:
+        """Return whether this report was rebuilt from published artifacts."""
+        return self.report_source is QualityReportSource.PUBLISHED_ARTIFACTS
 
     def to_dict(self) -> dict[str, Any]:
         """Return the report as a JSON-serialisable mapping."""
         return {
+            "report_source": str(self.report_source),
+            "unavailable_metrics": self.unavailable_metrics,
+            "reconstruction_note": self.reconstruction_note,
             "detection_schema_version": self.detection_schema_version,
             "scoring_version": self.scoring_version,
             "alerting_version": self.alerting_version,
@@ -257,6 +330,7 @@ def generate_detection_quality_report(
     ]
 
     return DetectionQualityReport(
+        report_source=QualityReportSource.LIVE_RUN,
         detection_schema_version=DETECTION_SCHEMA_VERSION,
         scoring_version=SCORING_VERSION,
         alerting_version=ALERTING_VERSION,
@@ -321,6 +395,146 @@ def generate_detection_quality_report(
             else [item.code for item in validation_result.warnings]
         ),
         definitions=dict(DEFINITIONS),
+        # A live run observed everything, so nothing is unavailable and there
+        # is no reconstruction to explain.
+        unavailable_metrics=[],
+        reconstruction_note=None,
+    )
+
+
+def reconstruct_detection_quality_report(
+    *,
+    detections: Sequence[FiredDetection],
+    assessments: Sequence[RiskAssessment],
+    alerts: Sequence[SecurityAlert],
+    config: DetectionConfig,
+    validation_result: DetectionValidationResult | None = None,
+    detection_fingerprint: str = "",
+    risk_fingerprint: str = "",
+    alert_fingerprint: str = "",
+    source_feature_manifest_fingerprint: str | None = None,
+    catalog: RuleCatalog = RULE_CATALOG,
+) -> DetectionQualityReport:
+    """Rebuild a quality report from published artifacts alone.
+
+    Every metric here is *derived from the tables*, never estimated. What the
+    tables cannot supply -- how many evaluations did not fire, how many rules
+    were disabled, which suppression decisions were taken, how many
+    assessments a gate rejected -- is reported as ``None``, because the
+    published artifacts record only what fired, what was scored, and what
+    alerted.
+
+    **Zero is a measurement.** Reporting zero for a counter nobody recorded
+    would assert that the event never happened, which is a different and
+    stronger claim than "this artifact set does not say". Every such counter
+    is listed in :data:`UNAVAILABLE_WHEN_RECONSTRUCTED` and named on the
+    report itself.
+    """
+    categories: dict[str, int] = {}
+    per_rule: dict[str, int] = {}
+    for detection in detections:
+        category = str(detection.attack_category)
+        categories[category] = categories.get(category, 0) + 1
+        per_rule[detection.rule_id] = per_rule.get(detection.rule_id, 0) + 1
+
+    # A rule the catalog registers and no detection names triggered zero
+    # times, and the detection table proves it -- so this zero is measured.
+    for rule_id in config.enabled_rule_ids:
+        per_rule.setdefault(rule_id, 0)
+
+    per_family: dict[str, int] = {}
+    for rule_id, fired in per_rule.items():
+        family = str(catalog.get(rule_id).family)
+        per_family[family] = per_family.get(family, 0) + fired
+
+    severity_counts = {str(severity): 0 for severity in Severity}
+    for assessment in assessments:
+        severity_counts[str(assessment.severity)] += 1
+
+    scores = [item.risk_score for item in assessments]
+    durations = [
+        (alert.last_seen - alert.first_seen).total_seconds() for alert in alerts
+    ]
+    entity_scoped = sum(
+        1 for alert in alerts if alert.grouping_mode is AlertGroupingMode.ENTITY_SCOPED
+    )
+    run_mode = (
+        AlertGroupingMode.ENTITY_SCOPED
+        if entity_scoped
+        else AlertGroupingMode.CATEGORY_SCOPED
+    )
+    warnings = [RECONSTRUCTED_WARNING_CODE]
+    if validation_result is not None:
+        warnings.extend(item.code for item in validation_result.warnings)
+
+    return DetectionQualityReport(
+        report_source=QualityReportSource.PUBLISHED_ARTIFACTS,
+        detection_schema_version=DETECTION_SCHEMA_VERSION,
+        scoring_version=SCORING_VERSION,
+        alerting_version=ALERTING_VERSION,
+        # How many snapshots were offered to the engine is not recorded; how
+        # many it evaluated is exactly the risk-assessment row count.
+        input_snapshot_count=None,
+        evaluated_snapshot_count=len(assessments),
+        total_rule_evaluation_count=None,
+        fired_count=len(detections),
+        not_fired_count=None,
+        # Each assessment carries its own tally, so the sum is exact.
+        insufficient_data_count=sum(
+            item.insufficient_data_count for item in assessments
+        ),
+        disabled_rule_count=None,
+        per_rule_trigger_counts=dict(sorted(per_rule.items())),
+        per_family_trigger_counts=dict(sorted(per_family.items())),
+        attack_category_distribution=dict(sorted(categories.items())),
+        severity_distribution=severity_counts,
+        risk_score_summary=_summary(scores),
+        zero_score_assessment_count=sum(
+            1 for item in assessments if item.fired_rule_count == 0
+        ),
+        alert_count=len(alerts),
+        grouping_mode=str(run_mode),
+        grouping_mode_counts=_grouping_mode_counts(alerts),
+        grouped_detection_count=None,
+        suppressed_by_cooldown_count=None,
+        suppressed_by_rate_limit_count=None,
+        suppressed_total=None,
+        escalated_count=None,
+        below_score_floor_count=None,
+        below_severity_floor_count=None,
+        scope_missing_count=None,
+        entity_scoped_count=entity_scoped,
+        category_scoped_count=len(alerts) - entity_scoped,
+        average_events_per_alert=(
+            None
+            if not alerts
+            else math.fsum(alert.contributing_event_count for alert in alerts)
+            / len(alerts)
+        ),
+        alert_duration_seconds_summary=_summary(durations),
+        aggregate_risk_summary=_summary(
+            [alert.aggregate_risk_score for alert in alerts]
+        ),
+        peak_risk_summary=_summary([alert.peak_risk_score for alert in alerts]),
+        min_alert_risk_score=config.alerting.min_alert_risk_score,
+        min_alert_severity=str(config.alerting.min_alert_severity),
+        low_alert_reachable=config.low_alert_reachable,
+        configuration_fingerprint=config.fingerprint(),
+        rule_catalog_fingerprint=catalog.fingerprint(),
+        detection_fingerprint=detection_fingerprint,
+        risk_fingerprint=risk_fingerprint,
+        alert_fingerprint=alert_fingerprint,
+        source_feature_manifest_fingerprint=source_feature_manifest_fingerprint,
+        validation_status=(
+            None if validation_result is None else str(validation_result.status)
+        ),
+        validation_result=(
+            None if validation_result is None else validation_result.to_dict()
+        ),
+        warning_summary=warnings,
+        definitions=dict(DEFINITIONS),
+        unavailable_metrics=list(UNAVAILABLE_WHEN_RECONSTRUCTED),
+        reconstruction_note=RECONSTRUCTION_NOTE,
     )
 
 
@@ -337,14 +551,25 @@ def report_to_json(report: DetectionQualityReport, *, indent: int = 2) -> str:
     return json.dumps(report.to_dict(), indent=indent, sort_keys=True, default=str)
 
 
-def _fmt(value: float | int | None, *, digits: int = 2) -> str:
-    """Render a number for a Markdown table, or ``n/a`` when it is absent."""
+def _count(value: int | None) -> str:
+    """Render an integer counter, or say plainly that it was never measured.
+
+    ``None`` here is never "zero happened" -- it is "this artifact set does
+    not record it", and the two must not read alike.
+    """
+    return UNAVAILABLE_LABEL if value is None else f"{value:,}"
+
+
+def _fmt(value: float | None, *, digits: int = 2) -> str:
+    """Render a distribution statistic, or ``n/a`` over no observations.
+
+    Distinct from :func:`_count`: ``n/a`` here means the input was empty, a
+    fact the report does know, rather than a counter it could not recover.
+    Integer counters never reach this function -- they go through
+    :func:`_count`, which says "unavailable" instead.
+    """
     if value is None:
         return "n/a"
-    if isinstance(value, int):
-        return f"{value:,}"
-    if isinstance(value, datetime):  # pragma: no cover - defensive
-        return value.isoformat()
     return f"{value:,.{digits}f}"
 
 
@@ -377,6 +602,20 @@ def report_to_markdown(report: DetectionQualityReport) -> str:
         "identifiers, pseudonyms, entity-scope values, coordinates, evidence "
         "rows, or absolute paths.",
         "",
+    ]
+    if report.is_reconstructed:
+        lines.extend(
+            [
+                f"> **`{RECONSTRUCTED_WARNING_CODE}` -- {report.reconstruction_note}**",
+                "",
+                f"The following counters read "
+                f"*{UNAVAILABLE_LABEL}* rather than zero: "
+                + ", ".join(f"`{name}`" for name in report.unavailable_metrics)
+                + ".",
+                "",
+            ]
+        )
+    lines += [
         "## Overview",
         "",
         "| Metric | Value |",
@@ -384,14 +623,15 @@ def report_to_markdown(report: DetectionQualityReport) -> str:
         f"| Detection schema version | `{report.detection_schema_version}` |",
         f"| Scoring version | `{report.scoring_version}` |",
         f"| Alerting version | `{report.alerting_version}` |",
-        f"| Input snapshots | {_fmt(report.input_snapshot_count)} |",
-        f"| Evaluated snapshots | {_fmt(report.evaluated_snapshot_count)} |",
-        f"| Rule evaluations | {_fmt(report.total_rule_evaluation_count)} |",
-        f"| Fired | {_fmt(report.fired_count)} |",
-        f"| Not fired | {_fmt(report.not_fired_count)} |",
-        f"| Insufficient data | {_fmt(report.insufficient_data_count)} |",
-        f"| Disabled rules | {_fmt(report.disabled_rule_count)} |",
-        f"| Zero-score assessments | {_fmt(report.zero_score_assessment_count)} |",
+        f"| Report source | `{report.report_source}` |",
+        f"| Input snapshots | {_count(report.input_snapshot_count)} |",
+        f"| Evaluated snapshots | {_count(report.evaluated_snapshot_count)} |",
+        f"| Rule evaluations | {_count(report.total_rule_evaluation_count)} |",
+        f"| Fired | {_count(report.fired_count)} |",
+        f"| Not fired | {_count(report.not_fired_count)} |",
+        f"| Insufficient data | {_count(report.insufficient_data_count)} |",
+        f"| Disabled rules | {_count(report.disabled_rule_count)} |",
+        f"| Zero-score assessments | {_count(report.zero_score_assessment_count)} |",
         f"| Validation status | `{report.validation_status or 'n/a'}` |",
     ]
 
@@ -414,19 +654,20 @@ def report_to_markdown(report: DetectionQualityReport) -> str:
             "",
             "| Metric | Value |",
             "|--------|-------|",
-            f"| Alerts | {_fmt(report.alert_count)} |",
+            f"| Alerts | {_count(report.alert_count)} |",
             f"| Grouping mode | `{report.grouping_mode}` |",
-            f"| Grouped detections | {_fmt(report.grouped_detection_count)} |",
-            f"| Suppressed by cooldown | {_fmt(report.suppressed_by_cooldown_count)} |",
+            f"| Grouped detections | {_count(report.grouped_detection_count)} |",
+            f"| Suppressed by cooldown | "
+            f"{_count(report.suppressed_by_cooldown_count)} |",
             f"| Suppressed by rate limit | "
-            f"{_fmt(report.suppressed_by_rate_limit_count)} |",
-            f"| Suppressed total | {_fmt(report.suppressed_total)} |",
-            f"| Escalated | {_fmt(report.escalated_count)} |",
-            f"| Below score floor | {_fmt(report.below_score_floor_count)} |",
-            f"| Below severity floor | {_fmt(report.below_severity_floor_count)} |",
-            f"| Scope missing | {_fmt(report.scope_missing_count)} |",
-            f"| Entity-scoped alerts | {_fmt(report.entity_scoped_count)} |",
-            f"| Category-scoped alerts | {_fmt(report.category_scoped_count)} |",
+            f"{_count(report.suppressed_by_rate_limit_count)} |",
+            f"| Suppressed total | {_count(report.suppressed_total)} |",
+            f"| Escalated | {_count(report.escalated_count)} |",
+            f"| Below score floor | {_count(report.below_score_floor_count)} |",
+            f"| Below severity floor | {_count(report.below_severity_floor_count)} |",
+            f"| Scope missing | {_count(report.scope_missing_count)} |",
+            f"| Entity-scoped alerts | {_count(report.entity_scoped_count)} |",
+            f"| Category-scoped alerts | {_count(report.category_scoped_count)} |",
             f"| Average events per alert | {_fmt(report.average_events_per_alert)} |",
             f"| Minimum alert risk score | {_fmt(report.min_alert_risk_score)} |",
             f"| Minimum alert severity | `{report.min_alert_severity}` |",

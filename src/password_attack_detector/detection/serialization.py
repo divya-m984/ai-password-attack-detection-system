@@ -68,10 +68,13 @@ __all__ = [
     "encode_evidence",
     "encode_string_list",
     "read_alerts",
+    "read_entity_scope",
+    "read_feature_snapshot_rows",
     "read_fired_detections",
     "read_risk_assessments",
     "require_finite",
     "write_alerts",
+    "write_entity_scope",
     "write_fired_detections",
     "write_risk_assessments",
 ]
@@ -612,6 +615,88 @@ def read_alerts(path: Path) -> tuple[SecurityAlert, ...]:
         )
         for row in rows
     )
+
+
+def read_feature_snapshot_rows(path: Path) -> tuple[dict[str, Any], ...]:
+    """Read Phase 3 feature snapshots as row mappings the engine can evaluate.
+
+    Read through ``to_pylist`` rather than pandas so a null stays ``None``
+    instead of collapsing into ``NaN``.  That distinction is load-bearing: the
+    rules treat an absent value as unobserved history and a ``NaN`` as a
+    corrupt snapshot, and pandas would erase the difference.
+
+    Raises:
+        DataValidationError: if the file cannot be read.
+    """
+    import pyarrow.parquet as pq
+
+    try:
+        rows = pq.read_table(path).to_pylist()
+    except Exception as exc:
+        raise DataValidationError(
+            f"Cannot read feature snapshots: {type(exc).__name__}"
+        ) from None
+    return tuple(rows)
+
+
+def write_entity_scope(records: Sequence[Any], path: Path) -> None:
+    """Write the optional entity-scope table.
+
+    The only artifact this package writes that carries pseudonyms in more than
+    one column.  It is an *input* to alert construction, never an output of
+    detection, and is written here only so a test or an operator can produce
+    one deterministically.
+    """
+    import pyarrow as pa
+
+    schema = pa.schema(
+        [
+            pa.field("anchor_event_id", pa.string(), nullable=False),
+            pa.field("user_scope", pa.string(), nullable=True),
+            pa.field("source_scope", pa.string(), nullable=True),
+        ]
+    )
+    rows = sorted(
+        (
+            {
+                "anchor_event_id": record.anchor_event_id,
+                "user_scope": record.user_scope,
+                "source_scope": record.source_scope,
+            }
+            for record in records
+        ),
+        key=lambda row: str(row["anchor_event_id"]),
+    )
+    _write_table(rows, SCOPE_COLUMNS, schema, path)
+
+
+def read_entity_scope(path: Path) -> tuple[Any, ...]:
+    """Read the optional entity-scope table into typed records.
+
+    Raises:
+        DataValidationError: if the file cannot be read or a row does not
+            satisfy the scope contract.  Neither message names a scope value.
+    """
+    from password_attack_detector.detection.schemas import EntityScopeRecord
+
+    _, rows = _read_table(path)
+    try:
+        return tuple(
+            EntityScopeRecord(
+                anchor_event_id=row["anchor_event_id"],
+                user_scope=row.get("user_scope"),
+                source_scope=row.get("source_scope"),
+            )
+            for row in rows
+        )
+    except KeyError:
+        raise DataValidationError(
+            f"The entity-scope table must carry the columns {list(SCOPE_COLUMNS)}"
+        ) from None
+    except ValueError:
+        raise DataValidationError(
+            "The entity-scope table contains a row that is not a valid scope record"
+        ) from None
 
 
 def read_table_columns(path: Path) -> list[str]:

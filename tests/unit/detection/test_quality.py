@@ -408,3 +408,295 @@ def test_validation_warnings_are_rendered_when_present(
     assert "## Validation warnings" in markdown
     for finding in validation.warnings:
         assert f"`{finding.code}`" in markdown
+
+
+# ---------------------------------------------------------------------------
+# Unavailable is not zero
+#
+# A live run observes every rule evaluation and every suppression decision. A
+# report rebuilt from published artifacts sees only what those artifacts
+# persist. Reporting zero for a counter nobody recorded would assert the event
+# never happened -- a stronger claim than "this artifact set does not say".
+# ---------------------------------------------------------------------------
+
+
+def reconstructed(
+    pipeline: tuple[EngineResult, ScoringResult, AlertingResult, int],
+    **overrides: Any,
+) -> Any:
+    """Rebuild a quality report from a pipeline run's published artifacts."""
+    from password_attack_detector.detection.quality import (
+        reconstruct_detection_quality_report,
+    )
+
+    engine_result, scoring_result, alerting_result, _ = pipeline
+    kwargs: dict[str, Any] = {
+        "detections": list(engine_result.fired_detections),
+        "assessments": list(scoring_result.assessments),
+        "alerts": list(alerting_result.alerts),
+        "config": CONFIG,
+    }
+    kwargs.update(overrides)
+    return reconstruct_detection_quality_report(**kwargs)
+
+
+def test_a_live_run_report_is_fully_populated(
+    pipeline: tuple[EngineResult, ScoringResult, AlertingResult, int],
+) -> None:
+    """Every counter is an integer; nothing is unavailable."""
+    from password_attack_detector.detection.quality import (
+        UNAVAILABLE_WHEN_RECONSTRUCTED,
+        QualityReportSource,
+    )
+
+    report = build_report(pipeline)
+    assert report.report_source is QualityReportSource.LIVE_RUN
+    assert report.is_reconstructed is False
+    assert report.unavailable_metrics == []
+    assert report.reconstruction_note is None
+    for name in UNAVAILABLE_WHEN_RECONSTRUCTED:
+        assert isinstance(getattr(report, name), int), name
+
+
+def test_a_live_run_preserves_a_measured_zero(
+    pipeline: tuple[EngineResult, ScoringResult, AlertingResult, int],
+) -> None:
+    """This fixture suppresses nothing, and the report must say zero."""
+    _, _, alerting_result, _ = pipeline
+    assert alerting_result.stats.suppressed_total == 0
+
+    report = build_report(pipeline)
+    assert report.suppressed_total == 0
+    assert report.suppressed_by_cooldown_count == 0
+    assert report.suppressed_by_rate_limit_count == 0
+    assert report.escalated_count == 0
+    assert report.scope_missing_count == 0
+    # A measured zero is an integer, not a null.
+    assert report.suppressed_total is not None
+
+
+def test_a_measured_zero_renders_as_zero_not_unavailable(
+    pipeline: tuple[EngineResult, ScoringResult, AlertingResult, int],
+) -> None:
+    from password_attack_detector.detection.quality import UNAVAILABLE_LABEL
+
+    markdown = report_to_markdown(build_report(pipeline))
+    assert "| Suppressed total | 0 |" in markdown
+    assert UNAVAILABLE_LABEL not in markdown
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "input_snapshot_count",
+        "total_rule_evaluation_count",
+        "not_fired_count",
+        "disabled_rule_count",
+        "grouped_detection_count",
+        "suppressed_by_cooldown_count",
+        "suppressed_by_rate_limit_count",
+        "suppressed_total",
+        "escalated_count",
+        "below_score_floor_count",
+        "below_severity_floor_count",
+        "scope_missing_count",
+    ],
+)
+def test_a_reconstructed_report_reports_null_not_zero(
+    pipeline: tuple[EngineResult, ScoringResult, AlertingResult, int], name: str
+) -> None:
+    report = reconstructed(pipeline)
+    assert getattr(report, name) is None, name
+
+
+def test_the_unavailable_set_is_exactly_what_the_report_declares(
+    pipeline: tuple[EngineResult, ScoringResult, AlertingResult, int],
+) -> None:
+    """The declared list and the actual nulls cannot drift apart."""
+    from password_attack_detector.detection.quality import (
+        UNAVAILABLE_WHEN_RECONSTRUCTED,
+    )
+
+    report = reconstructed(pipeline)
+    assert report.unavailable_metrics == list(UNAVAILABLE_WHEN_RECONSTRUCTED)
+    actually_null = {
+        name for name in UNAVAILABLE_WHEN_RECONSTRUCTED if getattr(report, name) is None
+    }
+    assert actually_null == set(UNAVAILABLE_WHEN_RECONSTRUCTED)
+
+
+def test_derivable_counts_stay_exact_under_reconstruction(
+    pipeline: tuple[EngineResult, ScoringResult, AlertingResult, int],
+) -> None:
+    """What the tables do record must match the live run exactly."""
+    live = build_report(pipeline)
+    rebuilt = reconstructed(pipeline)
+
+    assert rebuilt.evaluated_snapshot_count == live.evaluated_snapshot_count
+    assert rebuilt.fired_count == live.fired_count
+    assert rebuilt.insufficient_data_count == live.insufficient_data_count
+    assert rebuilt.zero_score_assessment_count == live.zero_score_assessment_count
+    assert rebuilt.alert_count == live.alert_count
+    assert rebuilt.per_rule_trigger_counts == live.per_rule_trigger_counts
+    assert rebuilt.per_family_trigger_counts == live.per_family_trigger_counts
+    assert rebuilt.attack_category_distribution == live.attack_category_distribution
+    assert rebuilt.severity_distribution == live.severity_distribution
+    assert rebuilt.risk_score_summary == live.risk_score_summary
+    assert rebuilt.entity_scoped_count == live.entity_scoped_count
+    assert rebuilt.category_scoped_count == live.category_scoped_count
+    assert rebuilt.average_events_per_alert == live.average_events_per_alert
+    assert rebuilt.grouping_mode_counts == live.grouping_mode_counts
+
+
+def test_a_rule_that_never_fired_is_a_measured_zero_trigger_count(
+    pipeline: tuple[EngineResult, ScoringResult, AlertingResult, int],
+) -> None:
+    """The detection table proves a rule triggered zero times."""
+    report = reconstructed(pipeline)
+    silent = [
+        rule_id
+        for rule_id, count in report.per_rule_trigger_counts.items()
+        if count == 0
+    ]
+    assert silent
+    assert set(report.per_rule_trigger_counts) == set(CONFIG.enabled_rule_ids)
+
+
+def test_the_reconstruction_is_recorded_as_the_report_source(
+    pipeline: tuple[EngineResult, ScoringResult, AlertingResult, int],
+) -> None:
+    from password_attack_detector.detection.quality import (
+        RECONSTRUCTED_WARNING_CODE,
+        RECONSTRUCTION_NOTE,
+        QualityReportSource,
+    )
+
+    report = reconstructed(pipeline)
+    assert report.report_source is QualityReportSource.PUBLISHED_ARTIFACTS
+    assert report.is_reconstructed is True
+    assert report.reconstruction_note == RECONSTRUCTION_NOTE
+    assert RECONSTRUCTED_WARNING_CODE in report.warning_summary
+
+
+def test_the_json_report_uses_null_for_unavailable_counters(
+    pipeline: tuple[EngineResult, ScoringResult, AlertingResult, int],
+) -> None:
+    from password_attack_detector.detection.quality import (
+        UNAVAILABLE_WHEN_RECONSTRUCTED,
+    )
+
+    payload = json.loads(report_to_json(reconstructed(pipeline)))
+    for name in UNAVAILABLE_WHEN_RECONSTRUCTED:
+        assert payload[name] is None, name
+    assert payload["report_source"] == "published_artifacts"
+    assert payload["reconstruction_note"]
+    assert payload["unavailable_metrics"] == list(UNAVAILABLE_WHEN_RECONSTRUCTED)
+    # Derivable counts stay integers in the same payload.
+    assert isinstance(payload["fired_count"], int)
+    assert isinstance(payload["evaluated_snapshot_count"], int)
+
+
+def test_the_markdown_report_says_unavailable_rather_than_zero(
+    pipeline: tuple[EngineResult, ScoringResult, AlertingResult, int],
+) -> None:
+    from password_attack_detector.detection.quality import (
+        RECONSTRUCTED_WARNING_CODE,
+        UNAVAILABLE_LABEL,
+    )
+
+    markdown = report_to_markdown(reconstructed(pipeline))
+    assert RECONSTRUCTED_WARNING_CODE in markdown
+    assert "reconstructed from published artifacts" in markdown
+    assert f"| Not fired | {UNAVAILABLE_LABEL} |" in markdown
+    assert f"| Suppressed total | {UNAVAILABLE_LABEL} |" in markdown
+    assert f"| Rule evaluations | {UNAVAILABLE_LABEL} |" in markdown
+    # And a derivable count is still a number in the same table.
+    assert "| Fired | " in markdown
+    assert f"| Fired | {UNAVAILABLE_LABEL} |" not in markdown
+
+
+def test_both_formats_name_every_unavailable_counter(
+    pipeline: tuple[EngineResult, ScoringResult, AlertingResult, int],
+) -> None:
+    from password_attack_detector.detection.quality import (
+        UNAVAILABLE_WHEN_RECONSTRUCTED,
+    )
+
+    report = reconstructed(pipeline)
+    markdown = report_to_markdown(report)
+    for name in UNAVAILABLE_WHEN_RECONSTRUCTED:
+        assert f"`{name}`" in markdown, name
+
+
+def test_a_reconstructed_report_carries_no_identifier() -> None:
+    """The privacy sweep applies to the reconstructed form too."""
+    from password_attack_detector.detection.alerts import build_entity_scope_table
+    from password_attack_detector.detection.quality import (
+        reconstruct_detection_quality_report,
+    )
+
+    catalog = factories.feature_catalog()
+    engine = DetectionEngine(CONFIG, feature_catalog=catalog)
+    rows = [
+        factories.brute_force_row(
+            catalog,
+            anchor_event_id="3f2504e0-4f89-41d3-9a0c-0305e82c3301",
+            anchor_event_time=WHEN,
+        ),
+        factories.spraying_row(
+            catalog,
+            anchor_event_id="7a1b2c3d-4e5f-4a6b-8c9d-0e1f2a3b4c5d",
+            anchor_event_time=WHEN + timedelta(minutes=4),
+        ),
+    ]
+    engine_result = engine.run(rows)
+    scoring_result = RiskScorer(CONFIG).score(engine.run_diagnostic(rows))
+    scope = build_entity_scope_table(
+        [factories.scope_record(row["anchor_event_id"], user="ab" * 16) for row in rows]
+    )
+    alerting_result = AlertBuilder(CONFIG).build(
+        scoring_result.assessments, entity_scope=scope
+    )
+    report = reconstruct_detection_quality_report(
+        detections=list(engine_result.fired_detections),
+        assessments=list(scoring_result.assessments),
+        alerts=list(alerting_result.alerts),
+        config=CONFIG,
+    )
+    for rendered in (report_to_json(report), report_to_markdown(report)):
+        assert not _UUID_RE.search(rendered)
+        assert not _PSEUDONYM_RE.search(rendered)
+        assert "ab" * 16 not in rendered
+        assert "/home/" not in rendered
+
+
+def test_reconstruction_of_an_empty_artifact_set_is_well_formed() -> None:
+    from password_attack_detector.detection.quality import (
+        reconstruct_detection_quality_report,
+    )
+
+    report = reconstruct_detection_quality_report(
+        detections=[], assessments=[], alerts=[], config=CONFIG
+    )
+    assert report.evaluated_snapshot_count == 0
+    assert report.fired_count == 0
+    assert report.alert_count == 0
+    assert report.not_fired_count is None
+    assert report.average_events_per_alert is None
+    assert report_to_markdown(report).startswith("# Detection Quality Report")
+
+
+def test_reconstruction_carries_the_validation_result_through(
+    pipeline: tuple[EngineResult, ScoringResult, AlertingResult, int],
+) -> None:
+    engine_result, scoring_result, alerting_result, _ = pipeline
+    validation = DetectionValidator(CONFIG).validate(
+        list(engine_result.fired_detections),
+        list(scoring_result.assessments),
+        list(alerting_result.alerts),
+    )
+    report = reconstructed(pipeline, validation_result=validation)
+    assert report.validation_status == str(validation.status)
+    assert report.warning_summary[0] == "Q001"
+    for finding in validation.warnings:
+        assert finding.code in report.warning_summary

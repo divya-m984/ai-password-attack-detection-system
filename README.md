@@ -85,6 +85,164 @@ service, SOC dashboard, database persistence, MLflow, DVC, or deployment.
 
 ---
 
+## Phase 4 status — Rule-based detection ✓ (v0.4.0)
+
+Phase 4 adds the decision layer: deterministic, explainable rule-based
+detection over Phase 3 feature snapshots, correlation-aware risk scoring, and
+alert construction with suppression. **No machine-learning model is
+implemented in Phase 4**, and no real authentication traffic is generated.
+
+- **Nine registered detection rules** across six families, statically
+  registered and versioned in an executable catalog
+- **Two-phase rule contract** — prepare once per run, evaluate per snapshot
+- **Trusted-template evidence** with structured codes, comparators, and units
+- **Bounded monotone signal strength**, floored so a fired rule always
+  outscores nothing firing
+- **Correlation-aware risk scoring** — group reduction then noisy-OR, so one
+  behaviour restated three ways cannot inflate a score
+- **Four severity levels** with three strictly ordered boundaries; `LOW` is an
+  ordinary alert severity
+- **Alert grouping, deduplication, cooldown, rate limiting, and escalation**
+  with a validator-enforced accounting identity
+- **Optional entity-scope table** for pseudonymous alert grouping, consumed
+  only during alert construction
+- **Artifact validation** with 32 stable `D0xx` codes and sanitized findings
+- **Aggregate quality reporting** in JSON and Markdown
+- **Ground-truth evaluation** kept strictly outside the detection path
+- **Staged publication with rollback**, content fingerprints, and a manifest
+  that reuses the shared verification framework
+- **Detection CLI** with 6 subcommands wired into the root CLI
+
+### The detection layer in one paragraph
+
+Rules consume **Phase 3 point-in-time feature snapshots and nothing else** —
+the detection engine never queries raw event history, and labels and split
+assignments never enter it. Each enabled rule is prepared once, then evaluated
+against every snapshot in `(anchor_event_time, anchor_event_id)` order. Fired
+rules become weighted contributions, reduced within their correlation group and
+combined across groups into a `risk_score` in `[0, 100]`. Assessments that clear
+two configured gates are grouped into alerts, deduplicated within a window, and
+suppressed by cooldown and a per-group rate limit — with every suppressed event
+counted. All three tables are validated, fingerprinted, and published together
+with a manifest promoted last.
+
+### The nine rules
+
+| Rule | Name | Family | Category | Default severity |
+|---|---|---|---|---|
+| `PAD-BF-001` | Concentrated brute-force indicator | `brute_force` | `brute_force` | high |
+| `PAD-BF-002` | Successful authentication after failure burst | `brute_force` | `brute_force` | high |
+| `PAD-DBF-001` | Distributed brute-force indicator | `brute_force` | `distributed_brute_force` | critical |
+| `PAD-PS-001` | Password-spraying indicator | `spraying` | `password_spraying` | high |
+| `PAD-CS-001` | Credential-stuffing indicator | `stuffing` | `credential_stuffing` | high |
+| `PAD-ATO-001` | Account-takeover indicator | `account_compromise` | `account_takeover_indicator` | critical |
+| `PAD-MFA-001` | MFA sequence anomaly indicator | `account_compromise` | `mfa_sequence_anomaly` | medium |
+| `PAD-GEO-001` | Impossible-travel indicator | `location` | `impossible_travel_indicator` | high |
+| `PAD-BOT-001` | Bot-like authentication indicator | `automation` | `bot_activity` | medium |
+
+Every rule ANDs multiple conditions and carries an explicit false-positive
+control — a concentration ceiling, an attempts-per-account ceiling, a
+per-source volume ceiling, or a required supporting signal. Full declared
+contracts: [docs/rule-catalog.md](docs/rule-catalog.md).
+
+### Evidence, signal strength, and risk score
+
+**None of these is a probability.**
+
+- **Evidence** records what was observed and which configured condition it
+  matched. It is an indicator, **not causal proof**. Messages come from frozen
+  catalog templates; proof-asserting and probability-asserting language is
+  rejected at import.
+- **`signal_strength`** is a bounded ordinal magnitude in `(0, 1]` describing
+  how far one rule's observations exceeded its thresholds. **Not a
+  probability.**
+- **`risk_score`** is a bounded ordinal magnitude in `[0, 100]` ordering
+  findings by accumulated evidence. **Not a probability.**
+- `PAD-ATO-001` and `PAD-GEO-001` produce **indicators**, never findings of
+  compromise.
+
+### Correlation-aware risk scoring
+
+```
+contribution_r = family_weight[family(r)] × signal_strength(r)
+c_g            = max(contribution_r for r in group g)
+combined       = 1 − Π over sorted g of (1 − c_g)
+risk_score     = max(round(100 × combined, 4), min_fired_risk_score)
+```
+
+Zero fired rules yields exactly `0.0` — a module constant, so a zero always
+means "nothing fired". Correlated rules cannot out-score the strongest of them;
+an unrelated signal can never lower risk; the result is order-invariant and
+deterministic. See [docs/risk-scoring.md](docs/risk-scoring.md).
+
+### Severity and the LOW alert band
+
+Four levels, three strictly ordered boundaries, all inclusive from below
+(`medium: 40.0`, `high: 65.0`, `critical: 85.0`).
+
+**`LOW` is a valid alert severity.** Two independent configured gates decide
+whether an assessment becomes an alert: `risk_score >= min_alert_risk_score`
+and `severity >= min_alert_severity` (default `low`). Nothing rejects an alert
+for being `LOW`. An operator who wants `LOW` findings to stay diagnostic raises
+`min_alert_severity` — a configuration decision, recorded as
+`low_alert_reachable` in the quality report.
+
+### Alert grouping, scope, and suppression
+
+Grouping key: `(attack_category, correlation_group, scope_kind, scope_value)`.
+
+- **`category_scoped`** — the fallback, using category, correlation group, and
+  the configured time window
+- **`entity_scoped`** — when an optional entity-scope table supplies a
+  pseudonym for the group's declared dimension
+
+`aggregate_risk_score` is the **arithmetic mean** of an alert's grouped
+qualifying assessments; `peak_risk_score` is their **maximum**.
+
+The **entity-scope table remains sensitive operational metadata**. It is opt-in,
+**consumed only during alert construction**, and reaches exactly one column of
+one artifact — never evidence, a report, a CLI summary, a manifest, or a
+validation message. `DetectionEngine` and `RiskScorer` accept no scope argument.
+
+Cooldown suppresses repeats; a more severe or higher-peaking finding bypasses
+it; a per-group rate limit backstops that bypass. **Suppression retains
+complete aggregate accounting** — a validator enforces
+`qualifying == grouped + cooldown-suppressed + rate-limited`. See
+[docs/alert-lifecycle.md](docs/alert-lifecycle.md).
+
+### Validation, quality reporting, and evaluation
+
+`DetectionValidator` returns findings rather than raising, with 32 stable
+`D0xx` codes. **No message carries an event, detection, or alert identifier, a
+scope value, an evidence value, a raw row, or an absolute path** — findings are
+codes, column names, and counts.
+
+The quality report is aggregate-only and carries its own definitions of what
+each number means. It also records **where its numbers came from**. A report
+written by `detection run` is a live-run report with every counter populated,
+including measured zeros. A report rebuilt by `detection profile` from
+published artifacts marks the counters those artifacts cannot supply — rule
+evaluations that did not fire, disabled rules, suppression decisions, gate
+rejections — as **unavailable** (`null` in JSON), never as zero. Zero would
+assert those events did not happen; the tables simply do not record them. Ground-truth evaluation is a separate workflow: it is the
+only component permitted to read labels, splits, or campaign metadata, it tunes
+no threshold, it reports the novel-anomaly holdout separately, and **synthetic
+evaluation does not demonstrate real-world effectiveness**.
+
+### Manifests and verification
+
+The detection manifest is a superset of the Phase 2 dataset manifest, so the
+single shared `verify_dataset` implementation verifies detection directories
+too — path containment, `..` rejection, symlink escape, and checksums are
+inherited, never reimplemented. `verify-manifest` adds content fingerprints,
+artifact roles, cross-table relationships, and configuration/catalog agreement.
+
+Phase 4 does **not** implement: machine-learning models, model evaluation,
+FastAPI, SOC dashboard, database persistence, MLflow, DVC, streaming detection,
+or deployment.
+
+---
+
 ## Phase 3 status — Feature engineering and behavioral baselines ✓ (v0.3.0)
 
 Phase 3 turns validated telemetry into a model-ready feature layer. It trains
@@ -400,6 +558,57 @@ Every command supports `--help`, returns non-zero on failure, refuses to
 overwrite without `--force`, and prints no event identifier, pseudonym,
 coordinate, or absolute path.
 
+### Phase 4 detection commands
+
+```bash
+# Inspect the versioned rule catalog
+uv run password-attack-detector detection catalog
+uv run password-attack-detector detection catalog --format markdown -o docs/rule-catalog.md
+
+# Full pipeline: detect, score, group, validate, publish
+uv run password-attack-detector detection run \
+  --features data/processed/feature_snapshots.parquet \
+  --feature-manifest data/processed/feature_manifest.json \
+  --config configs/detection/rules-development.yaml
+
+# Optional pseudonymous alert grouping
+uv run password-attack-detector detection run \
+  --features data/processed/feature_snapshots.parquet \
+  --config configs/detection/rules-development.yaml \
+  --entity-scope data/processed/detection_entity_scope.parquet
+
+# Validate published artifacts
+uv run password-attack-detector detection validate \
+  data/processed/rule_detections.parquet \
+  --risk-assessments data/processed/risk_assessments.parquet \
+  --alerts data/processed/security_alerts.parquet \
+  --config configs/detection/rules-development.yaml
+
+# Aggregate quality report (JSON and Markdown) rebuilt from published
+# artifacts. Counters only a live run observes read "unavailable", not zero.
+uv run password-attack-detector detection profile \
+  data/processed/rule_detections.parquet \
+  --risk-assessments data/processed/risk_assessments.parquet \
+  --alerts data/processed/security_alerts.parquet
+
+# Synthetic ground-truth evaluation -- the only workflow that reads labels
+uv run password-attack-detector detection evaluate \
+  --detections data/processed/rule_detections.parquet \
+  --risk-assessments data/processed/risk_assessments.parquet \
+  --alerts data/processed/security_alerts.parquet \
+  --labels data/processed/feature_labels.parquet \
+  --splits data/processed/feature_splits.parquet \
+  --campaign-labels data/raw/labels.parquet
+
+# Verify artifact integrity
+uv run password-attack-detector detection verify-manifest data/processed
+```
+
+`detection run` has no `--labels` and no `--splits` option. The absence is the
+enforcement: ground truth cannot reach the engine, the scorer, or the alert
+builder. Every command refuses to overwrite without `--force` and returns
+non-zero on any validation or publication failure.
+
 ### Generated artifact layout
 
 Phase 2 dataset directory:
@@ -432,7 +641,24 @@ reports/
   leakage_audit.{json,md}     twelve named checks
 ```
 
-All generated content is git-ignored.
+Phase 4 detection artifacts:
+
+```
+data/processed/
+  rule_detections.parquet     fired rules only, with evidence and reason codes
+  risk_assessments.parquet    one row per evaluated anchor, including zero-score
+  security_alerts.parquet     grouped alerts; scope_value is the one protected column
+  detection_manifest.json     checksums, content fingerprints, validation, roles
+  detection_quality.{json,md} aggregate statistics only
+
+reports/
+  detection_quality.{json,md} aggregate statistics only
+  rule_evaluation.{json,md}   synthetic ground-truth metrics
+```
+
+All generated content is git-ignored. `security_alerts.parquet` may carry
+pseudonymous `scope_value` entries and requires protected storage for real
+data.
 
 ### Measured throughput
 
@@ -529,6 +755,28 @@ See [docs/privacy-model.md](docs/privacy-model.md) and
 - Baseline artifacts hold pseudonymous per-entity state. They are written only
   to git-ignored paths with restrictive permissions and must never be
   committed; real-data baselines require protected storage.
+- **No ML model is implemented in Phase 4**, and **no real authentication
+  traffic is generated**. Every decision comes from a reviewed rule with
+  declared thresholds.
+- **`signal_strength` and `risk_score` are not probabilities.** They are
+  bounded ordinal magnitudes. **Evidence is not causal proof.**
+- **Account-takeover and impossible-travel outputs are indicators.** Travel and
+  a device replacement reproduce the first; a VPN or carrier gateway reproduces
+  the second. Confirming either requires investigation this system does not do.
+- **Synthetic evaluation does not prove real-world effectiveness.** Thresholds
+  tuned on generated data reflect the generator's parameters.
+- **The entity-scope table carries pseudonyms.** It is opt-in, consumed only
+  during alert construction, and confined to one column of one artifact;
+  real-data alert artifacts require protected storage.
+- Alert suppression retains complete aggregate accounting, but a suppressed
+  event is only guaranteed to have been *counted* — not to have been
+  uninteresting. See [docs/detection-limitations.md](docs/detection-limitations.md).
+- Detection quality is bounded by feature quality: a behaviour Phase 3 does not
+  express is one no Phase 4 rule can detect.
+- `detection profile` reconstructs a quality report from published artifacts
+  and therefore cannot report engine-only or alert-builder-only counters. Those
+  are reported as **unavailable**, not zero. Use the report written by
+  `detection run` for a fully populated one.
 
 ---
 
@@ -548,6 +796,12 @@ See [docs/privacy-model.md](docs/privacy-model.md) and
 | [docs/behavioral-baselines.md](docs/behavioral-baselines.md) | Fit/transform separation, artifact privacy |
 | [docs/leakage-prevention.md](docs/leakage-prevention.md) | The twelve leakage checks |
 | [docs/dataset-splitting.md](docs/dataset-splitting.md) | Chronological, campaign-aware splits |
+| [docs/rule-contract.md](docs/rule-contract.md) | What a rule may read, must return, and guarantees |
+| [docs/rule-catalog.md](docs/rule-catalog.md) | Generated: every registered rule |
+| [docs/risk-scoring.md](docs/risk-scoring.md) | Correlation-aware scoring and its proven properties |
+| [docs/alert-lifecycle.md](docs/alert-lifecycle.md) | Grouping, scope, suppression, escalation |
+| [docs/rule-evaluation.md](docs/rule-evaluation.md) | Metrics, split discipline, no threshold tuning |
+| [docs/detection-limitations.md](docs/detection-limitations.md) | What Phase 4 does not do |
 
 ---
 
@@ -558,7 +812,7 @@ See [docs/privacy-model.md](docs/privacy-model.md) and
 | 1 | Engineering foundation ✓ |
 | 2 | Data engineering and synthetic log generation ✓ |
 | 3 | Feature engineering and behavioral baselines ✓ |
-| 4 | Rule-based detection (brute-force, spraying, stuffing) |
+| 4 | Rule-based detection (brute-force, spraying, stuffing) ✓ |
 | 5 | Machine learning models |
 | 6 | FastAPI detection service |
 | 7 | SOC dashboard |

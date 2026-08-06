@@ -127,3 +127,41 @@ separate `labels.parquet` file and are never merged into the canonical event
 table. This prevents label leakage into feature computation and keeps the
 canonical event log privacy-safe for contexts where labels should not be
 accessible.
+
+## Phase 4: detection artifacts
+
+Detection consumes feature snapshots, which carry **no entity identifiers at
+all** — the only key columns are `feature_schema_version`, `anchor_event_id`,
+and `anchor_event_time`. A detection rule therefore has no path to a username,
+a user, source, device, or session pseudonym, an IP address, or a coordinate,
+and evidence cannot carry one even by accident. The evidence schema rejects any
+value shaped like a UUID or a pseudonym as a second line of defence.
+
+### The one protected column
+
+| Artifact | Column | Sensitivity |
+|---|---|---|
+| `security_alerts.parquet` | `scope_value` | Pseudonymous operational metadata |
+| `detection_entity_scope.parquet` (input) | `user_scope`, `source_scope` | Pseudonymous operational metadata |
+
+Everything else Phase 4 writes — detections, risk assessments, quality reports,
+evaluation reports, the manifest, validation findings, CLI summaries — is
+aggregate or schema metadata.
+
+### Structural confinement
+
+`DetectionEngine` and `RiskScorer` accept no scope argument and import no scope
+reader, so entity scope is **consumed only during alert construction**. A
+signature test and an import-graph test both enforce it, and a further test
+asserts that six named modules declare no parameter containing "scope".
+
+`EntityScopeRecord.__repr__` and `EntityScopeTable.__repr__` are both redacted,
+because a repr reaches log lines and tracebacks where no one is checking.
+
+### Sanitized failure paths
+
+Detection validation findings, manifest verification messages, and every CLI
+error report codes, column names, and counts. A scope-table failure reports how
+many anchors mismatched, never which. The CLI renders paths relative to the
+working directory and falls back to a bare file name, so an absolute path under
+a personal home directory never reaches a terminal.
