@@ -22,11 +22,15 @@ What this layer is, and is not:
 
 Milestone 1 established the foundation: the dependency policy, the typed
 enumerations and contracts, the versioned configuration, and the executable
-model catalog.  Milestone 2 adds the data contract: the reviewed opt-in feature
+model catalog.  Milestone 2 added the data contract: the reviewed opt-in feature
 allowlist, canonical row ordering, dataset assembly, campaign-disjoint
-validation partitioning, and the eligibility audit.  Preprocessing, fitting,
-calibration, threshold selection, inference, fusion, and evaluation arrive in
-later milestones and are deliberately absent here.
+validation partitioning, and the eligibility audit.  Milestone 3 added
+train-only preprocessing and class weighting.  Milestone 4 adds the model
+adapters, the authoritative JSON-and-array artifact, the deterministic archive,
+the manifest, and fail-closed loading.  Calibration, threshold selection,
+training orchestration, the experiment ledger, champion selection, prediction
+publication, fusion, evaluation, explainability, and drift arrive in later
+milestones and are deliberately absent here.
 
 ``dataset`` is re-exported deliberately sparingly.  It is the one module in this
 layer permitted to read ground truth, and keeping its label types out of the
@@ -99,6 +103,27 @@ from password_attack_detector.ml.imbalance import (
     ClassWeightState,
     compute_class_weights,
 )
+from password_attack_detector.ml.inference import InferenceModel, ModelCompatibility
+from password_attack_detector.ml.manifest import (
+    MANIFEST_SCHEMA_VERSION,
+    ModelManifest,
+    VerificationOutcome,
+    build_model_manifest,
+    verify_model_artifact,
+)
+from password_attack_detector.ml.models import (
+    MODEL_IMPLEMENTATIONS,
+    PUBLISHABLE_FAMILIES,
+    FittedModel,
+    ModelAdapter,
+    TrainingBatch,
+    adapter_class_for,
+)
+from password_attack_detector.ml.npz import (
+    array_digest,
+    read_npz_bytes,
+    write_npz_bytes,
+)
 from password_attack_detector.ml.ordering import (
     assert_canonical,
     canonicalize_rows,
@@ -129,6 +154,13 @@ from password_attack_detector.ml.schemas import (
     ScoreSemantics,
     SupportRequirement,
 )
+from password_attack_detector.ml.serialization import (
+    MODEL_ARTIFACT_FILES,
+    ModelDocument,
+    build_model_document,
+    model_id_for,
+    write_model_directory,
+)
 
 __all__ = [
     "ALLOWLIST_SCHEMA_VERSION",
@@ -137,13 +169,17 @@ __all__ = [
     "FIT_ELIGIBLE_SPLITS",
     "FORBIDDEN_DIRECT_IMPORTS",
     "IMBALANCE_SCHEMA_VERSION",
+    "MANIFEST_SCHEMA_VERSION",
     "ML_DEPENDENCY_REQUIREMENTS",
     "ML_FINGERPRINT_EXCLUDED_FIELDS",
     "ML_OUTPUT_COLUMNS",
     "ML_SCHEMA_VERSION",
+    "MODEL_ARTIFACT_FILES",
     "MODEL_CATALOG",
     "MODEL_CATALOG_VERSION",
+    "MODEL_IMPLEMENTATIONS",
     "PREPROCESSING_SCHEMA_VERSION",
+    "PUBLISHABLE_FAMILIES",
     "SKLEARN_REQUIREMENT",
     "UNKNOWN_CATEGORY",
     "ArtifactDeclaration",
@@ -163,19 +199,25 @@ __all__ = [
     "FeatureAllowlist",
     "FeatureDecisionPoint",
     "FeatureFrame",
+    "FittedModel",
     "FittedPreprocessor",
     "FusionStrategy",
     "GateResult",
     "GateStatus",
     "HyperparameterSpec",
+    "InferenceModel",
     "MLConfig",
     "MLEligibilityAuditResult",
     "MLEligibilityAuditor",
     "MLSplit",
     "MLTask",
+    "ModelAdapter",
     "ModelCatalog",
+    "ModelCompatibility",
+    "ModelDocument",
     "ModelEligibilityStatus",
     "ModelFamily",
+    "ModelManifest",
     "ModelSpec",
     "NumericImputation",
     "ScalingStatistic",
@@ -183,12 +225,18 @@ __all__ = [
     "ScoreSemantics",
     "SupportRequirement",
     "ThresholdObjective",
+    "TrainingBatch",
     "TransformedMatrix",
     "ValidationPartition",
     "ValidationPartitionResult",
     "ValidationPartitionStatus",
+    "VerificationOutcome",
+    "adapter_class_for",
+    "array_digest",
     "assert_canonical",
     "build_model_catalog",
+    "build_model_document",
+    "build_model_manifest",
     "canonicalize_rows",
     "collect_dependency_versions",
     "compute_class_weights",
@@ -199,7 +247,12 @@ __all__ = [
     "load_ml_config",
     "ml_audit_result_to_markdown",
     "model_catalog_to_markdown",
+    "model_id_for",
     "partition_validation",
+    "read_npz_bytes",
     "resolve_eligible_features",
     "sklearn_compatible",
+    "verify_model_artifact",
+    "write_model_directory",
+    "write_npz_bytes",
 ]

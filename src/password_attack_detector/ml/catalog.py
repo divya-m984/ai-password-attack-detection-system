@@ -126,6 +126,13 @@ class ModelSpec(BaseModel):
     requires_sklearn: bool
     estimator_class_name: str | None = None
     experimental: bool = False
+    #: The mandatory comparator, permanently outside the contest.
+    #:
+    #: Distinct from ``experimental``: a reference baseline is fully
+    #: implemented, fully publishable, and reported in every comparison. What
+    #: it may never be is the *winner* of one, because a candidate qualifies by
+    #: beating it and nothing beats itself.
+    reference_baseline: bool = False
     anomaly_only: bool = False
     limitations: tuple[str, ...] = ()
     deprecated: bool = False
@@ -292,6 +299,12 @@ class ModelSpec(BaseModel):
     def _check_eligibility(self) -> None:
         """Champion eligibility is a claim with prerequisites, not a label."""
         if self.champion_eligible:
+            if self.reference_baseline:
+                raise ValueError(
+                    f"model {self.model_id} is the reference baseline and can "
+                    f"never be the champion; a candidate qualifies by beating "
+                    f"it, and nothing beats itself"
+                )
             if self.anomaly_only:
                 raise ValueError(
                     f"model {self.model_id} is anomaly-only and can never be the "
@@ -335,6 +348,29 @@ class ModelSpec(BaseModel):
             raise ValueError(
                 f"model {self.model_id} is anomaly-only but declares status "
                 f"{self.eligibility_status}"
+            )
+        # Tied in both directions, so neither the flag nor the status can be
+        # edited on its own and leave the other saying something else.
+        if self.reference_baseline and (
+            self.eligibility_status is not ModelEligibilityStatus.REFERENCE_BASELINE
+        ):
+            raise ValueError(
+                f"model {self.model_id} is the reference baseline but declares "
+                f"status {self.eligibility_status}"
+            )
+        if (
+            self.eligibility_status is ModelEligibilityStatus.REFERENCE_BASELINE
+            and not self.reference_baseline
+        ):
+            raise ValueError(
+                f"model {self.model_id} declares reference-baseline status "
+                f"without the reference_baseline flag"
+            )
+        if self.reference_baseline and self.experimental:
+            raise ValueError(
+                f"model {self.model_id} is the reference baseline and therefore "
+                f"not experimental; it is fully implemented and fully "
+                f"publishable, and only ineligible for promotion"
             )
 
     def _check_estimator_attributes(self) -> None:
@@ -432,6 +468,7 @@ _FINGERPRINT_FIELDS: Final[tuple[str, ...]] = (
     "requires_sklearn",
     "estimator_class_name",
     "experimental",
+    "reference_baseline",
     "anomaly_only",
     "deprecated",
 )
@@ -673,8 +710,14 @@ def _prior_baseline_spec() -> ModelSpec:
             CalibrationMethod.ISOTONIC,
         ),
         multiclass_capable=True,
-        champion_eligible=True,
-        eligibility_status=ModelEligibilityStatus.CHAMPION_ELIGIBLE,
+        # Never promotable, and that is the role rather than a shortcoming.
+        # Selection asks whether a candidate beats this model by the configured
+        # margin; entering it into its own contest would make the question
+        # circular and would hand selection a fallback that always passes,
+        # which is precisely what NO_ELIGIBLE_CHAMPION exists to express.
+        champion_eligible=False,
+        reference_baseline=True,
+        eligibility_status=ModelEligibilityStatus.REFERENCE_BASELINE,
         serializer_id="json_prior_v1",
         inference_adapter_id="prior_v1",
         determinism_controls=("closed-form fit", "no random number generator"),
@@ -682,8 +725,9 @@ def _prior_baseline_spec() -> ModelSpec:
         limitations=(
             "Constant output. Ranking is undefined, so every ranking metric "
             "over it is reported as unavailable rather than as a tie.",
-            "Exists to be beaten. Promoting it would mean no candidate cleared "
-            "the gates.",
+            "Exists to be beaten, never to win. It is fitted, published, and "
+            "reported like any other model, and it can never be selected as "
+            "the supervised champion.",
         ),
     )
 
@@ -1187,6 +1231,13 @@ def model_catalog_to_markdown(catalog: ModelCatalog = MODEL_CATALOG) -> str:
         "serializer and its inference adapter reproduce identical scores after "
         "a round trip. Until that parity is demonstrated, a family is "
         "evaluable but not promotable.",
+        "- **`M-000` is the reference baseline, not a candidate.** It is "
+        "fitted, published, and reported like any other family, and it is "
+        "permanently `champion_eligible = false`. A candidate qualifies by "
+        "beating it on the validation gate, so entering it into its own "
+        "contest would make the question circular and would give selection a "
+        "fallback that always passes -- when every real candidate fails, the "
+        "outcome must be no champion at all.",
         "- **`M-021` is gated.** Histogram gradient boosting reads private "
         "estimator attributes, so it ships with `champion_eligible = false` "
         "until a compatibility test pins that layout across the bounded "
@@ -1280,6 +1331,7 @@ def _model_markdown(spec: ModelSpec) -> list[str]:
         f"| Multiclass capable | {_yes_no(spec.multiclass_capable)} |",
         f"| Champion eligible | {_yes_no(spec.champion_eligible)} |",
         f"| Eligibility status | `{spec.eligibility_status}` |",
+        f"| Reference baseline | {_yes_no(spec.reference_baseline)} |",
         f"| Experimental | {_yes_no(spec.experimental)} |",
         f"| Anomaly only | {_yes_no(spec.anomaly_only)} |",
         f"| Serializer | `{spec.serializer_id}` |",

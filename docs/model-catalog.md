@@ -3,7 +3,7 @@
 Generated from the model registry. Do not edit by hand; regenerate with `password-attack-detector ml catalog --format markdown`.
 
 - Model catalog version: `1.0.0`
-- Catalog fingerprint: `ba4eac6fdc4f41fcd3d27d150e3238c863df15b3fa5af7cc6648840b793b389e`
+- Catalog fingerprint: `299021ca8a92c385c62b40a8c5708909de2e397410779e07d48dbaa2688e437f`
 - Declared model families: 6
 
 This catalog declares *what may be fitted*, not what was fitted or how well anything performed. It contains no measured result, and no performance figure is ever transcribed into this repository's prose.
@@ -12,6 +12,7 @@ This catalog declares *what may be fitted*, not what was fitted or how well anyt
 
 - **Membership is not championship.** A family listed here may be fitted and evaluated. Becoming the champion additionally requires clearing every validation gate, and no model is promoted on the strength of appearing in this table.
 - **Serializer and inference parity are required, and are proven later.** A family becomes promotable only once its canonical serializer and its inference adapter reproduce identical scores after a round trip. Until that parity is demonstrated, a family is evaluable but not promotable.
+- **`M-000` is the reference baseline, not a candidate.** It is fitted, published, and reported like any other family, and it is permanently `champion_eligible = false`. A candidate qualifies by beating it on the validation gate, so entering it into its own contest would make the question circular and would give selection a fallback that always passes -- when every real candidate fails, the outcome must be no champion at all.
 - **`M-021` is gated.** Histogram gradient boosting reads private estimator attributes, so it ships with `champion_eligible = false` until a compatibility test pins that layout across the bounded dependency range.
 - **`M-030` is an experimental anomaly model.** It is unsupervised, anomaly-only, and can never be the supervised champion. Its output is an ordered outlier magnitude.
 - **Probabilities require calibration.** Every family's native output is a decision score or a class score. It may be described as a probability only after a calibrator has been fitted and its calibration error measured.
@@ -22,14 +23,15 @@ This catalog declares *what may be fitted*, not what was fitted or how well anyt
 | Eligibility status | Families |
 |--------|-------|
 | `anomaly_only` | 1 |
-| `champion_eligible` | 4 |
+| `champion_eligible` | 3 |
+| `reference_baseline` | 1 |
 | `serializer_unproven` | 1 |
 
 ## Model index
 
 | Model | Family | Tasks | Champion eligible | Experimental |
 |--------|-------|-------|-------|-------|
-| `M-000` | `prior_baseline` | `binary_malicious`, `attack_category` | yes | no |
+| `M-000` | `prior_baseline` | `binary_malicious`, `attack_category` | no | no |
 | `M-001` | `single_feature_threshold` | `binary_malicious` | yes | no |
 | `M-010` | `logistic_regression` | `binary_malicious`, `attack_category` | yes | no |
 | `M-020` | `random_forest` | `binary_malicious`, `attack_category` | yes | no |
@@ -49,8 +51,9 @@ Emits the training-split positive rate for every row, ignoring features entirely
 | Calibration compatible | yes |
 | Calibration methods | `none`, `platt`, `isotonic` |
 | Multiclass capable | yes |
-| Champion eligible | yes |
-| Eligibility status | `champion_eligible` |
+| Champion eligible | no |
+| Eligibility status | `reference_baseline` |
+| Reference baseline | yes |
 | Experimental | no |
 | Anomaly only | no |
 | Serializer | `json_prior_v1` |
@@ -65,7 +68,7 @@ Emits the training-split positive rate for every row, ignoring features entirely
 **Limitations**
 
 - Constant output. Ranking is undefined, so every ranking metric over it is reported as unavailable rather than as a tie.
-- Exists to be beaten. Promoting it would mean no candidate cleared the gates.
+- Exists to be beaten, never to win. It is fitted, published, and reported like any other model, and it can never be selected as the supervised champion.
 
 ## M-001 -- Single-feature threshold baseline
 
@@ -82,6 +85,7 @@ Ranks rows by one eligible feature chosen on the training split by separation. I
 | Multiclass capable | no |
 | Champion eligible | yes |
 | Eligibility status | `champion_eligible` |
+| Reference baseline | no |
 | Experimental | no |
 | Anomaly only | no |
 | Serializer | `json_threshold_v1` |
@@ -120,6 +124,7 @@ Regularised linear model over the standardised design matrix. Its coefficients a
 | Multiclass capable | yes |
 | Champion eligible | yes |
 | Eligibility status | `champion_eligible` |
+| Reference baseline | no |
 | Experimental | no |
 | Anomaly only | no |
 | Serializer | `json_linear_v1` |
@@ -166,6 +171,7 @@ Bagged axis-aligned trees over the untransformed design matrix. Chosen as the en
 | Multiclass capable | yes |
 | Champion eligible | yes |
 | Eligibility status | `champion_eligible` |
+| Reference baseline | no |
 | Experimental | no |
 | Anomaly only | no |
 | Serializer | `json_tree_ensemble_v1` |
@@ -212,6 +218,7 @@ Boosted trees over binned features, typically the strongest tabular family avail
 | Multiclass capable | yes |
 | Champion eligible | no |
 | Eligibility status | `serializer_unproven` |
+| Reference baseline | no |
 | Experimental | no |
 | Anomaly only | no |
 | Serializer | `json_histogram_ensemble_v1` |
@@ -259,6 +266,7 @@ Unsupervised outlier scorer fitted on benign training rows without reading a lab
 | Multiclass capable | no |
 | Champion eligible | no |
 | Eligibility status | `anomaly_only` |
+| Reference baseline | no |
 | Experimental | yes |
 | Anomaly only | yes |
 | Serializer | `json_isolation_forest_v1` |

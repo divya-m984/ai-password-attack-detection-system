@@ -1,8 +1,9 @@
 """Integration tests for the ``ml`` CLI group's registration and catalog command.
 
-Milestone 2 ships two commands. This module covers ``ml catalog`` and the
-group's registration; ``ml audit-features`` has its own module, because it
-needs published Parquet inputs and asserts a different set of properties.
+This module covers ``ml catalog`` and the group's registration. The other two
+commands have their own modules, because each needs different inputs and
+asserts a different set of properties: ``ml audit-features`` needs published
+Parquet, and ``ml verify-manifest`` needs a published model directory.
 
 Two properties are swept, matching the conventions of the other CLI test
 modules: **no command prints an identifier or an absolute path**, and **no
@@ -31,9 +32,9 @@ _UUID_RE = re.compile(
     r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b"
 )
 
-#: Commands Milestone 2 deliberately does not ship.  A placeholder that exists
-#: but does nothing is worse than an honest absence, because ``--help`` would
-#: advertise a capability the code lacks.
+#: Commands this milestone deliberately does not ship.  A placeholder that
+#: exists but does nothing is worse than an honest absence, because ``--help``
+#: would advertise a capability the code lacks.
 DEFERRED_COMMANDS = (
     "train",
     "predict",
@@ -46,11 +47,10 @@ DEFERRED_COMMANDS = (
     "experiments",
     "validate",
     "profile",
-    "verify-manifest",
 )
 
 #: The complete set of commands this milestone registers.
-SHIPPED_COMMANDS = ("catalog", "audit-features")
+SHIPPED_COMMANDS = ("catalog", "audit-features", "verify-manifest")
 
 
 def _repo_root() -> Path:
@@ -90,7 +90,7 @@ def test_the_ml_group_shows_help_with_no_arguments() -> None:
 
 
 def test_the_ml_group_advertises_only_the_shipped_commands() -> None:
-    """Milestone 2 registers ``catalog`` and ``audit-features``, and no more."""
+    """Three commands, and the deferred ones must stay unregistered."""
     result = _invoke("ml", "--help")
     assert result.exit_code == 0
     for command in SHIPPED_COMMANDS:
@@ -299,14 +299,15 @@ def test_the_package_version_is_unchanged_at_this_checkpoint() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_the_ml_package_declares_no_training_module() -> None:
-    """Milestone 3 prepares data. It still fits no model.
+def test_the_ml_package_declares_no_orchestration_module() -> None:
+    """Milestone 4 fits and stores models. It still orchestrates nothing.
 
-    Preprocessing and imbalance handling arrived with Milestone 3 and are listed
-    here. Model fitting, calibration, thresholds, serialization, inference,
-    fusion, evaluation, explanation, and drift belong to later milestones, and an
-    empty placeholder for any of them would make the package look further along
-    than it is.
+    Model adapters, serialization, the deterministic archive, the manifest, and
+    inference arrived with Milestone 4 and are listed here. Calibration,
+    thresholds, training orchestration, the experiment ledger, champion
+    selection, prediction publication, fusion, evaluation, explanation, and
+    drift belong to later milestones, and an empty placeholder for any of them
+    would make the package look further along than it is.
     """
     package = _repo_root() / "src" / "password_attack_detector" / "ml"
     present = {path.stem for path in package.glob("*.py")}
@@ -321,10 +322,28 @@ def test_the_ml_package_declares_no_training_module() -> None:
         "enums",
         "features",
         "imbalance",
+        "inference",
+        "manifest",
+        "npz",
         "ordering",
         "partition",
         "preprocessing",
         "schemas",
+        "serialization",
+    }
+
+
+def test_the_model_package_declares_exactly_the_implemented_families() -> None:
+    """One module per family, plus the contract and the closed registry."""
+    package = _repo_root() / "src" / "password_attack_detector" / "ml" / "models"
+    assert {path.stem for path in package.glob("*.py")} == {
+        "__init__",
+        "anomaly",
+        "base",
+        "baseline",
+        "boosting",
+        "forest",
+        "linear",
     }
 
 
@@ -432,13 +451,13 @@ def test_the_dataset_module_is_the_one_that_reads_parquet() -> None:
     assert "pyarrow" in imported
 
 
-def test_no_module_fits_a_model() -> None:
-    """Milestone 3 prepares a matrix by hand. Nothing imports an estimator.
+def test_only_the_model_adapters_import_an_estimator() -> None:
+    """scikit-learn is confined to the six family modules, and to fitting.
 
-    Preprocessing and class weighting are both implemented as project code with
-    their own typed contracts rather than as calls into a library, so the whole
-    package still imports no estimator, and none of the transitive scientific
-    dependencies is reached directly either.
+    Everything outside ``ml/models`` -- the dataset, the preprocessor, the
+    archive, the serializer, the manifest, the loader, the CLI -- works on
+    numbers and never touches an estimator. That is what lets a published model
+    be scored, verified, and loaded by a build whose scikit-learn has moved.
     """
     package = _repo_root() / "src" / "password_attack_detector" / "ml"
     for module in sorted(package.glob("*.py")):
@@ -446,6 +465,16 @@ def test_no_module_fits_a_model() -> None:
         assert "sklearn" not in imported, module.name
         assert "scipy" not in imported, module.name
         assert "joblib" not in imported, module.name
+
+
+def test_no_module_imports_a_transitive_scientific_dependency() -> None:
+    """Including the adapters: scipy and joblib arrive only through sklearn."""
+    package = _repo_root() / "src" / "password_attack_detector" / "ml"
+    for module in sorted(package.rglob("*.py")):
+        imported = {name.split(".")[0] for name in _imported_names(module)}
+        assert "scipy" not in imported, module.name
+        assert "joblib" not in imported, module.name
+        assert "threadpoolctl" not in imported, module.name
 
 
 def test_the_class_weight_formula_is_the_projects_own() -> None:

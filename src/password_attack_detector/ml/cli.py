@@ -2,11 +2,12 @@
 
 Subcommands::
 
-    password-attack-detector ml catalog         -- the versioned model catalog
-    password-attack-detector ml audit-features  -- the eligibility and leakage audit
+    password-attack-detector ml catalog          -- the versioned model catalog
+    password-attack-detector ml audit-features   -- the eligibility and leakage audit
+    password-attack-detector ml verify-manifest  -- check a published model artifact
 
-Two commands, and the absences are deliberate.  Training, calibration,
-threshold selection, inference, evaluation, and comparison arrive in later
+Three commands, and the absences are deliberate.  Training, calibration,
+threshold selection, prediction, evaluation, and comparison arrive in later
 milestones, and no placeholder is registered for them: a command that exists
 but does nothing is worse than one that is honestly absent, because ``--help``
 would advertise a capability the code does not have.
@@ -44,8 +45,9 @@ from password_attack_detector.exceptions import (
 ml_app = typer.Typer(
     name="ml",
     help=(
-        "Machine-learning detection layer: inspect the model catalog and "
-        "audit feature eligibility. Models are fitted on Phase 3 feature "
+        "Machine-learning detection layer: inspect the model catalog, audit "
+        "feature eligibility, and verify a published model artifact. Models "
+        "are fitted on Phase 3 feature "
         "snapshots and are reported alongside the rule engine, never in "
         "place of it."
     ),
@@ -507,3 +509,74 @@ def audit_features(
         raise typer.Exit(code=1)
 
     _console.print("[green]Audit status: pass[/green]")
+
+
+# ---------------------------------------------------------------------------
+# verify-manifest
+# ---------------------------------------------------------------------------
+
+
+@ml_app.command("verify-manifest")
+def verify_manifest(
+    target: Annotated[
+        Path,
+        typer.Argument(
+            help="Published model directory to verify.",
+            exists=False,
+            dir_okay=True,
+            file_okay=False,
+        ),
+    ],
+) -> None:
+    """Verify a published model artifact's structure, integrity, and identity.
+
+    Reads JSON and hashes bytes. It does not construct an estimator, unpickle
+    anything, import a module named by the artifact, or execute any part of it:
+    a model directory is untrusted data, and verifying it must be safe to do to
+    a directory somebody else wrote.
+
+    What is printed is identity and contract -- the derived model identifier,
+    the family, the task, the schema and serializer versions, and a file count.
+    Never a coefficient, never a tree value, never a threshold, never a training
+    row, and never an absolute path. Exits non-zero on any failure, with a
+    stable error code.
+    """
+    from password_attack_detector.ml.manifest import verify_model_artifact
+
+    outcome = _guard(
+        "Cannot verify the model artifact", lambda: verify_model_artifact(target)
+    )
+
+    table = Table(title="Model artifact", show_header=False, box=None)
+    table.add_row("Directory", _display(target))
+    table.add_row("Model id", outcome.model_id or "unavailable")
+    table.add_row("Family", outcome.model_family or "unavailable")
+    table.add_row("Task", outcome.task or "unavailable")
+    table.add_row("ML schema version", outcome.ml_schema_version or "unavailable")
+    table.add_row(
+        "Manifest schema version", outcome.manifest_schema_version or "unavailable"
+    )
+    table.add_row("Serializer", outcome.serializer_id or "unavailable")
+    table.add_row(
+        "Serializer version",
+        "unavailable"
+        if outcome.serializer_version is None
+        else str(outcome.serializer_version),
+    )
+    table.add_row("Files", f"{outcome.file_count:,}")
+    table.add_row("Checks run", f"{outcome.checks_run:,}")
+    _console.print(table)
+
+    if not outcome.passed:
+        _err.print(
+            f"[red]Verification FAILED[/red] [{outcome.error_code}]: "
+            f"{outcome.error_detail}"
+        )
+        raise typer.Exit(code=1)
+
+    _console.print("[green]Verification PASS[/green]")
+    _console.print(
+        "[dim]Structural and integrity verification only. No calibrator has "
+        "been fitted, no champion has been selected, and no performance figure "
+        "is recorded in a model artifact.[/dim]"
+    )

@@ -235,6 +235,16 @@ class ModelEligibilityStatus(StrEnum):
 
     #: Serializer and inference adapter are declared and provable.
     CHAMPION_ELIGIBLE = "champion_eligible"
+    #: The mandatory comparator every candidate is measured against.
+    #:
+    #: Fully implemented, fully publishable, and permanently unpromotable --
+    #: which is the point rather than a limitation.  A candidate qualifies by
+    #: beating this model on the validation gate, and a model cannot
+    #: meaningfully beat itself; admitting it to the contest would also give
+    #: selection an automatic fallback, and
+    #: :attr:`~password_attack_detector.ml.enums.ChampionStatus.NO_ELIGIBLE_CHAMPION`
+    #: has to stay reachable when every real candidate fails.
+    REFERENCE_BASELINE = "reference_baseline"
     #: Evaluable, but not promotable: the serializer contract is unproven.
     SERIALIZER_UNPROVEN = "serializer_unproven"
     #: Evaluable as an experimental signal only.

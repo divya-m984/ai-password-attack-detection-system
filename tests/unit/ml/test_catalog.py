@@ -127,10 +127,88 @@ def test_membership_and_lookup_agree() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_exactly_the_four_intended_families_are_champion_eligible() -> None:
-    """The gated and anomaly families are excluded, by declaration."""
+def test_exactly_the_three_intended_families_are_champion_eligible() -> None:
+    """The approved set, and every absence has its own stated reason.
+
+    * ``M-000`` is the reference every candidate is measured against;
+    * ``M-021`` is gated on an undocumented estimator interface;
+    * ``M-030`` is unsupervised and has no supervised class to be champion of.
+    """
     eligible = {spec.model_id for spec in MODEL_CATALOG.champion_eligible_specs()}
-    assert eligible == {"M-000", "M-001", "M-010", "M-020"}
+    assert eligible == {"M-001", "M-010", "M-020"}
+
+
+def test_the_prior_baseline_is_a_reference_never_a_candidate() -> None:
+    """The direct invariant: publishable, and permanently unpromotable.
+
+    Not experimental either -- it is fully implemented and fully publishable,
+    and the only thing it may not do is win.
+    """
+    spec = MODEL_CATALOG.get("M-000")
+    assert spec.champion_eligible is False
+    assert spec.reference_baseline is True
+    assert spec.eligibility_status is ModelEligibilityStatus.REFERENCE_BASELINE
+    assert spec.experimental is False
+    assert spec.deprecated is False
+    assert spec.anomaly_only is False
+    assert MLTask.BINARY_MALICIOUS in spec.supported_tasks
+    assert spec.serializer_id and spec.inference_adapter_id
+
+
+def test_a_reference_baseline_cannot_be_declared_champion_eligible() -> None:
+    """No edit can make it eligible while it is still the reference.
+
+    Enforced by the spec's own validator, so the two fields cannot disagree in
+    either direction -- a catalog transformation that flipped one flag fails at
+    construction rather than producing a promotable baseline.
+    """
+    payload = MODEL_CATALOG.get("M-000").model_dump()
+    payload["champion_eligible"] = True
+    with pytest.raises(ValidationError, match="reference baseline"):
+        ModelSpec(**payload)
+
+    # Clearing the flag does not help either: the status still says otherwise.
+    payload = MODEL_CATALOG.get("M-000").model_dump()
+    payload["champion_eligible"] = True
+    payload["reference_baseline"] = False
+    with pytest.raises(ValidationError, match="declares status reference_baseline"):
+        ModelSpec(**payload)
+
+
+def test_a_reference_baseline_cannot_hide_behind_another_status() -> None:
+    """The flag and the status are tied in both directions."""
+    payload = MODEL_CATALOG.get("M-000").model_dump()
+    payload["eligibility_status"] = ModelEligibilityStatus.EXPERIMENTAL
+    with pytest.raises(ValidationError, match="reference baseline but declares"):
+        ModelSpec(**payload)
+
+    payload = MODEL_CATALOG.get("M-001").model_dump()
+    payload["champion_eligible"] = False
+    payload["eligibility_status"] = ModelEligibilityStatus.REFERENCE_BASELINE
+    with pytest.raises(ValidationError, match="without the reference_baseline flag"):
+        ModelSpec(**payload)
+
+
+def test_a_reference_baseline_is_not_experimental() -> None:
+    """The two states describe different things and cannot be combined."""
+    payload = MODEL_CATALOG.get("M-000").model_dump()
+    payload["experimental"] = True
+    with pytest.raises(ValidationError, match="not experimental"):
+        ModelSpec(**payload)
+
+
+def test_the_supervised_eligibility_set_is_exactly_the_approved_one() -> None:
+    """Pinned per model, so a family that quietly became eligible fails here."""
+    expected = {
+        "M-000": False,
+        "M-001": True,
+        "M-010": True,
+        "M-020": True,
+        "M-021": False,
+        "M-030": False,
+    }
+    actual = {spec.model_id: spec.champion_eligible for spec in MODEL_CATALOG.specs}
+    assert actual == expected
 
 
 def test_the_gated_boosting_family_is_not_champion_eligible() -> None:

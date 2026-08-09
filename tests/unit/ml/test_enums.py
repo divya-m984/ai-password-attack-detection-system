@@ -217,6 +217,7 @@ def test_eligibility_statuses_cover_every_reason_a_model_is_not_promotable() -> 
     """Each non-promotable reason is nameable and distinct."""
     assert {member.value for member in ModelEligibilityStatus} == {
         "champion_eligible",
+        "reference_baseline",
         "serializer_unproven",
         "experimental",
         "anomaly_only",

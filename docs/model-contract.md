@@ -780,19 +780,345 @@ low-level fit and transform **reject** non-canonical rows rather than sorting
 them. Dataset assembly may sort; a fitted-stage API that sorted silently would
 hide the fact that somebody handed the trainer rows it had not canonicalized.
 
-## 15. Known limitations
+## 15. Model adapters and artifacts (Milestone 4)
 
-**No model training exists yet.** Milestone 2 ships the data contract and
-Milestone 3 the preparation layer. There is no fitting, no calibration, no
-threshold selection, no model serialization, no experiment tracking, no champion
-selection, no inference, no fusion, no evaluation, no explainability, and no
-drift detection. No figure in this repository describes model performance,
-because no model has produced one.
+### Two halves, deliberately separated
 
-**Preprocessing has no CLI.** It is a library contract exercised by tests. There
-is no `ml train`, and preprocessing state is not published as an artifact yet;
-`preprocessor.json` arrives with model serialization in Milestone 4, and the
-state is shaped to be included there unchanged.
+Every family has a **fit** path that may use scikit-learn, and a **score** path
+that may not. Scoring reconstructs the output from the stored artifact alone, in
+project code, with no estimator present.
+
+That is what makes the round-trip parity test evidence rather than tautology:
+the two paths do not share an implementation, so agreement between them means
+something. It is also what lets a published model outlive the release it was
+fitted under — the artifact is numbers and metadata, and reading it needs no
+estimator at all.
+
+Adapters read no Parquet, no label file, no split file, no campaign metadata,
+and no feature manifest. A `TrainingBatch` arrives already assembled by
+Milestone 2, already transformed by Milestone 3, and already canonically
+ordered — and `fit` *asserts* that ordering rather than trusting it. The
+preprocessor is carried through frozen; nothing can mutate it, because
+`FittedPreprocessor` has no mutable field.
+
+### Why pickle and joblib are not authoritative
+
+Unpickling executes whatever the payload asks for. That makes a model file a
+code file — and a model file is exactly the artifact most likely to be copied
+between machines by somebody who did not produce it. A pickle is also opaque to
+review, unstable across library versions, and impossible to diff.
+
+So the authoritative artifact is canonical JSON beside a deterministic array
+archive, and loading it constructs project types only. Neither `pickle` nor
+`joblib` is imported anywhere in the ML layer, asserted by an AST test over
+every module.
+
+### The published directory
+
+| File | Contents |
+|---|---|
+| `model.json` | contract, hyperparameters, orders, array manifest, score semantics |
+| `arrays.npz` | every fitted number, deterministically encoded |
+| `preprocessor.json` | the Milestone 3 state the matrix was built by |
+| `model_manifest.json` | integrity and provenance, **written last** |
+
+A closed set, not a minimum. An unexpected file fails verification: a loader
+that tolerates extra files is a loader somebody can put something in.
+
+There is no `calibrator.json`, and its absence is *stated* rather than left to
+be inferred — both the document and the manifest record
+`calibration_status: not_fitted`, and a document claiming otherwise is refused.
+
+### Deterministic archive semantics
+
+`numpy.savez` is not used for publication. It writes a ZIP whose members carry
+the wall-clock time they were written, in whatever order the mapping iterated,
+with whatever compression and platform markers the interpreter defaulted to. Two
+runs producing the same model would produce different files.
+
+Every varying field is pinned instead:
+
+| Property | Value |
+|---|---|
+| member order | sorted by array name |
+| member timestamp | 1980-01-01 00:00:00, the ZIP epoch |
+| compression | deflate, fixed level |
+| platform marker | `create_system = 0` |
+| permissions | `0o644` |
+| `.npy` format version | 1.0 |
+| dtype | declared per array, little-endian |
+| memory order | C-contiguous |
+
+Arrays are normalised before writing: object, void, and string dtypes are
+refused outright; NaN and infinity are refused; declared sizes and member counts
+are bounded. Nothing about the machine reaches the bytes — no path, no host
+name, no user name, no temporary directory, no modification time.
+
+Tests write the same semantic arrays in two directories, at wall-clock times a
+measurable interval apart, from mappings with different insertion order, and
+assert the bytes and the SHA-256 are identical.
+
+**Deterministic bytes are a property, not the identity.** A future compression
+change would alter every byte while changing no model.
+
+### Model identity
+
+`model_content_fingerprint` is a SHA-256 over the canonical content: the array
+values, the feature and class orders, the hyperparameters, and the upstream
+fingerprints. `model_id` is a UUIDv5 over that fingerprint together with the
+task and family.
+
+Identity never reads the directory name, the model alias, the output path, a
+file timestamp, an archive timestamp, or the moment of publication. The same
+model written twice in two places is the same model — asserted by test, as is
+the converse: one changed coefficient, or one reordered column, changes it.
+
+`published_at` is recorded because the Phase 2 manifest convention has one, and
+it is excluded from every fingerprint and from the identity.
+
+### Round-trip parity
+
+Every publishable family is fitted, published, reloaded, and re-scored, and the
+two score matrices are compared.
+
+| Family | Bound | Observed |
+|---|---|---|
+| M-000 prior baseline | exact | exact |
+| M-001 threshold baseline | exact | exact |
+| M-010 logistic regression | `1e-12` | `1.1e-16` |
+| M-020 random forest | **exact** | exact |
+| M-021 histogram boosting | `1e-12` | exact (not published) |
+| M-030 isolation forest | `1e-9` | `1.1e-16` |
+
+The bounds differ because the arithmetic does. A tree traversal is comparisons
+and a mean of stored rows, so anything short of bit-equality would mean the two
+implementations disagree about a *split* rather than about a rounding step —
+exact is the only defensible target. A logistic score adds an exponential, and
+the isolation forest reimplements a formula involving a logarithm and Euler's
+constant; for those, one float64 rounding step is what is defensible, and the
+observed error is a single ULP.
+
+**A tolerance was never widened to make a test pass.** The forest's exact target
+caught a real defect: scikit-learn's tree predictor casts its input to float32
+before comparing against a float64 threshold, and a fitted threshold is a
+midpoint computed in that same float32 space. A float64 comparison agrees on
+almost every row and disagrees on any row whose value ties the threshold at
+float32 — which cost `1.5e-2` on the first matrix containing a standardised
+column. The cast is reproduced (`TREE_INPUT_DTYPE`), and a looser tolerance
+would have accepted the bug.
+
+Parity is tested on ordinary values, imputed values, `__unknown` and `__other`
+channels, rows placed exactly on real split thresholds, repeated scoring,
+reordered rows, and models saved and loaded in different directories.
+
+### The verification chain
+
+`ml verify-manifest` and `InferenceModel.load` share the same fail-closed order,
+cheapest and most sceptical first. Each step assumes only what the previous ones
+established:
+
+1. directory exists — 2. exactly the declared files — 3. no symbolic links —
+4. size ceilings — 5. manifest parses under a supported schema — 6. every
+recorded SHA-256 matches — 7. `model.json` parses — 8. manifest and document
+agree on identity, family, task, orders, and every upstream fingerprint —
+9. the archive holds exactly the declared arrays with the declared dtypes,
+shapes, and value digests — 10. the model identity recomputes.
+
+Loading continues: 11. serializer id and version supported — 12. inference
+adapter id supported — 13. family present in the closed registry — 14. catalog
+entry agrees — 15. runtime scikit-learn inside the recorded bounded range —
+16. feature-contract fingerprints match — 17. preprocessor fingerprint matches —
+18. transformed order matches — 19. class order valid.
+
+Only then is an adapter constructed. A test proves the order holds by making
+every adapter constructor raise and asserting a tampered artifact still fails
+with a verification error.
+
+### Security restrictions
+
+A model directory is untrusted data. The loader refuses path-traversal and
+absolute member names, symbolic links, unexpected files, duplicate logical
+entries, malformed JSON, unknown JSON fields, object and void arrays, members
+requiring `allow_pickle`, unsupported dtypes, non-finite arrays, declared shapes
+and counts above the configured ceilings, checksum mismatches, fingerprint
+mismatches, serializer mismatches, and dependency incompatibility.
+
+Family dispatch is a dictionary lookup against a hand-written registry. There is
+no `importlib`, no `__import__`, no `eval`, no `exec`, and no attribute path from
+artifact content to code — asserted by walking the syntax tree rather than
+grepping, so the prohibitions named in a docstring are not mistaken for uses.
+`np.load` is never called with `allow_pickle=True`; the archive reader validates
+names, counts, and sizes before any buffer is interpreted.
+
+Verification executes nothing. A test plants an `__init__.py` and a
+`sitecustomize.py` in a model directory and asserts neither runs.
+
+### The registry and the catalog
+
+`MODEL_IMPLEMENTATIONS` is a closed, hand-written mapping, checked against the
+Milestone 1 catalog at import in both directions: a declared family with no
+implementation and an implementation with no catalog entry are both failures, as
+are disagreements about the catalog model id, the serializer id, the inference
+adapter id, or the supported tasks.
+
+| Model | Family | Publishable | Champion-eligible | Serializer |
+|---|---|---|---|---|
+| M-000 | prior baseline | yes | **no** (reference baseline) | `json_prior_v1` v1 |
+| M-001 | single-feature threshold | yes | yes | `json_threshold_v1` v1 |
+| M-010 | logistic regression | yes | yes | `json_linear_v1` v1 |
+| M-020 | random forest | yes | yes | `json_tree_ensemble_v1` v1 |
+| M-021 | histogram boosting | **no** | **no** (private-interface gate) | `json_histogram_ensemble_v1` v1 |
+| M-030 | isolation forest | yes | **no** (anomaly-only) | `json_isolation_forest_v1` v1 |
+
+The champion-eligible set is therefore exactly **{M-001, M-010, M-020}**, and
+each absence has its own reason rather than a shared one.
+
+Champion *eligibility* is not selection. Nothing in this milestone selects
+anything, and every manifest records `champion_status: not_selected`.
+
+### M-000: the reference baseline, never a candidate
+
+M-000 is `champion_eligible = false`, permanently, with
+`eligibility_status: reference_baseline` and a typed `reference_baseline` flag.
+It is **not** experimental: it is fully implemented, fully publishable, fully
+reportable, and its serializer and inference adapter are as complete as any
+other family's. The only thing it may never be is the winner.
+
+The reason is architectural, not a judgement about its quality:
+
+- a candidate qualifies by **beating M-000** on the configured validation gate,
+  and a model cannot meaningfully beat itself;
+- `NO_ELIGIBLE_CHAMPION` has to stay reachable when M-001, M-010, and M-020 all
+  fail their gates — and it would not be, if the comparator were itself a
+  candidate;
+- a baseline inside its own contest becomes an automatic fallback champion,
+  which is the quietest possible way for a selection process to always succeed.
+
+The invariant is stated in three places and required to agree in all three: the
+catalog entry, the adapter class, and every fitted model. `ModelSpec`'s
+validator refuses `champion_eligible` on a reference baseline and ties the flag
+to the status in both directions, and `assert_registry_matches_catalog` compares
+the adapter's declaration against the reviewed entry — so neither can be edited
+alone. `InferenceModel.load(require_champion_eligible=True)` refuses an M-000
+artifact while loading it perfectly well without that requirement.
+
+Selection logic itself belongs to a later milestone; nothing here implements it.
+
+### M-021: the private-attribute gate
+
+Histogram gradient boosting fits, and reproduces its estimator exactly. It is
+still not champion-eligible, and the reason is not accuracy.
+
+Serialising it requires reading `_predictors` and `_baseline_prediction`. Both
+are private. Neither appears in the scikit-learn API reference, neither carries a
+deprecation policy, and the structured dtype of `predictor.nodes` is an internal
+layout a patch release may rearrange. Every other family is serialised from
+documented attributes, which is what lets the reviewed version range be a review
+gate rather than a hope.
+
+So the dependency is made explicit rather than hidden: `PRIVATE_ATTRIBUTES`
+names exactly what is read and why, `REQUIRED_NODE_FIELDS` names the structured
+fields and their dtype kinds, and `probe_compatibility()` checks all of it
+against the installed release and returns a structured verdict.
+
+**The probe passes on scikit-learn 1.9.0, and the family is still not
+promoted.** The gate is whether a serializer contract may rest on an
+undocumented interface, and the answer does not change when the interface
+happens to be present. The adapter is registered as unpublishable, so its
+private-state dependency never reaches a stored file, and it can be deleted
+without touching anything else.
+
+### M-030: experimental, unsupervised, never a probability
+
+The isolation forest receives no target — `fit` is handed a design matrix and
+nothing else, and the anomaly batch carries no target column at all. Choosing
+which rows are benign happens upstream, where labels are legitimately readable.
+
+It cannot become champion: the flag is false on every model it produces, the
+catalog records `anomaly_only`, and `MLTask.ANOMALY` is absent from
+`SUPERVISED_TASKS`. Its output is an `anomaly_score` under scikit-learn's
+convention — negative, lower meaning more anomalous — and no threshold is
+selected here; that belongs to Milestone 5.
+
+Its scoring path reimplements the published expected-path-length formula because
+scikit-learn's `_average_path_length` is private, which is exactly why parity is
+asserted numerically rather than assumed.
+
+### Probability terminology
+
+Nothing in this milestone produces a probability.
+
+| Task | Score kind |
+|---|---|
+| binary malicious | `decision_score` |
+| attack category | `class_score` |
+| anomaly | `anomaly_score` |
+
+That holds for every family, including the baselines: M-000 and M-001 emit the
+same uncalibrated vocabulary as the learned families. No artifact may advertise
+`calibrated_probability`, `malicious_probability`, or `attack_probability`, and
+every published manifest and document records `calibration_status: not_fitted`.
+
+Two independent guards enforce it. `ScoreSemantics` requires a fitted
+calibration method before a calibrated kind is constructible at all, and refuses
+prose using "probability", "likelihood", or "confidence" for an uncalibrated
+kind. Separately, the model document and the manifest both require
+`calibration_status: not_fitted` at this contract version, so an artifact cannot
+claim a calibrated score kind while recording that no calibrator was fitted —
+tested in both directions.
+
+**Reproducing `predict_proba` is not inheriting its vocabulary.** The parity
+tests compare project-owned output against scikit-learn's `predict_proba`,
+because that is the estimator output being reproduced and the comparison is the
+only way to prove the reconstruction is right. A logistic sigmoid and a forest
+vote both land in `[0, 1]` and look exactly like probabilities. Calling one a
+probability before a calibrator has been fitted *and* its calibration error
+measured is the easiest way for this layer to mislead somebody, so the internal
+comparison is explicitly walled off from the external contract, and a test
+asserts the same model that passes the parity comparison still declares
+`decision_score`.
+
+### Publication is staged
+
+`write_model_directory` builds in a temporary sibling, validates there,
+round-trips the archive there, writes the manifest last, and moves the finished
+directory into place. An existing destination is backed up only when overwriting
+was explicitly permitted, and is restored completely on any failure. A sibling
+rather than the system temporary area, because `rename` is atomic only within a
+filesystem.
+
+A partial directory is therefore impossible: a failed manifest build leaves no
+destination at all, and a failed overwrite leaves the previous model byte for
+byte. This is the publication *primitive*; the orchestration that decides when
+to call it belongs to the training milestone.
+
+## 16. Known limitations
+
+**No training orchestration exists yet.** Milestone 4 ships model adapters,
+artifacts, and loading. There is no calibration, no threshold selection, no
+training command, no experiment ledger, no champion selection, no prediction
+publication, no fusion, no evaluation, no explainability, and no drift
+detection. No figure in this repository describes model performance, because no
+model has been evaluated.
+
+**There is no `ml train`.** Fitting is a library contract exercised by tests. The
+only model command is `ml verify-manifest`, which reads an artifact and executes
+none of it.
+
+**Champion eligibility is a property, not a decision.** Three families are
+eligible — M-001, M-010, M-020 — and none has been selected, compared, or
+promoted; every manifest records `champion_status: not_selected`. M-000 is
+eligible for nothing by design, being the reference the others are measured
+against.
+
+**Parity is measured on this release.** The bounds in §15 hold for scikit-learn
+1.9.0 with `n_jobs=1`. Bit-for-bit reproduction across machines also needs
+`OMP_NUM_THREADS=1`; the tests that depend on it set it rather than mutating any
+user-wide configuration.
+
+**A gated family may disappear.** If a future scikit-learn moves the histogram
+boosting node layout, M-021's compatibility probe fails and the family is
+dropped. Nothing depends on it.
 
 **Imputation is a fabrication, honestly labelled.** A median fills a cell nobody
 observed. The indicator says so, and a model may learn from the indicator — but
