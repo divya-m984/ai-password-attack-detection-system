@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from pathlib import Path
 from typing import Any, Final, Literal, Self
 
@@ -225,6 +226,15 @@ class PreprocessingConfig(BaseModel):
     categorical_encoding: Literal["one_hot"] = "one_hot"
     min_category_frequency: int = Field(default=20, ge=1)
     max_category_cardinality: int = Field(default=64, ge=2)
+    #: Categorical features whose rare TRAIN values collapse into one bucket.
+    #:
+    #: Named explicitly rather than inferred from observed cardinality.  A
+    #: threshold that switches itself on when a vocabulary happens to grow would
+    #: change a fitted model's feature set because the *data* changed, which is
+    #: exactly the kind of silent redefinition the fingerprints exist to catch.
+    #: ``current_country_code`` is the reviewed member: a long tail of countries
+    #: each seen a handful of times is a memorisation surface, not a signal.
+    rare_category_features: tuple[str, ...] = ("current_country_code",)
     rare_category_label: str = "__other"
     unknown_category_label: str = "__unknown"
     missing_category_label: str = "__missing"
@@ -275,6 +285,16 @@ class PreprocessingConfig(BaseModel):
             )
         return value
 
+    @field_validator("rare_category_features")
+    @classmethod
+    def check_rare_category_features(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        """Each named feature appears once and is named, not blank."""
+        if len(set(value)) != len(value):
+            raise ValueError("rare_category_features repeats a feature")
+        if any(not name.strip() for name in value):
+            raise ValueError("rare_category_features names an empty feature")
+        return value
+
     @field_validator(
         "rare_category_label", "unknown_category_label", "missing_category_label"
     )
@@ -318,6 +338,7 @@ class PreprocessingConfig(BaseModel):
             "categorical_encoding": self.categorical_encoding,
             "min_category_frequency": self.min_category_frequency,
             "max_category_cardinality": self.max_category_cardinality,
+            "rare_category_features": sorted(self.rare_category_features),
             "rare_category_label": self.rare_category_label,
             "unknown_category_label": self.unknown_category_label,
             "missing_category_label": self.missing_category_label,
@@ -344,9 +365,60 @@ class ImbalanceConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    class_weight_policy: Literal["balanced", "none"] = "balanced"
+    class_weight_policy: Literal["balanced", "none", "fixed"] = "balanced"
     computed_from: Literal["train"] = "train"
     resampling: Literal["none"] = "none"
+    #: Weights stated in the configuration rather than derived from counts.
+    #:
+    #: Required by, and permitted only under, the ``fixed`` policy.  A reviewed
+    #: constant is occasionally the right answer -- an operator who knows a
+    #: recall floor matters more than the training prevalence suggests -- but it
+    #: is a *decision*, so it is written down, fingerprinted, and recorded in the
+    #: fitted state beside the counts it overrode, never inferred.
+    fixed_class_weights: tuple[tuple[str, float], ...] | None = None
+
+    @field_validator("fixed_class_weights")
+    @classmethod
+    def check_fixed_weights(
+        cls, value: tuple[tuple[str, float], ...] | None
+    ) -> tuple[tuple[str, float], ...] | None:
+        """Each class is named once and carries a finite, strictly positive weight."""
+        if value is None:
+            return value
+        if not value:
+            raise ValueError(
+                "fixed_class_weights must be omitted rather than set to an empty "
+                "mapping"
+            )
+        names = [name for name, _ in value]
+        if len(set(names)) != len(names):
+            raise ValueError("fixed_class_weights names a class more than once")
+        for name, weight in value:
+            if not name.strip():
+                raise ValueError("fixed_class_weights names an empty class")
+            if not math.isfinite(weight) or weight <= 0.0:
+                raise ValueError(
+                    f"fixed_class_weights gives class {name!r} a weight of "
+                    f"{weight!r}; a weight must be finite and strictly positive, "
+                    f"because zero silences a class and a negative weight inverts it"
+                )
+        return value
+
+    @model_validator(mode="after")
+    def check_policy_agrees_with_weights(self) -> Self:
+        """The ``fixed`` policy needs weights; every other policy forbids them."""
+        if self.class_weight_policy == "fixed" and self.fixed_class_weights is None:
+            raise ValueError(
+                "class_weight_policy 'fixed' requires fixed_class_weights; there "
+                "is no implicit default to fall back to"
+            )
+        if self.class_weight_policy != "fixed" and self.fixed_class_weights is not None:
+            raise ValueError(
+                f"fixed_class_weights is set but class_weight_policy is "
+                f"{self.class_weight_policy!r}; weights that are never applied "
+                f"read as though they are"
+            )
+        return self
 
     def fingerprint_data(self) -> dict[str, Any]:
         """Return the semantic fields contributing to the config fingerprint."""
@@ -354,6 +426,13 @@ class ImbalanceConfig(BaseModel):
             "class_weight_policy": self.class_weight_policy,
             "computed_from": self.computed_from,
             "resampling": self.resampling,
+            "fixed_class_weights": (
+                None
+                if self.fixed_class_weights is None
+                else [
+                    [name, float(weight)] for name, weight in self.fixed_class_weights
+                ]
+            ),
         }
 
 

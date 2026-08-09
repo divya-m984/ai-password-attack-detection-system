@@ -49,6 +49,8 @@ def spec(
     deprecated: bool = False,
     intended_use: str = "supervised classification and anomaly detection",
     window: str | None = "5m",
+    aggregate_kind: AggregateKind | None = AggregateKind.MEAN,
+    privacy_class: str = "non_sensitive",
 ) -> FeatureSpec:
     """Return one feature specification with test-friendly defaults."""
     return FeatureSpec(
@@ -56,7 +58,7 @@ def spec(
         group=group,  # type: ignore[arg-type]  # StrEnum coerces the value
         entity=EntityKind.USER,
         window=window,
-        aggregate=AggregateKind.MEAN,
+        aggregate=aggregate_kind,
         dtype=dtype,  # type: ignore[arg-type]  # StrEnum coerces the value
         nullable=nullable,
         leakage_class=leakage_class,  # type: ignore[arg-type]  # StrEnum coerces
@@ -65,6 +67,7 @@ def spec(
         intended_use=intended_use,
         requires_baseline=requires_baseline,
         deprecated=deprecated,
+        privacy_class=privacy_class,  # type: ignore[arg-type]  # Literal coerces
     )
 
 
@@ -90,6 +93,72 @@ def small_catalog() -> FeatureCatalog:
                 "login_hour_deviation",
                 group="baseline",
                 leakage_class="baseline_derived",
+                requires_baseline=True,
+                window=None,
+            ),
+        ]
+    )
+
+
+#: The six features every preprocessing fixture is built from, in catalog order.
+#:
+#: Chosen to span the encoding contract exactly once each: a nullable number, a
+#: non-nullable number, a non-nullable category, a nullable category that rare
+#: bucketing applies to, a nullable boolean, and a non-nullable boolean.  Six is
+#: enough to exercise every branch and small enough that a failing assertion
+#: names the column it means.
+PREPROCESSING_FEATURES: tuple[str, ...] = (
+    "user_failure_rate",
+    "user_attempt_count",
+    "current_authentication_outcome",
+    "current_country_code",
+    "is_new_device_for_user",
+    "user_in_baseline",
+)
+
+
+def preprocessing_catalog() -> FeatureCatalog:
+    """Return a catalog spanning every dtype and nullability preprocessing handles."""
+    return catalog(
+        [
+            spec("user_failure_rate", dtype="float64", nullable=True),
+            spec(
+                "user_attempt_count",
+                dtype="int64",
+                nullable=False,
+                aggregate_kind=AggregateKind.COUNT,
+            ),
+            spec(
+                "current_authentication_outcome",
+                group="current_context",
+                leakage_class="current_event_context",
+                dtype="string",
+                nullable=False,
+                window=None,
+            ),
+            spec(
+                "current_country_code",
+                group="current_context",
+                leakage_class="current_event_context",
+                dtype="string",
+                nullable=True,
+                window=None,
+            ),
+            spec(
+                "is_new_device_for_user",
+                group="baseline",
+                leakage_class="baseline_derived",
+                dtype="bool",
+                nullable=True,
+                requires_baseline=True,
+                window=None,
+            ),
+            spec(
+                "user_in_baseline",
+                group="baseline",
+                leakage_class="baseline_derived",
+                dtype="bool",
+                nullable=False,
                 requires_baseline=True,
                 window=None,
             ),

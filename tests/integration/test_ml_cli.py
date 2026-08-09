@@ -300,12 +300,13 @@ def test_the_package_version_is_unchanged_at_this_checkpoint() -> None:
 
 
 def test_the_ml_package_declares_no_training_module() -> None:
-    """Milestone 2 assembles data and audits it. It fits nothing.
+    """Milestone 3 prepares data. It still fits no model.
 
-    Preprocessing, imbalance handling, fitting, calibration, thresholds,
-    serialization, inference, fusion, evaluation, explanation, and drift all
-    belong to later milestones. An empty placeholder for any of them would make
-    the package look further along than it is.
+    Preprocessing and imbalance handling arrived with Milestone 3 and are listed
+    here. Model fitting, calibration, thresholds, serialization, inference,
+    fusion, evaluation, explanation, and drift belong to later milestones, and an
+    empty placeholder for any of them would make the package look further along
+    than it is.
     """
     package = _repo_root() / "src" / "password_attack_detector" / "ml"
     present = {path.stem for path in package.glob("*.py")}
@@ -319,8 +320,10 @@ def test_the_ml_package_declares_no_training_module() -> None:
         "eligibility",
         "enums",
         "features",
+        "imbalance",
         "ordering",
         "partition",
+        "preprocessing",
         "schemas",
     }
 
@@ -429,11 +432,44 @@ def test_the_dataset_module_is_the_one_that_reads_parquet() -> None:
     assert "pyarrow" in imported
 
 
-def test_no_module_fits_or_preprocesses_anything() -> None:
-    """Milestone 2 assembles and audits. Nothing imports an estimator."""
+def test_no_module_fits_a_model() -> None:
+    """Milestone 3 prepares a matrix by hand. Nothing imports an estimator.
+
+    Preprocessing and class weighting are both implemented as project code with
+    their own typed contracts rather than as calls into a library, so the whole
+    package still imports no estimator, and none of the transitive scientific
+    dependencies is reached directly either.
+    """
     package = _repo_root() / "src" / "password_attack_detector" / "ml"
     for module in sorted(package.glob("*.py")):
         imported = {name.split(".")[0] for name in _imported_names(module)}
         assert "sklearn" not in imported, module.name
         assert "scipy" not in imported, module.name
         assert "joblib" not in imported, module.name
+
+
+def test_the_class_weight_formula_is_the_projects_own() -> None:
+    """``sklearn.utils.class_weight`` is never the authority for a shipped weight.
+
+    Delegating would make the number in a manifest depend on a library's
+    internal convention, which is exactly the kind of dependency a recorded
+    fingerprint cannot express.
+    """
+    module = _repo_root() / "src" / "password_attack_detector" / "ml" / "imbalance.py"
+    imported = _imported_names(module)
+    assert not any(name.startswith("sklearn") for name in imported)
+    assert "class_weight" not in imported
+
+
+def test_preprocessing_reads_no_label_split_or_campaign_type() -> None:
+    """The new module consumes typed frames, never a label-bearing symbol.
+
+    The package-wide sweep in ``tests/unit/detection/test_evaluation.py`` already
+    covers this; asserting it here too means the two modules Milestone 3 adds
+    cannot become a quiet exemption in either place.
+    """
+    package = _repo_root() / "src" / "password_attack_detector" / "ml"
+    for name in ("preprocessing", "imbalance"):
+        imported = _imported_names(package / f"{name}.py")
+        offending = sorted(imported & (LABEL_BEARING_MODULES | LABEL_BEARING_SYMBOLS))
+        assert not offending, (name, offending)

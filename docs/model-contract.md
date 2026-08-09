@@ -394,8 +394,8 @@ Unchanged from Phase 3, and load-bearing:
   failed.
 
 Milestone 2 imputes nothing; nulls are carried through assembly unchanged.
-Milestone 3's preprocessing will impute, and will ship a `<name>__missing`
-indicator beside every imputed column so the distinction survives.
+Milestone 3's preprocessing imputes, and ships a `<name>__missing` indicator
+beside every nullable column so the distinction survives — see §13.
 
 `NaN` and infinity are **refused**, not carried. `NaN != NaN` breaks the exact
 equality comparisons this layer's determinism guarantees rest on, and a null
@@ -514,14 +514,296 @@ rationale it writes for each feature is derived from that feature's own
 classification, which is precisely the reasoning a review exists to challenge.
 Read it, replace the rationales, decide what to defer, and commit it.
 
-## 12. Known limitations
+## 12. Preprocessing (Milestone 3)
 
-**No model training exists yet.** Milestone 2 ships the data contract. There is
-no preprocessing, no imbalance handling, no fitting, no calibration, no threshold
-selection, no model serialization, no experiment tracking, no champion selection,
-no inference, no fusion, no evaluation, no explainability, and no drift
-detection. No figure in this repository describes model performance, because no
-model has produced one.
+`ml.preprocessing` turns the reviewed raw feature matrix into a numeric design
+matrix. It reads no Parquet, no label, no split assignment, and no campaign
+identifier: rows arrive as a typed frame exposing exactly `feature_names`,
+`feature_matrix`, `anchors`, and `split`, and an anchor exposes only its
+identifier and event time — enough to assert canonical order, and nothing more.
+The label-reader allowlist stays the two modules §2 fixed it at.
+
+### Fitting is train-only, and the split decides
+
+`fit_preprocessor` refuses any frame whose split is not `train`. The check is
+against `FIT_ELIGIBLE_SPLITS`, the same one-member set that governs model
+fitting, so widening one widens both visibly.
+
+`transform` accepts every split — encoding validation, test, and holdout rows is
+the normal case. What it never does is write back: `FittedPreprocessor` is a
+frozen pydantic model, so there is no `partial_fit`, no attribute a transform
+could update, and no historical state a re-fit could overwrite. Fitting again
+produces a *new* object.
+
+### Null versus zero, carried through
+
+Phase 3's doctrine (§7) survives the transform:
+
+| Raw value | Value channel | `<name>__missing` |
+|---|---|---|
+| observed number | that number | `0.0` |
+| observed zero | `0.0` | `0.0` |
+| null (nullable feature) | train statistic | `1.0` |
+| null (non-nullable feature) | **rejected** | — |
+
+The indicator is not optional and cannot be configured off: imputing a null
+without flagging it hands an estimator a fabricated observation and deletes the
+distinction in the same step.
+
+The imputation statistic is the **train-only median** by default (`zero` is the
+other declared policy). The even-length rule is pinned in project code — the two
+middle order statistics, averaged — rather than delegated, so a library changing
+its tie convention cannot move every imputed cell in the repository. Sorting is
+by value, so the constant does not depend on row order.
+
+A feature that is **null throughout training** has an undefined median. The
+behaviour is defined rather than left to chance: the value channel is filled
+with `0.0`, `all_null_in_train` records why, and the indicator — constant `1.0`
+across every training row — carries the whole story. Failing the run instead
+would let one feature that happens to be undefined over the training window
+block two hundred that are fine.
+
+`NaN` and infinity are refused on entry and cannot appear on exit.
+
+### Booleans
+
+`False` encodes to `0.0` and `True` to `1.0`. A nullable boolean also carries a
+`<name>__missing` indicator, and the **pair** is the encoding: `(0.0, 0.0)` is an
+observed false and `(0.0, 1.0)` is a missing one. Filling the value channel with
+a third number — `-1`, say — was rejected: it invents an observation that never
+happened and orders it below false, which is meaningless for a boolean and
+actively wrong for anything treating the column as continuous.
+
+Booleans are never standardized. A 0/1 channel stays on 0/1.
+
+### Categorical encoding
+
+Vocabularies are learned from canonical training rows only and **sorted by code
+point**, never by encounter order, so file order cannot reorder the columns.
+
+Three synthetic buckets, and they mean different things:
+
+| Bucket | Meaning |
+|---|---|
+| `__missing` | the value was null (nullable features only) |
+| `__unknown` | training never saw this value |
+| `__other` | training saw this value and it was too rare to keep |
+
+Exactly one column is hot in every block, including for a null and for an unseen
+value. A block of all zeros would say "none of the above" without saying which
+none.
+
+The two frozen rules:
+
+- **A category rare in training stays `__other`** however common it later
+  becomes.
+- **A category unseen in training stays `__unknown`**, never `__other`.
+  Collapsing them would tell a model that an unheard-of country resembles the
+  rare ones.
+
+Neither can enlarge the vocabulary: an unseen value at transform time maps to
+`__unknown` and changes no serialized state.
+
+**Reserved-token collisions are refused, not resolved.** Every bucket label
+begins with `__` (enforced by config validation), and an observed training
+category beginning with `__` fails the fit. Either resolution — renaming the
+value or merging it into the bucket — would silently make one column mean two
+things.
+
+**Rare bucketing is a reviewed list, not a rule that switches itself on.**
+`PreprocessingConfig.rare_category_features` names the features it applies to;
+`current_country_code` is the reviewed member, because a long tail of countries
+each seen a handful of times is a memorisation surface rather than a signal. A
+threshold that armed itself when a vocabulary happened to grow would change a
+model's feature set because the *data* changed. Within a named feature, a
+training count strictly below `min_category_frequency` is bucketed; a count
+equal to it is kept. The `__other` column is emitted only when at least one
+training category was actually bucketed.
+
+A retained vocabulary above `max_category_cardinality` fails the fit: a
+categorical wide enough to identify a row is not a categorical.
+
+### Standardization
+
+Governed by `standardize_numeric_for_linear_models`. When enabled, location and
+scale are fitted on training rows only, using the mean and the **population**
+standard deviation.
+
+A constant column gets `scale = 1.0`, recorded with `zero_variance: true`.
+Centring already sends it to zero, so any other divisor is either a division by
+zero or an arbitrary inflation of a column carrying no variation. The test is
+applied at the precision the scale is *stored* at, so a deviation of `1e-12`
+counts as zero rather than being written and then divided by.
+
+Only numeric **value channels** are scaled. Missingness indicators and one-hot
+columns are already on `{0, 1}`; standardizing them would turn "this value was
+absent" into a number whose meaning depends on how often it was absent in
+training.
+
+One frozen preprocessor serves every model family. The configuration field is
+named for linear models because that is *why* the policy exists, not because the
+matrix is family-specific: standardization is strictly monotone per column, so
+tree families are unaffected by it. No family-specific preprocessing exists, and
+none is planned before the adapters land.
+
+### The output contract
+
+Output columns are emitted in **raw feature order**, and within each feature:
+
+- numeric: `<name>`, then `<name>__missing` if nullable;
+- boolean: `<name>`, then `<name>__missing` if nullable;
+- categorical: one column per retained category in vocabulary order, then
+  `<name>=__other` if emitted, `<name>=__missing` if nullable, then
+  `<name>=__unknown`.
+
+`=` cannot occur in a Phase 3 feature name, so `a=b` can only have come from
+feature `a`. Uniqueness across the whole output list is asserted anyway — a
+separator argument is not a proof.
+
+The transformed matrix is `float64` for a common estimator interface. The
+original semantics stay explicit in state: which features were numeric, which
+were boolean, which categories existed, and what each column means.
+
+### Serialized state
+
+`FittedPreprocessor` round-trips through canonical JSON — sorted keys, ASCII, no
+pickle and no joblib — and carries:
+
+preprocessing schema version · raw feature order · eligible-feature-list
+fingerprint · preprocessing-config fingerprint · numeric imputation statistics ·
+missing-indicator declarations · categorical vocabularies · reserved-bucket
+policy · rare-category thresholds · boolean encoding policy · scaling state ·
+transformed output order · transformed feature count · fitted train row count ·
+its own fingerprint.
+
+Fitted statistics are quantized to nine decimals **when they are fitted**, not
+only when they are written, so the number a transform multiplies by is the number
+the JSON carries: `from_json(to_json())` is byte-identical and produces
+numerically identical output.
+
+Loading is strict. An unknown field, a missing field, malformed JSON, or a schema
+version this build does not implement all fail. Loading loosely would drop what
+it did not understand and then recompute a fingerprint over the remainder.
+
+Identity is semantic: no path, no wall-clock timestamp, and no machine detail
+ever enters the state, so the same rows fitted twice, a year apart, in two
+directories produce the same fingerprint.
+
+### Privacy boundaries
+
+Fitted state is aggregate and semantic. It carries no anchor identifier, no
+campaign identifier, no pseudonym, no coordinate, no credential, and no absolute
+path — swept by test.
+
+Category vocabularies get special treatment, because a vocabulary is the one part
+of the state built from **observed values** rather than from counts. Two rules:
+
+- only features the catalog declares `non_sensitive` may have a vocabulary
+  serialized at all;
+- an individual value shaped like a pseudonym (`usr_`, `src_`, `dev_`, `app_`,
+  `ses_`), a path, or a `lat,lon` pair **fails the fit**.
+
+The audit fails rather than publishing. Eligibility asks "may a model use this";
+this asks "may an artifact publish these values", and they are different
+questions — a feature can pass every eligibility check and still be the wrong
+thing to write a vocabulary of.
+
+## 13. Class weights (Milestone 3)
+
+`ml.imbalance` computes class weights and does nothing else. It imports no label
+type, opens no file, and receives a plain sequence of class values from whichever
+component already read the labels.
+
+**No resampling, ever.** `ImbalanceConfig.resampling` admits one value.
+Oversampling duplicates rows a split boundary already placed, undersampling
+discards evidence, and synthetic minority generation invents authentication
+events that never happened and then measures a detector against them.
+
+Three policies:
+
+| Policy | Weight |
+|---|---|
+| `none` | `1.0` for every class; counts still recorded |
+| `balanced` | `n_samples / (n_classes * count(class))` |
+| `fixed` | the reviewed weights from configuration |
+
+The balanced formula is implemented in project code rather than delegated to
+`sklearn.utils.class_weight`, so the number in a manifest can be recomputed by
+hand from the counts printed beside it. A test asserts the module imports no
+`sklearn` name.
+
+What fails rather than defaulting:
+
+- a class with **zero training rows** under `balanced` — that is a split or label
+  problem to fix, not a weight to invent;
+- a class value outside the declared class order;
+- a fixed mapping naming a class the task does not declare, or omitting one it
+  does;
+- a zero or negative weight, at configuration validation — zero silences a class
+  and a negative weight inverts it.
+
+`ClassWeightState` is frozen, JSON-round-trippable, and fingerprinted over task,
+class order, policy, training counts, weights, and the configuration fingerprint.
+Weights are quantized on computation, so a reload cannot drift. Class order is
+declared, never inferred from which classes a particular split happened to
+contain — an order that moved with the data would leave every recorded
+fingerprint pointing at the wrong arrangement.
+
+Row order does not affect the result: values are counted, not scanned.
+
+## 14. Leakage is proven behaviourally
+
+The strongest Milestone 3 acceptance test is not structural. A structural check
+("no split column is read") can be satisfied by code that leaks anyway.
+
+The behavioural test fits preprocessing and class weights on training rows, then
+transforms validation, test, and holdout fixtures built to move anything that
+reads them — different numeric distributions, different missingness, different
+category frequencies, categories training never saw, a numeric scale a million
+times larger, flipped booleans — and asserts the serialized state is **byte
+identical** afterwards. Imputation values, vocabularies, rare buckets, scale
+statistics, output order, and the fingerprint are each asserted individually, so
+a failure names the part that leaked.
+
+Two converses keep it honest:
+
+- a **fresh fit** on the same training rows after all that perturbation reaches
+  the same state, which is what proves the statistics are a function of the
+  training rows alone rather than of whatever the process happened to see;
+- **perturbing training** *does* move the fingerprint — five separate edits, one
+  per semantic — because a state that never changed would pass the first test
+  trivially.
+
+Row-order determinism is proven the same way: shuffled source rows are
+canonicalized by Milestone 2 and reach byte-identical fitted state, while the
+low-level fit and transform **reject** non-canonical rows rather than sorting
+them. Dataset assembly may sort; a fitted-stage API that sorted silently would
+hide the fact that somebody handed the trainer rows it had not canonicalized.
+
+## 15. Known limitations
+
+**No model training exists yet.** Milestone 2 ships the data contract and
+Milestone 3 the preparation layer. There is no fitting, no calibration, no
+threshold selection, no model serialization, no experiment tracking, no champion
+selection, no inference, no fusion, no evaluation, no explainability, and no
+drift detection. No figure in this repository describes model performance,
+because no model has produced one.
+
+**Preprocessing has no CLI.** It is a library contract exercised by tests. There
+is no `ml train`, and preprocessing state is not published as an artifact yet;
+`preprocessor.json` arrives with model serialization in Milestone 4, and the
+state is shaped to be included there unchanged.
+
+**Imputation is a fabrication, honestly labelled.** A median fills a cell nobody
+observed. The indicator says so, and a model may learn from the indicator — but
+no statistic recovers the value that was never measured, and a feature null
+across most of the training window contributes far less than its column count
+suggests.
+
+**Category coverage is training-bounded.** A deployment seeing genuinely new
+countries or client types routes them all to one `__unknown` column. That is the
+honest encoding, not a good one: the model has no way to distinguish among them,
+and that is a reason to refit rather than a property to rely on.
 
 **No real authentication traffic is generated.** This system is defensive and
 offline. It never stores plaintext passwords, never cracks credentials, never
