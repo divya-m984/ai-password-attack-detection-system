@@ -2,20 +2,21 @@
 
 Subcommands::
 
-    password-attack-detector ml catalog  -- print the versioned model catalog
+    password-attack-detector ml catalog         -- the versioned model catalog
+    password-attack-detector ml audit-features  -- the eligibility and leakage audit
 
-Milestone 1 ships exactly one command.  Training, calibration, threshold
-selection, inference, evaluation, and comparison arrive in later milestones,
-and no placeholder is registered for them: a command that exists but does
-nothing is worse than one that is honestly absent, because ``--help`` would
-advertise a capability the code does not have.
+Two commands, and the absences are deliberate.  Training, calibration,
+threshold selection, inference, evaluation, and comparison arrive in later
+milestones, and no placeholder is registered for them: a command that exists
+but does nothing is worse than one that is honestly absent, because ``--help``
+would advertise a capability the code does not have.
 
-**No command prints an identifier.**  Not an event identifier, an entity
-pseudonym, a coordinate, a secret, or an absolute path.  Output is metadata:
-model identifiers, versions, families, declared hyperparameters, eligibility,
-and limitations.  No executable configuration and no source code is emitted,
-and no measured performance figure appears anywhere -- this command describes
-what *may* be fitted, never what was.
+**No command prints an identifier.**  Not an event identifier, a campaign
+identifier, an entity pseudonym, a coordinate, a raw feature row, a secret, or
+an absolute path.  Output is metadata and aggregate counts.  No executable
+configuration and no source code is emitted, and no measured performance figure
+appears anywhere -- these commands describe what *may* be fitted, never how well
+anything did.
 
 Heavy imports live inside the command bodies so ``--help`` stays fast.
 """
@@ -43,9 +44,10 @@ from password_attack_detector.exceptions import (
 ml_app = typer.Typer(
     name="ml",
     help=(
-        "Machine-learning detection layer: inspect the model catalog. "
-        "Models are fitted on Phase 3 feature snapshots and are reported "
-        "alongside the rule engine, never in place of it."
+        "Machine-learning detection layer: inspect the model catalog and "
+        "audit feature eligibility. Models are fitted on Phase 3 feature "
+        "snapshots and are reported alongside the rule engine, never in "
+        "place of it."
     ),
     no_args_is_help=True,
 )
@@ -121,6 +123,20 @@ def catalog(
         Path | None,
         typer.Option("--output", "-o", help="Write to this file instead of stdout."),
     ] = None,
+    emit_allowlist: Annotated[
+        Path | None,
+        typer.Option(
+            "--emit-allowlist",
+            help="Draft a reviewable ML feature allowlist at this path and exit.",
+        ),
+    ] = None,
+    feature_config_path: Annotated[
+        Path | None,
+        typer.Option(
+            "--feature-config",
+            help="Phase 3 feature YAML used to build the catalog for the draft.",
+        ),
+    ] = None,
 ) -> None:
     """Print the versioned model catalog.
 
@@ -131,6 +147,12 @@ def catalog(
     and evaluated, but promotion additionally requires proven serializer and
     inference-adapter parity plus every validation gate. Nothing printed here
     is a measured result.
+
+    ``--emit-allowlist`` drafts a machine-learning feature allowlist from the
+    Phase 3 catalog. The result is a **starting point for review**, never a
+    finished contract: the rationale it writes for each feature is derived from
+    that feature's own classification, which is precisely the reasoning a review
+    exists to challenge.
     """
     from password_attack_detector.ml.catalog import (
         MODEL_CATALOG,
@@ -140,6 +162,10 @@ def catalog(
 
     if output_format not in {"text", "markdown"}:
         _fail(f"Unknown format {output_format!r}; use 'text' or 'markdown'")
+
+    if emit_allowlist is not None:
+        _emit_allowlist(emit_allowlist, feature_config_path)
+        return
 
     if output_format == "markdown":
         rendered = model_catalog_to_markdown(MODEL_CATALOG)
@@ -215,3 +241,269 @@ def catalog(
             model_catalog_to_markdown(MODEL_CATALOG), encoding="utf-8"
         )
         _console.print(f"\nWrote model catalog to {_display(output_path)}")
+
+
+def _emit_allowlist(target: Path, feature_config_path: Path | None) -> None:
+    """Draft a reviewable feature allowlist and write it to *target*."""
+    from password_attack_detector.features.catalog import build_catalog
+    from password_attack_detector.features.config import (
+        FeatureConfig,
+        load_feature_config,
+    )
+    from password_attack_detector.ml.features import emit_allowlist_document
+
+    config = _guard(
+        "Cannot load the feature configuration",
+        lambda: (
+            FeatureConfig()
+            if feature_config_path is None
+            else load_feature_config(feature_config_path)
+        ),
+    )
+    catalog = _guard("Cannot build the feature catalog", lambda: build_catalog(config))
+    document = emit_allowlist_document(
+        catalog,
+        compatible_feature_catalog_fingerprints=[catalog.fingerprint()],
+        admitted_in="draft",
+    )
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(document, encoding="utf-8")
+    _console.print(f"Wrote a draft feature allowlist to {_display(target)}")
+    _console.print(
+        "[yellow]This is a draft, not a reviewed contract. Every rationale it "
+        "wrote is derived from the feature's own classification. Read it, "
+        "replace the rationales, decide what to defer, and commit it.[/yellow]"
+    )
+
+
+# ---------------------------------------------------------------------------
+# audit-features
+# ---------------------------------------------------------------------------
+
+
+@ml_app.command(name="audit-features")
+def audit_features(
+    features_path: Annotated[
+        Path, typer.Option("--features", help="Phase 3 feature snapshots Parquet file.")
+    ],
+    labels_path: Annotated[
+        Path, typer.Option("--labels", help="Phase 3 feature labels Parquet file.")
+    ],
+    splits_path: Annotated[
+        Path, typer.Option("--splits", help="Phase 3 feature splits Parquet file.")
+    ],
+    campaign_labels: Annotated[
+        Path,
+        typer.Option(
+            "--campaign-labels",
+            help="Phase 2 label table, required for campaign-grouped validation.",
+        ),
+    ],
+    feature_manifest: Annotated[
+        Path,
+        typer.Option(
+            "--feature-manifest",
+            help="Phase 3 feature manifest, for the fingerprint provenance check.",
+        ),
+    ],
+    allowlist_path: Annotated[
+        Path,
+        typer.Option("--allowlist", help="Reviewed ML feature allowlist YAML file."),
+    ],
+    config_path: Annotated[
+        Path | None, typer.Option("--config", help="ML YAML configuration file.")
+    ] = None,
+    feature_config_path: Annotated[
+        Path | None,
+        typer.Option("--feature-config", help="Phase 3 feature YAML configuration."),
+    ] = None,
+    output_dir: Annotated[
+        Path | None,
+        typer.Option("--output-dir", "-o", help="Directory for the audit reports."),
+    ] = None,
+) -> None:
+    """Audit ML feature eligibility and leakage over a published feature dataset.
+
+    Loads every data source through ``ml.dataset``, which is the only module in
+    this layer permitted to read ground truth, split assignments, or campaign
+    metadata. Resolves the reviewed allowlist against the executable catalog,
+    assembles the canonical split-scoped dataset, partitions validation at
+    campaign-group boundaries, and runs every currently implementable check.
+
+    ``--campaign-labels`` and ``--feature-manifest`` are **required**, not
+    optional. Campaign identifiers are absent from the Phase 3 tables, and a
+    partition without them would have to cut between rows; the manifest is what
+    the fingerprint provenance check compares against. Omitting either would
+    leave a mandatory check unevaluated, and an unevaluated check is not a
+    passed check -- so the command refuses the input rather than reporting a
+    smaller audit as a clean one.
+
+    Exits zero only when every check passed. Output is aggregate counts and
+    stable check names; no identifier, campaign, row, pseudonym, or absolute
+    path is printed.
+    """
+    import json
+
+    from password_attack_detector.features.catalog import build_catalog
+    from password_attack_detector.features.config import (
+        FeatureConfig,
+        load_feature_config,
+    )
+    from password_attack_detector.ml.config import MLConfig, load_ml_config
+    from password_attack_detector.ml.dataset import load_ml_dataset
+    from password_attack_detector.ml.eligibility import (
+        ML_AUDIT_JSON_FILE,
+        ML_AUDIT_MD_FILE,
+        MLEligibilityAuditor,
+        ml_audit_result_to_markdown,
+    )
+    from password_attack_detector.ml.enums import MLSplit
+    from password_attack_detector.ml.features import (
+        load_feature_allowlist,
+        resolve_eligible_features,
+    )
+    from password_attack_detector.ml.partition import partition_validation
+
+    required = (
+        features_path,
+        labels_path,
+        splits_path,
+        campaign_labels,
+        feature_manifest,
+        allowlist_path,
+    )
+    for path in required:
+        if not path.exists():
+            _fail(f"Input not found: {_display(path)}")
+
+    config: MLConfig = _guard(
+        "Cannot load the ML configuration",
+        lambda: MLConfig() if config_path is None else load_ml_config(config_path),
+    )
+    feature_config = _guard(
+        "Cannot load the feature configuration",
+        lambda: (
+            FeatureConfig()
+            if feature_config_path is None
+            else load_feature_config(feature_config_path)
+        ),
+    )
+    catalog = _guard(
+        "Cannot build the feature catalog", lambda: build_catalog(feature_config)
+    )
+    allowlist = _guard(
+        "Cannot load the feature allowlist",
+        lambda: load_feature_allowlist(allowlist_path),
+    )
+    eligible = _guard(
+        "Cannot resolve the eligible feature set",
+        lambda: resolve_eligible_features(
+            catalog,
+            allowlist,
+            include_leakage_classes=config.preprocessing.include_leakage_classes,
+            include_feature_groups=config.preprocessing.include_feature_groups,
+            feature_schema_version=config.required_feature_schema_version,
+        ),
+    )
+
+    def _manifest() -> dict[str, Any]:
+        try:
+            loaded = json.loads(feature_manifest.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise DataValidationError(
+                f"Cannot read the feature manifest ({type(exc).__name__})"
+            ) from None
+        if not isinstance(loaded, dict):
+            raise DataValidationError("The feature manifest is not a JSON object")
+        return loaded
+
+    manifest = _guard("Feature manifest", _manifest)
+
+    dataset = _guard(
+        "Cannot assemble the dataset",
+        lambda: load_ml_dataset(
+            features_path=features_path,
+            labels_path=labels_path,
+            splits_path=splits_path,
+            campaign_labels_path=campaign_labels,
+            eligible=eligible,
+            feature_catalog_fingerprint=catalog.fingerprint(),
+        ),
+    )
+
+    partition = _guard(
+        "Cannot partition the validation split",
+        lambda: partition_validation(
+            dataset.for_split(MLSplit.VALIDATION),
+            config=config.validation_partition,
+            support=config.support,
+            campaign_metadata_supplied=True,
+        ),
+    )
+
+    result = _guard(
+        "Cannot audit the dataset",
+        lambda: MLEligibilityAuditor(
+            catalog=catalog,
+            allowlist=allowlist,
+            eligible=eligible,
+            config=config,
+            feature_manifest=manifest,
+            partition=partition,
+        ).audit(dataset),
+    )
+
+    target = output_dir or Path("reports")
+    target.mkdir(parents=True, exist_ok=True)
+    (target / ML_AUDIT_JSON_FILE).write_text(
+        json.dumps(result.to_dict(), indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    (target / ML_AUDIT_MD_FILE).write_text(
+        ml_audit_result_to_markdown(result), encoding="utf-8"
+    )
+
+    table = Table(title="ML eligibility audit")
+    table.add_column("Check")
+    table.add_column("Result")
+    for check in result.checks:
+        colour = "green" if check.passed else "red"
+        verdict = "pass" if check.passed else str(check.status)
+        table.add_row(check.name, f"[{colour}]{verdict}[/{colour}]")
+    _console.print(table)
+
+    counts = Table(title="Counts")
+    counts.add_column("Quantity")
+    counts.add_column("Value", justify="right")
+    counts.add_row("Eligible features", f"{result.checked_feature_count:,}")
+    counts.add_row("Rows", f"{result.checked_row_count:,}")
+    for split, count in sorted(result.split_row_counts.items()):
+        counts.add_row(f"Rows in {split}", f"{count:,}")
+    counts.add_row("Validation-A rows", f"{partition.partition_a_row_count:,}")
+    counts.add_row("Validation-B rows", f"{partition.partition_b_row_count:,}")
+    counts.add_row(
+        "Validation-A campaigns", f"{partition.partition_a_campaign_count:,}"
+    )
+    counts.add_row(
+        "Validation-B campaigns", f"{partition.partition_b_campaign_count:,}"
+    )
+    _console.print(counts)
+
+    _console.print(f"Wrote {_display(target / ML_AUDIT_JSON_FILE)}")
+    _console.print(f"Wrote {_display(target / ML_AUDIT_MD_FILE)}")
+    _console.print(
+        f"Allowlist [bold]{result.allowlist_id}[/bold] "
+        f"v{result.allowlist_version} "
+        f"({result.allowlist_fingerprint[:16]}); eligible feature list "
+        f"{result.eligible_feature_list_fingerprint[:16]}"
+    )
+    _console.print(
+        "[dim]A skipped check is not a passed check. Passing says the feature "
+        "contract and split discipline are sound; it says nothing about "
+        "detection effectiveness, and no model has been fitted.[/dim]"
+    )
+
+    if not result.passed:
+        _err.print(f"[red]Audit failed:[/red] {', '.join(result.failures)}")
+        raise typer.Exit(code=1)
+
+    _console.print("[green]Audit status: pass[/green]")

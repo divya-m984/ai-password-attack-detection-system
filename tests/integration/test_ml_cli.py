@@ -1,13 +1,12 @@
-"""Integration tests for the ``ml`` CLI group.
+"""Integration tests for the ``ml`` CLI group's registration and catalog command.
 
-Milestone 1 ships exactly one command, so these tests cover three things: that
-``ml catalog`` renders from the executable catalog, that the tracked
-documentation is byte-identical to what the command produces, and that adding
-the sub-application did not disturb any existing command group.
+Milestone 2 ships two commands. This module covers ``ml catalog`` and the
+group's registration; ``ml audit-features`` has its own module, because it
+needs published Parquet inputs and asserts a different set of properties.
 
 Two properties are swept, matching the conventions of the other CLI test
 modules: **no command prints an identifier or an absolute path**, and **no
-command advertises a capability Milestone 1 does not have**.
+command advertises a capability this milestone does not have**.
 """
 
 from __future__ import annotations
@@ -32,7 +31,7 @@ _UUID_RE = re.compile(
     r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b"
 )
 
-#: Commands Milestone 1 deliberately does not ship.  A placeholder that exists
+#: Commands Milestone 2 deliberately does not ship.  A placeholder that exists
 #: but does nothing is worse than an honest absence, because ``--help`` would
 #: advertise a capability the code lacks.
 DEFERRED_COMMANDS = (
@@ -48,8 +47,10 @@ DEFERRED_COMMANDS = (
     "validate",
     "profile",
     "verify-manifest",
-    "audit-features",
 )
+
+#: The complete set of commands this milestone registers.
+SHIPPED_COMMANDS = ("catalog", "audit-features")
 
 
 def _repo_root() -> Path:
@@ -88,11 +89,12 @@ def test_the_ml_group_shows_help_with_no_arguments() -> None:
     assert result.exit_code != 0 or "catalog" in result.stdout
 
 
-def test_the_ml_group_advertises_only_the_shipped_command() -> None:
-    """Milestone 1 registers ``catalog`` and nothing else."""
+def test_the_ml_group_advertises_only_the_shipped_commands() -> None:
+    """Milestone 2 registers ``catalog`` and ``audit-features``, and no more."""
     result = _invoke("ml", "--help")
     assert result.exit_code == 0
-    assert "catalog" in result.stdout
+    for command in SHIPPED_COMMANDS:
+        assert command in result.stdout, command
     for command in DEFERRED_COMMANDS:
         assert command not in result.stdout, command
 
@@ -297,13 +299,13 @@ def test_the_package_version_is_unchanged_at_this_checkpoint() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_the_ml_package_declares_no_dataset_or_training_module() -> None:
-    """Milestone 1 fits nothing and reads no label.
+def test_the_ml_package_declares_no_training_module() -> None:
+    """Milestone 2 assembles data and audits it. It fits nothing.
 
-    Dataset assembly, preprocessing, fitting, calibration, thresholds,
-    inference, fusion, evaluation, explanation, and drift all belong to later
-    milestones. An empty placeholder for any of them would make the package
-    look further along than it is.
+    Preprocessing, imbalance handling, fitting, calibration, thresholds,
+    serialization, inference, fusion, evaluation, explanation, and drift all
+    belong to later milestones. An empty placeholder for any of them would make
+    the package look further along than it is.
     """
     package = _repo_root() / "src" / "password_attack_detector" / "ml"
     present = {path.stem for path in package.glob("*.py")}
@@ -312,8 +314,13 @@ def test_the_ml_package_declares_no_dataset_or_training_module() -> None:
         "catalog",
         "cli",
         "config",
+        "dataset",
         "dependencies",
+        "eligibility",
         "enums",
+        "features",
+        "ordering",
+        "partition",
         "schemas",
     }
 
@@ -339,8 +346,10 @@ def _imported_names(module: Path) -> set[str]:
 
 
 #: Modules that read ground truth, split assignments, or the canonical event
-#: stream.  Milestone 2 introduces ``ml.dataset`` as the ML layer's single
-#: permitted label reader; until then nothing in ``ml`` may import any of them.
+#: stream.  ``ml.dataset`` is the ML layer's single permitted reader, and the
+#: two-module allowlist is asserted in
+#: ``tests/unit/detection/test_evaluation.py``; this module checks the narrower
+#: property that *no other* ``ml`` module imports one.
 LABEL_BEARING_MODULES = frozenset(
     {
         "password_attack_detector.data.serialization",
@@ -369,33 +378,62 @@ LABEL_BEARING_SYMBOLS = frozenset(
 )
 
 
-def test_no_milestone_one_module_imports_a_label_reader() -> None:
-    """Nothing in this milestone touches ground truth in any form.
+#: The one ML module permitted to read ground truth.  Named as a constant so
+#: the exemptions below cannot be widened by editing a condition.
+LABEL_READER = "dataset"
 
-    Milestone 2 introduces ``ml.dataset`` as the layer's single label reader
-    and extends the detection layer's import-graph assertion to admit exactly
-    it. Until then, no ML module may import a label, a split assignment, or a
-    campaign record.
+
+def test_only_the_dataset_module_imports_a_label_reader() -> None:
+    """Every other ML module receives its labels as typed arguments.
+
+    The complete two-module allowlist -- ``detection.evaluation`` and
+    ``ml.dataset`` -- is asserted in ``tests/unit/detection/test_evaluation.py``,
+    in both directions. This is the ``ml``-package half of it.
     """
     package = _repo_root() / "src" / "password_attack_detector" / "ml"
     modules = sorted(package.glob("*.py"))
     assert modules
 
+    readers = []
     for module in modules:
         imported = _imported_names(module)
         offending = sorted(imported & (LABEL_BEARING_MODULES | LABEL_BEARING_SYMBOLS))
-        assert not offending, f"{module.name} imports {offending}"
+        if offending:
+            readers.append(module.stem)
+    assert readers == [LABEL_READER], readers
 
 
-def test_no_milestone_one_module_opens_a_data_file() -> None:
-    """Milestone 1 reads configuration and nothing else.
+def test_only_the_dataset_module_opens_a_data_file() -> None:
+    """Parquet is read in exactly one place in this layer.
 
-    ``load_ml_config`` reads a YAML file; no module reads a Parquet table, and
-    none of them constructs a dataframe. A milestone that fits nothing should
-    also load nothing.
+    A second module that opened a table would be a second place where the join
+    could be done differently, and the first thing it would need is the label
+    column. ``cli`` is exempt as the composition root: it names the paths and
+    hands them to ``ml.dataset``, and imports no reader of its own.
     """
     package = _repo_root() / "src" / "password_attack_detector" / "ml"
     for module in sorted(package.glob("*.py")):
-        imported = _imported_names(module)
-        assert "pyarrow" not in {name.split(".")[0] for name in imported}, module.name
-        assert "pandas" not in {name.split(".")[0] for name in imported}, module.name
+        if module.stem == LABEL_READER:
+            continue
+        imported = {name.split(".")[0] for name in _imported_names(module)}
+        assert "pyarrow" not in imported, module.name
+        assert "pandas" not in imported, module.name
+
+
+def test_the_dataset_module_is_the_one_that_reads_parquet() -> None:
+    """The converse: the permitted reader must actually be the reader."""
+    package = _repo_root() / "src" / "password_attack_detector" / "ml"
+    imported = {
+        name.split(".")[0] for name in _imported_names(package / f"{LABEL_READER}.py")
+    }
+    assert "pyarrow" in imported
+
+
+def test_no_module_fits_or_preprocesses_anything() -> None:
+    """Milestone 2 assembles and audits. Nothing imports an estimator."""
+    package = _repo_root() / "src" / "password_attack_detector" / "ml"
+    for module in sorted(package.glob("*.py")):
+        imported = {name.split(".")[0] for name in _imported_names(module)}
+        assert "sklearn" not in imported, module.name
+        assert "scipy" not in imported, module.name
+        assert "joblib" not in imported, module.name

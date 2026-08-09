@@ -30,21 +30,27 @@ from enum import StrEnum
 from typing import Final
 
 __all__ = [
+    "FIT_ELIGIBLE_SPLITS",
     "PROBABILITY_SCORE_KINDS",
     "SUPERVISED_TASKS",
     "UNKNOWN_CATEGORY",
+    "AuditCheckStatus",
+    "AuditStatus",
     "CalibrationMethod",
     "ChampionStatus",
     "ExperimentRecordType",
+    "FeatureDecisionPoint",
     "FusionStrategy",
     "GateStatus",
     "HyperparameterKind",
+    "MLSplit",
     "MLTask",
     "ModelEligibilityStatus",
     "ModelFamily",
     "ScoreKind",
     "ThresholdObjective",
     "ValidationPartition",
+    "ValidationPartitionStatus",
     "is_probability",
 ]
 
@@ -263,6 +269,92 @@ class HyperparameterKind(StrEnum):
     INT = "int"
     FLOAT = "float"
     STRING = "string"
+
+
+class MLSplit(StrEnum):
+    """Where a row may be used, as the ML layer names it.
+
+    A deliberate **mirror** of ``features.splitting.SplitLabel`` rather than an
+    import of it.  ``SplitLabel`` lives in the module that also carries
+    ``SplitAssignment`` and ``split_dataset``, and the ML layer's import-graph
+    rule admits exactly one module -- :mod:`password_attack_detector.ml.dataset`
+    -- to read from there.  Every other ML module still has to reason about
+    splits, so it reasons about this enum instead.
+
+    Mirroring risks divergence, so the divergence is made loud rather than
+    prevented by convention: ``ml.dataset``, the one module that sees both,
+    asserts at import that the two enums carry identical values.  Renaming a
+    Phase 3 split member therefore fails the build here rather than quietly
+    producing an ML layer that files rows under a split that no longer exists.
+    """
+
+    TRAIN = "train"
+    VALIDATION = "validation"
+    TEST = "test"
+    NOVEL_ANOMALY_HOLDOUT = "novel_anomaly_holdout"
+    EXCLUDED = "excluded"
+
+
+#: The only split a model may be fitted on.
+#:
+#: One member, and the narrowness is the point.  Validation partitions fit
+#: calibrators and choose operating points; test and holdout rows are read once,
+#: after everything is frozen; excluded rows are read never.
+FIT_ELIGIBLE_SPLITS: Final[frozenset[MLSplit]] = frozenset({MLSplit.TRAIN})
+
+
+class FeatureDecisionPoint(StrEnum):
+    """When a feature's value becomes available to a decision.
+
+    Recorded per admitted feature in the reviewed allowlist, and checked against
+    the catalog rather than trusted: a reviewer who writes ``post_event`` beside
+    a baseline-derived feature is describing a system that does not exist, and
+    the mismatch is rejected rather than absorbed.
+    """
+
+    #: Computable from the anchor event and the history preceding it, with no
+    #: fitted state beyond the event stream itself.
+    POST_EVENT = "post_event"
+    #: Requires a behavioural baseline fitted on an approved reference
+    #: interval.  Available only where that baseline exists.
+    REQUIRES_FITTED_BASELINE = "requires_fitted_baseline"
+
+
+class AuditCheckStatus(StrEnum):
+    """Outcome of one named eligibility-audit check.
+
+    ``SKIPPED`` is not ``PASS``.  A check whose input was not supplied reports
+    what it is -- unevaluated -- and the overall audit fails, mirroring the
+    Phase 3 leakage auditor's rule.  Reporting an unevaluated check as passed
+    would make an audit look like evidence for something nobody measured.
+    """
+
+    PASS = "pass"
+    FAIL = "fail"
+    SKIPPED = "skipped"
+
+
+class AuditStatus(StrEnum):
+    """Aggregate outcome of an eligibility audit.
+
+    Two members.  There is no ``WARNING``: a leakage finding is not a matter of
+    degree, and a third status would invite a run to proceed on one.
+    """
+
+    PASS = "pass"
+    FAIL = "fail"
+
+
+class ValidationPartitionStatus(StrEnum):
+    """Whether the validation split could be partitioned meaningfully.
+
+    ``INSUFFICIENT_VALIDATION_SUPPORT`` is a typed outcome, not an exception
+    and not a fallback.  The alternative -- halving the rows anyway -- would
+    hand back two partitions that look usable and are not.
+    """
+
+    PARTITIONED = "partitioned"
+    INSUFFICIENT_VALIDATION_SUPPORT = "insufficient_validation_support"
 
 
 #: The category emitted when the multiclass head cannot assign a known class.

@@ -20,11 +20,18 @@ What this layer is, and is not:
 * Phase 4's ordinal ``risk_score`` and this layer's calibrated probability are
   **separately typed and never combined arithmetically**.
 
-Milestone 1 establishes the foundation: the dependency policy, the typed
+Milestone 1 established the foundation: the dependency policy, the typed
 enumerations and contracts, the versioned configuration, and the executable
-model catalog.  Dataset assembly, preprocessing, fitting, calibration,
-threshold selection, inference, fusion, and evaluation arrive in later
-milestones and are deliberately absent here.
+model catalog.  Milestone 2 adds the data contract: the reviewed opt-in feature
+allowlist, canonical row ordering, dataset assembly, campaign-disjoint
+validation partitioning, and the eligibility audit.  Preprocessing, fitting,
+calibration, threshold selection, inference, fusion, and evaluation arrive in
+later milestones and are deliberately absent here.
+
+``dataset`` is re-exported deliberately sparingly.  It is the one module in this
+layer permitted to read ground truth, and keeping its label types out of the
+package's public surface means a caller who wants them has to import the module
+by name -- which is exactly the moment the import-graph test notices.
 """
 
 from __future__ import annotations
@@ -49,20 +56,50 @@ from password_attack_detector.ml.dependencies import (
     collect_dependency_versions,
     sklearn_compatible,
 )
+from password_attack_detector.ml.eligibility import (
+    CHECK_NAMES,
+    MLEligibilityAuditor,
+    MLEligibilityAuditResult,
+    ml_audit_result_to_markdown,
+)
 from password_attack_detector.ml.enums import (
+    FIT_ELIGIBLE_SPLITS,
     UNKNOWN_CATEGORY,
+    AuditCheckStatus,
+    AuditStatus,
     CalibrationMethod,
     ChampionStatus,
     ExperimentRecordType,
+    FeatureDecisionPoint,
     FusionStrategy,
     GateStatus,
+    MLSplit,
     MLTask,
     ModelEligibilityStatus,
     ModelFamily,
     ScoreKind,
     ThresholdObjective,
     ValidationPartition,
+    ValidationPartitionStatus,
     is_probability,
+)
+from password_attack_detector.ml.features import (
+    ALLOWLIST_SCHEMA_VERSION,
+    ML_OUTPUT_COLUMNS,
+    EligibleFeatureList,
+    FeatureAdmission,
+    FeatureAllowlist,
+    load_feature_allowlist,
+    resolve_eligible_features,
+)
+from password_attack_detector.ml.ordering import (
+    assert_canonical,
+    canonicalize_rows,
+    is_canonical,
+)
+from password_attack_detector.ml.partition import (
+    ValidationPartitionResult,
+    partition_validation,
 )
 from password_attack_detector.ml.schemas import (
     ML_SCHEMA_VERSION,
@@ -76,25 +113,38 @@ from password_attack_detector.ml.schemas import (
 )
 
 __all__ = [
+    "ALLOWLIST_SCHEMA_VERSION",
+    "CHECK_NAMES",
+    "FIT_ELIGIBLE_SPLITS",
     "FORBIDDEN_DIRECT_IMPORTS",
     "ML_DEPENDENCY_REQUIREMENTS",
     "ML_FINGERPRINT_EXCLUDED_FIELDS",
+    "ML_OUTPUT_COLUMNS",
     "ML_SCHEMA_VERSION",
     "MODEL_CATALOG",
     "MODEL_CATALOG_VERSION",
     "SKLEARN_REQUIREMENT",
     "UNKNOWN_CATEGORY",
     "ArtifactDeclaration",
+    "AuditCheckStatus",
+    "AuditStatus",
     "CalibrationMethod",
     "ChampionStatus",
     "DependencyRequirement",
+    "EligibleFeatureList",
     "ExperimentRecordIdentity",
     "ExperimentRecordType",
+    "FeatureAdmission",
+    "FeatureAllowlist",
+    "FeatureDecisionPoint",
     "FusionStrategy",
     "GateResult",
     "GateStatus",
     "HyperparameterSpec",
     "MLConfig",
+    "MLEligibilityAuditResult",
+    "MLEligibilityAuditor",
+    "MLSplit",
     "MLTask",
     "ModelCatalog",
     "ModelEligibilityStatus",
@@ -105,10 +155,19 @@ __all__ = [
     "SupportRequirement",
     "ThresholdObjective",
     "ValidationPartition",
+    "ValidationPartitionResult",
+    "ValidationPartitionStatus",
+    "assert_canonical",
     "build_model_catalog",
+    "canonicalize_rows",
     "collect_dependency_versions",
+    "is_canonical",
     "is_probability",
+    "load_feature_allowlist",
     "load_ml_config",
+    "ml_audit_result_to_markdown",
     "model_catalog_to_markdown",
+    "partition_validation",
+    "resolve_eligible_features",
     "sklearn_compatible",
 ]
