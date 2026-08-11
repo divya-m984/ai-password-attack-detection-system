@@ -55,6 +55,7 @@ from password_attack_detector.ml.catalog import (
 from password_attack_detector.ml.dependencies import ML_DEPENDENCY_REQUIREMENTS
 from password_attack_detector.ml.enums import (
     UNKNOWN_CATEGORY,
+    AnomalyThresholdMethod,
     CalibrationMethod,
     FusionStrategy,
     MLTask,
@@ -496,6 +497,14 @@ class CalibrationConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
+    #: One method, fixed by configuration rather than chosen from the data.
+    #:
+    #: Deliberately not a list of candidates.  Selecting a calibration method by
+    #: comparing candidates on validation-A would score every candidate on the
+    #: rows that fitted it, and the winner of that comparison is whichever
+    #: method overfits hardest.  Splitting validation-A again to referee it
+    #: would leave neither half large enough to fit or to judge.  So the method
+    #: is a reviewed decision, written down and fingerprinted.
     method: CalibrationMethod = CalibrationMethod.ISOTONIC
     source_partition: Literal[ValidationPartition.VALIDATION_A] = (
         ValidationPartition.VALIDATION_A
@@ -503,6 +512,17 @@ class CalibrationConfig(BaseModel):
     max_expected_calibration_error: float = Field(default=0.05, gt=0.0, le=1.0)
     reliability_bin_count: int = Field(default=10, ge=2, le=100)
     min_calibration_rows: int = Field(default=200, ge=1)
+    #: Rows a reliability bin needs before its observed rate is evidence rather
+    #: than noise.  A bin below this floor keeps its counts and reports
+    #: ``insufficient_support``; it is never silently folded into a neighbour.
+    min_reliability_bin_rows: int = Field(default=20, ge=1)
+    #: Distinct scores an isotonic fit needs.  A monotone piecewise-constant fit
+    #: over a handful of distinct values is a lookup table for those values.
+    min_isotonic_distinct_scores: int = Field(default=10, ge=2)
+    #: Solver controls for the Platt fit, stated rather than defaulted so a
+    #: library changing its own default cannot change a fitted calibrator.
+    platt_max_iter: int = Field(default=1000, ge=1, le=100_000)
+    platt_tolerance: float = Field(default=1e-8, ge=1e-9, le=1e-2)
     #: Pinned on.  A model output may be described as a probability only after
     #: a calibrator has been fitted and its calibration error measured; there
     #: is no configuration that relaxes the vocabulary rule.
@@ -518,6 +538,10 @@ class CalibrationConfig(BaseModel):
             ),
             "reliability_bin_count": self.reliability_bin_count,
             "min_calibration_rows": self.min_calibration_rows,
+            "min_reliability_bin_rows": self.min_reliability_bin_rows,
+            "min_isotonic_distinct_scores": self.min_isotonic_distinct_scores,
+            "platt_max_iter": self.platt_max_iter,
+            "platt_tolerance": _fingerprint_scalar(self.platt_tolerance),
             "require_calibration_for_probability_terminology": (
                 self.require_calibration_for_probability_terminology
             ),
@@ -573,11 +597,45 @@ class CategoryConfig(BaseModel):
     enabled: bool = True
     fit_on: Literal["train_known_malicious"] = "train_known_malicious"
     class_order: Literal["sorted_scenario_value"] = "sorted_scenario_value"
+    #: The **predeclared conservative fallback** abstention threshold.
+    #:
+    #: Used when validation-B cannot support selecting one, and recorded as
+    #: ``data_selected: false`` when it is.  It is written down in advance
+    #: precisely so a run that cannot measure a threshold still has a reviewed
+    #: one rather than inventing a best-available number from thin support.
     min_category_score: float = Field(default=0.35, ge=0.0, lt=1.0)
     abstain_label: str = UNKNOWN_CATEGORY
     min_rows_per_category: int = Field(default=20, ge=1)
+    #: Where a *selected* abstention threshold may be read from.  A ``Literal``
+    #: over validation-B alone, for the same reason the binary threshold pins
+    #: it: the enum it draws from has no test member to name.
+    selection_partition: Literal[ValidationPartition.VALIDATION_B] = (
+        ValidationPartition.VALIDATION_B
+    )
+    #: One objective, declared rather than assumed: take the widest coverage
+    #: whose known-category precision still clears the floor below.
+    abstention_objective: Literal["max_coverage_at_min_precision"] = (
+        "max_coverage_at_min_precision"
+    )
+    #: The precision floor a covered (non-abstaining) prediction must hold.
+    #: Equivalently a maximum category error of ``1 - this``.
+    min_known_category_precision: float = Field(default=0.80, gt=0.0, le=1.0)
+    #: Known-malicious validation-B rows needed before coverage and precision
+    #: are measurements rather than anecdotes.
+    min_known_malicious_rows: int = Field(default=100, ge=1)
+    abstention_search_grid_size: int = Field(default=1000, ge=2, le=100_000)
+    #: With several thresholds tied on coverage *and* precision, take the lower
+    #: one: it abstains no more often, and the tie means it costs no accuracy.
+    abstention_tie_break: Literal["lowest_threshold", "highest_threshold"] = (
+        "lowest_threshold"
+    )
     report_conditional_metrics: bool = True
     report_cascade_metrics: bool = True
+
+    @property
+    def max_known_category_error(self) -> float:
+        """Return the error ceiling the precision floor states from the other side."""
+        return 1.0 - self.min_known_category_precision
 
     @field_validator("abstain_label")
     @classmethod
@@ -613,6 +671,14 @@ class CategoryConfig(BaseModel):
             "min_category_score": _fingerprint_scalar(self.min_category_score),
             "abstain_label": self.abstain_label,
             "min_rows_per_category": self.min_rows_per_category,
+            "selection_partition": str(self.selection_partition),
+            "abstention_objective": self.abstention_objective,
+            "min_known_category_precision": _fingerprint_scalar(
+                self.min_known_category_precision
+            ),
+            "min_known_malicious_rows": self.min_known_malicious_rows,
+            "abstention_search_grid_size": self.abstention_search_grid_size,
+            "abstention_tie_break": self.abstention_tie_break,
             "report_conditional_metrics": self.report_conditional_metrics,
             "report_cascade_metrics": self.report_cascade_metrics,
         }
@@ -630,8 +696,24 @@ class AnomalyConfig(BaseModel):
 
     enabled: bool = True
     fit_on: Literal["train_benign"] = "train_benign"
-    threshold_method: Literal["train_benign_quantile"] = "train_benign_quantile"
+    #: Both members name a benign source, and neither can name test or holdout:
+    #: :class:`AnomalyThresholdMethod` has no member for either.
+    threshold_method: AnomalyThresholdMethod = (
+        AnomalyThresholdMethod.TRAIN_BENIGN_QUANTILE
+    )
+    #: Where ``validation_a_benign_fpr`` reads from.  Validation-A is the half
+    #: that fits calibrators; letting the probe read validation-B would put an
+    #: experimental signal into the rows that choose the supervised operating
+    #: point.
+    threshold_partition: Literal[ValidationPartition.VALIDATION_A] = (
+        ValidationPartition.VALIDATION_A
+    )
+    #: Used by ``train_benign_quantile``: the benign score quantile the
+    #: threshold sits at, so ``1 - quantile`` is the benign fraction flagged.
     quantile: float = Field(default=0.99, gt=0.0, lt=1.0)
+    #: Used by ``validation_a_benign_fpr``: the benign flag rate the threshold
+    #: must hold at or under.
+    target_benign_flag_rate: float = Field(default=0.01, gt=0.0, lt=1.0)
     min_fit_rows: int = Field(default=500, ge=1)
     #: Pinned off.  The anomaly probe is a generalisation measurement, and a
     #: measurement that can change the thing it measures is not one.
@@ -642,8 +724,12 @@ class AnomalyConfig(BaseModel):
         return {
             "enabled": self.enabled,
             "fit_on": self.fit_on,
-            "threshold_method": self.threshold_method,
+            "threshold_method": str(self.threshold_method),
+            "threshold_partition": str(self.threshold_partition),
             "quantile": _fingerprint_scalar(self.quantile),
+            "target_benign_flag_rate": _fingerprint_scalar(
+                self.target_benign_flag_rate
+            ),
             "min_fit_rows": self.min_fit_rows,
             "influences_champion_selection": self.influences_champion_selection,
         }

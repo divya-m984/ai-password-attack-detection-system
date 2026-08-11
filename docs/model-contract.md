@@ -1,13 +1,17 @@
 # Model contract
 
 What the machine-learning layer may read, what it must return, and what it
-guarantees. This document describes the data contract established in Phase 5
-Milestone 2.
+guarantees. This document covers the data contract established in Phase 5
+Milestone 2, the preprocessing and weighting of Milestone 3, the model adapters
+and artifacts of Milestone 4, and the calibration and threshold selection of
+Milestone 5.
 
-**No model exists yet.** Milestone 2 assembles data and audits it. There is no
-preprocessing, no fitting, no calibration, no threshold selection, no inference,
-and no fusion. Nothing in this repository has been trained, and no figure
-anywhere in it describes detection performance.
+**Nothing has been trained, and no result is claimed.** These milestones ship
+library contracts: a model can be fitted, published, verified, calibrated, and
+given an operating point, and every one of those is exercised by tests on
+hand-specified fixtures. There is no training command, no experiment ledger, no
+champion, no fusion, and no evaluation. No figure anywhere in this repository
+describes detection performance, because no model has been evaluated.
 
 ---
 
@@ -1037,8 +1041,9 @@ which rows are benign happens upstream, where labels are legitimately readable.
 It cannot become champion: the flag is false on every model it produces, the
 catalog records `anomaly_only`, and `MLTask.ANOMALY` is absent from
 `SUPERVISED_TASKS`. Its output is an `anomaly_score` under scikit-learn's
-convention — negative, lower meaning more anomalous — and no threshold is
-selected here; that belongs to Milestone 5.
+convention — negative, lower meaning more anomalous. Its flag threshold is
+selected separately, from a benign source and never from the holdout it is
+measured against; see §17.
 
 Its scoring path reimplements the published expected-path-length formula because
 scikit-learn's `_average_path_length` is private, which is exactly why parity is
@@ -1092,18 +1097,577 @@ destination at all, and a failed overwrite leaves the previous model byte for
 byte. This is the publication *primitive*; the orchestration that decides when
 to call it belongs to the training milestone.
 
-## 16. Known limitations
+## 16. Calibration (Milestone 5)
 
-**No training orchestration exists yet.** Milestone 4 ships model adapters,
-artifacts, and loading. There is no calibration, no threshold selection, no
+### What each split is for
+
+| split | what it may be used for |
+|---|---|
+| **train** | fit the model, the preprocessor, the class weights, and the anomaly probe's benign quantile |
+| **validation-A** | **fit calibration** — and produce an in-sample *fit diagnostic* |
+| **validation-B** | **assess the frozen calibrator's quality**; select operating thresholds; later, select the model and the fusion strategy |
+| **test** | final locked evaluation only, once everything above is frozen |
+| **novel-anomaly holdout** | a separate generalisation probe, and nothing else |
+
+**Validation-A calibration metrics are in-sample diagnostics and are not
+evidence for champion eligibility.** A calibrator asked to describe the rows it
+was fitted on will describe them well whether or not it generalises. That number
+is worth having — it exposes a fit that collapsed to a constant or landed
+somewhere absurd — and it is not a measurement of calibration quality.
+Authoritative calibration quality comes from applying the **frozen** calibrator
+to validation-B, which it has never seen.
+
+Nothing in Milestone 5 reads test or holdout, and no calibration report can name
+either: `ValidationPartition` has no member for them.
+
+### Validation-A fits it, and nothing else may
+
+A calibrator is fitted on **validation-A** — the half of the validation split
+Milestone 2 set aside for it. Validation-B chooses the operating point. Test and
+the novel-anomaly holdout are read once, after everything is frozen, by a
+Milestone 6 evaluation with its own record.
+
+Every entry point in `ml/calibration.py` and `ml/thresholds.py` takes a typed
+`ScoreSampleSource` and checks it. Provenance is never inferred from a filename,
+a directory, or a column that happens to be present: those describe where bytes
+were stored, not what the rows are. **There is no flag, keyword, environment
+variable, or configuration key that widens a source**, and a test asserts the
+refusal message offers none.
+
+A source object *can* name the test split, deliberately. Refusing to construct
+one would move the firewall into the type system, where no test could
+demonstrate that the selectors themselves refuse — and the selectors refusing is
+the property that matters.
+
+### What the module may see
+
+Scores, binary labels, anchors for the ordering assertion, and fingerprints. It
+opens no Parquet file, reads no label table, no split table, and no campaign
+table. It never refits the model whose scores it consumes and never touches the
+fitted preprocessor. The label-reader allowlist is unchanged and remains exactly
+two modules — `detection.evaluation` and `ml.dataset`.
+
+### The method is configured, never selected
+
+`CalibrationConfig.method` names **one** method. It is not a candidate list, and
+no comparison chooses among candidates.
+
+Selecting a calibration method on validation-A would score every candidate on
+the rows that fitted it, and the winner of that comparison is whichever method
+overfits hardest. Splitting validation-A again to referee it would leave neither
+half large enough to fit or to judge. Using validation-B would spend the
+operating point's rows on a measurement, and using test is not an option at all.
+So the method is a reviewed decision: written down, fingerprinted, and visible.
+
+### Platt
+
+A two-parameter logistic calibrator, `sigmoid(a · score + b)`, fitted by
+Newton-Raphson with a deterministic start, a deterministic step-halving rule,
+and a fixed convergence test. `CalibratedClassifierCV` is not used.
+
+Targets are **smoothed** as in Platt (1999): a positive row is fitted against
+`(N⁺ + 1)/(N⁺ + 2)` and a negative one against `1/(N⁻ + 2)`. Without the
+smoothing the maximum-likelihood estimate does not exist whenever the score
+separates the two classes perfectly — `a` diverges — and perfect separation is
+entirely possible on generated data. The price is that no calibrated probability
+reaches exactly zero or one, which is the correct behaviour for a fit over
+finitely many rows.
+
+A fit that exhausts its iteration budget, produces a non-finite parameter, or
+stalls reports `convergence_failed` and returns **no state**. That is a
+different answer from `insufficient_calibration_support`, and the two are
+reported separately because they have different remedies.
+
+Inference needs only the two stored scalars. The sigmoid is evaluated
+branch-wise, because `exp(710)` overflows float64 and the naive form returns
+`NaN` for exactly the strongly separated rows a detector cares most about.
+
+### Isotonic
+
+A weighted pool-adjacent-violators fit, written in project code. The
+authoritative state reduces to the two attributes scikit-learn documents on a
+fitted `IsotonicRegression`:
+
+| stored field | scikit-learn attribute |
+|---|---|
+| `x_thresholds` | `X_thresholds_` |
+| `y_thresholds` | `y_thresholds_` |
+
+No private attribute is read, stored, or depended on. Duplicate scores are
+collapsed into one breakpoint whose target is the mean of theirs and whose
+weight is their count, so forty rows at one score weigh forty and their
+presentation order does not matter. Interior breakpoints equal to both
+neighbours are dropped, which is what makes the stored arrays *equal* to
+scikit-learn's rather than merely equivalent.
+
+Outside the fitted domain the output is **clamped**, not extrapolated —
+matching `out_of_bounds="clip"`. Extrapolating a monotone step function past its
+last breakpoint would invent a relationship nothing was fitted on.
+
+Below `min_isotonic_distinct_scores` distinct scores the fit reports
+insufficient support rather than producing a lookup table for a handful of
+values.
+
+**Why the fit is project-owned.** No module outside `ml/models` imports
+scikit-learn, for the reason §15 gives: an estimator object is not an artifact.
+The consequence here is a benefit rather than a cost — a parity test compares
+two genuinely independent implementations instead of one implementation with
+itself. `X_thresholds_` must match **exactly**, since both sides carry observed
+scores unrounded; `y_thresholds_` are fitted values, quantized to the nine
+decimals every fitted number in this project is stored at, and agree to `5e-10`.
+
+### `x_thresholds` and selected thresholds are stored unrounded
+
+Fitted *parameters* are quantized. Breakpoints and thresholds are not, because
+they are observed scores: rounding one moves the boundary of a step function,
+which changes which rows it flags. The number stored is the number measured, and
+the number measured is the number a later prediction will apply. Floats
+round-trip exactly through JSON, so this costs nothing in reproducibility.
+
+### The probability vocabulary transition
+
+Milestone 4 emits `decision_score`, `class_score`, and `anomaly_score`, and none
+of them is a probability. `calibrated_probability` becomes available in exactly
+one place — `apply_calibration` — and it is a construction rather than a rename.
+A calibrated batch carries, and is validated to carry:
+
+- the source model's identifier and content fingerprint;
+- the calibration-state fingerprint;
+- the calibration method;
+- the source score kind;
+- `output_score_kind = calibrated_probability`.
+
+Four claims are refused outright:
+
+| refused | why |
+|---|---|
+| a state with `method: none` | there is no fitted state for "no calibrator" |
+| a calibrated field with no calibrator named | a claim nobody can check |
+| calibrating an `anomaly_score` | an unsupervised magnitude is not a supervised probability |
+| calibrating an already-calibrated score | that measures the calibrator, not the model |
+
+An ordinary uncalibrated Milestone 4 score is never renamed into a probability
+field. `ScoreSemantics` continues to refuse prose using "probability",
+"likelihood", or "confidence" for an uncalibrated kind.
+
+### Two evaluations, and only one of them is evidence
+
+The same measurement code produces both reports. What differs is provenance,
+and every report says which it is rather than leaving a reader to infer it from
+the partition named beside it.
+
+| | `diagnose_calibration_fit` | `evaluate_calibration_quality` |
+|---|---|---|
+| measured on | validation-A | validation-B |
+| `evaluation_kind` | `in_sample_fit_diagnostic` | `out_of_sample_validation` |
+| calibrator saw these rows | yes, they fitted it | no |
+| `admissible_as_champion_evidence` | **always false** | true when measured on adequate support *and* within the configured ECE ceiling |
+| what it is for | spotting a pathological fit | authoritative calibration quality |
+
+Both record `fit_source_partition: validation_a` — where the calibrator was
+*fitted* — alongside `source_partition`, where it was *measured*. The state's
+field is deliberately named `fit_source_partition` so the two can never be
+confused for each other.
+
+Three independent things stop an in-sample diagnostic being substituted for an
+out-of-sample measurement:
+
+1. `require_out_of_sample_evidence(report, stage=...)` refuses the wrong kind
+   outright — the guard a later champion gate calls instead of reading two
+   fields and hoping;
+2. `evaluation_kind` and `source_partition` are tied to each other by a
+   validator, in both directions;
+3. `admissible_as_champion_evidence` is pinned false for every in-sample
+   report, whatever else the record claims.
+
+And because each report carries the digest of its own content, editing a stored
+payload to relabel it fails the seal check before it reaches any of the three.
+
+The calibrator is **applied** on validation-B, never refitted. It arrives
+frozen, `CalibrationState` has no mutable field, and a test asserts its bytes
+and its digest are identical before and after the evaluation.
+
+**A real limitation, stated rather than worked around.** Validation-B both
+measures calibration and selects the operating threshold. A third partition
+would separate them, but the validation split is already halved on campaign
+boundaries and a third slice would leave none of them able to measure anything.
+Borrowing rows from test is not an option. So the reuse is documented here
+rather than hidden.
+
+The measurement primitive itself (`brier_score`) takes numbers and labels and
+knows nothing about splits. That is what will let a Milestone 6 test evaluation
+reuse it rather than growing a second implementation that drifts — and it is
+safe to expose precisely because it decides nothing about where its inputs came
+from.
+
+### Calibration metrics
+
+Computed over probabilities this module produces itself from the frozen decision
+score — so the numbers measured are provably that calibrator's.
+
+**Brier score** — the mean squared difference between the predicted probability
+and the outcome, `mean((p − y)²)`.
+
+**Reliability bins** — equal-width over `[0, 1]`, with edges at `i/n` fixed by
+`reliability_bin_count`. Bin `i` covers `[i/n, (i+1)/n)`; the last bin is closed
+on the right so a probability of exactly `1.0` lands somewhere. Quantile bins are
+deliberately not used: they would move with the score distribution, so two runs
+over different data could not be compared bin for bin.
+
+**Expected calibration error** — the support-weighted mean gap between the mean
+predicted probability and the observed positive rate, over **populated bins
+only**. An ECE that counted an empty bin as a perfect one would improve every
+time the data got sparser.
+
+**Support statuses** are not decoration:
+
+| status | meaning |
+|---|---|
+| `measured` | the quantity is defined and rests on adequate support |
+| `insufficient_support` | defined and computed, over too few rows to be evidence |
+| `unavailable` | not defined at all — an empty denominator, an empty bin |
+
+An empty bin is present in the output and says it is empty; its rates are
+`null`, never `0.0`. A report below `min_calibration_rows`, or missing a class
+entirely, carries `insufficient_support` and **no verdict at all** — the
+comparison against the configured error ceiling is `null`, because a comparison
+against an unmeasured quantity is not a verdict. A small ECE on thin support is
+not a pass, and the contract makes it impossible to read as one.
+
+There is no plotting dependency, and matplotlib is not a dependency of this
+project.
+
+### The raw-score Brier comparator
+
+A report may carry `raw_score_brier`: the same Brier score computed on the
+**uncalibrated** model output, so a reader can see whether calibration helped.
+It is available only under a condition, and the condition is mathematical rather
+than stylistic.
+
+A Brier score is the mean squared error of a forecast on `[0, 1]`. A decision
+score is an ordered magnitude and carries no such promise — the anomaly head's
+declared range is `[-1, 0]`, and a binary head's need not be narrower. So:
+
+| the model's declared score contract | comparator |
+|---|---|
+| bounded to `[0, 1]` | computed, and labelled `raw_score_kind: decision_score` |
+| not bounded to `[0, 1]` | `null`, reason `raw_score_not_unit_bounded` |
+| not supplied | `null`, reason `raw_score_contract_not_supplied` |
+| bounded, but an observation falls outside | `null`, reason `raw_score_outside_declared_bounds` |
+| already calibrated | `null`, reason `raw_score_is_already_calibrated` |
+
+**An arbitrary decision score is never clipped into `[0, 1]` to manufacture a
+comparison.** A clipped comparator would be the Brier score of a forecast the
+model never made, and it would flatter or damn calibration according to how far
+outside the interval the raw scores happened to fall. When the model's own
+contract and its observations disagree about its range, that is a fault worth
+seeing, so the comparator is withdrawn rather than repaired.
+
+**Computing a Brier score against a field does not rename it.** The field stays
+`decision_score`, the report records that kind beside the number, and a report
+claiming `raw_score_kind: calibrated_probability` is refused. The calibrated
+output remains the only thing in this project carrying
+`score_kind: calibrated_probability`.
+
+`improves_on_raw_score` is `null` whenever no valid comparator exists — the
+common case. A later champion gate should therefore require the configured ECE
+and Brier limits on the **validation-B** report, and apply any
+improvement-over-raw-score condition **only** where a comparator actually
+exists.
+
+---
+
+## 17. Threshold selection (Milestone 5)
+
+### Three thresholds, three predicates
+
+| threshold | read from | predicate |
+|---|---|---|
+| binary decision | validation-B | `score >= threshold` |
+| category abstention | validation-B | `max(class_score) >= min_category_score` |
+| anomaly flag | train **or** validation-A | `anomaly_score <= threshold` |
+
+The binary predicate is `>=`, pinned once and stored in every selection. The
+difference between `>=` and `>` is only ever one row wide, and it is exactly the
+row sitting on the threshold — so the choice is written down rather than left to
+whichever comparison somebody typed at a call site.
+
+The anomaly predicate is deliberately inverted. An anomaly score follows the
+scikit-learn convention where **lower is more anomalous**, so a flag is `<=`.
+The two predicates are separately named constants; two opposite comparisons
+sharing one name is how a detector ends up flagging the calmest traffic it can
+find.
+
+### Nothing here fits anything
+
+The model is frozen, the preprocessor is frozen, and the calibrator — if there
+is one — is frozen. This module counts rows above candidate thresholds and picks
+one.
+
+### Candidates are observed scores
+
+A candidate is a value some row actually produced, taken in ascending order, and
+capped at `search_grid_size` by an evenly spaced subset that always includes both
+extremes. Two consequences:
+
+- **every candidate flags at least one row**, so a "flag nothing" threshold is
+  never returned. A detector that never fires is not an operating point, and
+  admitting one would make `no_feasible_threshold` unreachable under any
+  false-positive ceiling;
+- a fixed arithmetic grid is not used, because a grid point between two observed
+  scores produces the same confusion matrix as the observed score above it while
+  reporting a threshold no row ever justified.
+
+When the search is capped, the selection records `candidates_truncated: true`
+alongside `candidate_count` and `distinct_score_count`. A silent cap would let a
+report read as though every operating point had been considered.
+
+### Objectives
+
+| objective | maximised / minimised | constraint |
+|---|---|---|
+| `max_recall_at_max_fpr` | maximise detection rate | false-positive rate ≤ ceiling |
+| `max_f1` | maximise F1 | none |
+| `min_fpr_at_min_recall` | minimise false-positive rate | detection rate ≥ floor |
+
+Feasibility and objective are decided together, in one place: a constraint
+evaluated separately from the quantity it constrains is a constraint somebody
+eventually forgets to apply. Candidates are visited in ascending threshold
+order, and `tie_break` decides which of several tied candidates survives —
+`lowest_threshold` by default, because a tie means the lower threshold detects
+at least as much at no extra cost. Every comparison is made on the same
+quantized number the selection goes on to report, so a tie is reproducible.
+
+### Support-aware statuses
+
+| status | meaning | `data_selected` |
+|---|---|---|
+| `selected` | a threshold was chosen from validation data | `true` |
+| `insufficient_validation_support` | the partition could not resolve the constraint | `false` |
+| `no_feasible_threshold` | support was adequate; nothing satisfied the constraint | `false` |
+
+**Neither negative is answered with a best-available threshold.** A
+best-available threshold under a constraint nobody met is a threshold that
+quietly violates it.
+
+The distinction between the two is worked through in the false-positive case.
+With `N` benign rows the smallest observable non-zero false-positive rate is
+`1/N`. If the configured ceiling sits below that, the only way to satisfy it is
+to flag no benign row at all — so the ceiling has not been *held*, it has merely
+not been *tested*. That is missing evidence:
+`insufficient_validation_support`, requirement `false_positive_rate_resolution`.
+If the support is ample and every candidate still exceeds the ceiling, that is a
+measured negative: `no_feasible_threshold`, requirement
+`max_false_positive_rate`. Different facts, different statuses, different
+remedies.
+
+Every rate is reported beside its numerator and its denominator, so a reader can
+recompute it rather than trust it — and can see that a 0% false-positive rate
+over eleven benign rows is not the same claim as one over eleven thousand.
+
+### Curve artifacts
+
+A selection whose support gate passed carries one curve point per candidate:
+threshold, TP, FP, TN, FN, precision, recall, false-positive rate, and F1.
+Points are unique by semantic threshold and ascending. A rate whose denominator
+is empty is `null`, never `0.0`. There is no plotting, no event identifier, and
+never one row per event.
+
+No curve is emitted when the support gate fails. Per-threshold rates over
+support the layer has just declared unusable are exactly the numbers somebody
+would go on to plot.
+
+No test curve is produced by anything in Milestone 5, and no selection schema
+declares a field a test number could be written into.
+
+### Category abstention
+
+Chosen on **known-malicious validation-B rows only**. Three things are refused
+rather than filtered:
+
+- benign rows — the threshold trades coverage against precision *among attacks*;
+- a row whose true category is outside the declared class order — a novel
+  pattern has no known category to be right or wrong about, and admitting one
+  would let the holdout influence a threshold that exists to test it;
+- an unsorted class order — every per-class count is reported positionally.
+
+The predicted class is the argmax, with ties going to the **earliest class in
+the declared order**. An arbitrary tie-break would make the reported precision
+depend on which class a library happened to enumerate first.
+
+The objective is `max_coverage_at_min_precision`: take the widest coverage whose
+known-category precision still clears `min_known_category_precision`
+(equivalently, whose category error stays under `1 − that`). Coverage falls as
+the threshold rises, but precision does not rise monotonically with it, so every
+candidate is evaluated rather than the search stopping at the first feasible one.
+
+At inference a row with `max(class_score) < min_category_score` is emitted as
+`unknown`. Equality goes the other way: `max(class_score) >= min_category_score`
+means the known class may be emitted.
+
+**The conservative fallback.** When validation-B cannot support the choice — too
+few known-malicious rows, or a class with too little support for its precision
+to mean anything — or when no candidate clears the floor, the selection returns
+the reviewed constant `category.min_category_score` from configuration and
+records:
+
+```
+data_selected: false
+```
+
+It is a usable threshold and a permanently visible admission that no measurement
+chose it. A fallback is never described as selected from validation, no coverage
+or precision is published alongside it, and flipping the boolean on a stored
+record fails the digest check.
+
+### Anomaly threshold
+
+Two configured provenance methods, both benign-only:
+
+| method | reads | target |
+|---|---|---|
+| `train_benign_quantile` | benign TRAIN scores | `1 − quantile` flagged |
+| `validation_a_benign_fpr` | benign validation-A scores | `target_benign_flag_rate` |
+
+Both resolve to the same rule — the largest observed score whose flagged share
+stays at or under the target — so the two differ in *where they read*, which is
+the only thing that should distinguish them. Ties are never split: a threshold
+that flagged some of the rows carrying one score and not others would not be a
+threshold.
+
+`AnomalyThresholdMethod` has no member naming test or the novel-anomaly holdout.
+The holdout is what this probe is measured against, so a threshold tuned on it
+would be measuring itself. The estimator receives no supervised target, the
+sample is validated to carry no malicious row, and the output stays an
+`anomaly_score` — thresholding a magnitude does not turn it into a probability.
+`influences_champion_selection` is pinned false in the record as it is in the
+configuration, and the anomaly signal is not part of any fusion.
+
+---
+
+## 18. Three identities, kept separate
+
+| identity | what it is | fingerprint over |
+|---|---|---|
+| **model** | the fitted estimator's semantics | numbers, orders, hyperparameters, upstream digests |
+| **calibrator** | model + validation-A calibration | method, parameters, support, and the model it calibrates |
+| **threshold** | model/calibrator + validation-B operating point | objective, threshold, counts, and the chain above |
+
+Selecting an operating point **does not change a model's identity**. No
+Milestone 5 code path rewrites a published `model.json`, `arrays.npz`,
+`preprocessor.json`, or `model_manifest.json`; the Milestone 4 artifact contract
+is untouched and still records `calibration_status: not_fitted`. Milestone 6's
+`champion.lock` is what binds the three together, and it can only do that if
+they are three.
+
+### The provenance chain
+
+Four links, each checked independently wherever a calibrator meets data:
+
+- **model** — a calibrator fitted for one model cannot be applied to another's
+  scores;
+- **preprocessor** — nor to a matrix built by different rules;
+- **validation partition** — validation-A and validation-B come from one
+  campaign-disjoint partitioning and therefore carry the same *parent* digest,
+  so a calibrator from one dataset's validation-A cannot be combined with
+  another dataset's validation-B;
+- **configuration** — a calibrator cannot be reported under a configuration it
+  was not fitted under.
+
+Any of the four disagreeing means two runs have been spliced together, and the
+splice is refused rather than reported.
+
+### Sealed records
+
+`CalibrationState`, `CalibrationReport`, `ThresholdSelection`,
+`CategoryAbstentionSelection`, and `AnomalyThresholdSelection` each carry the
+SHA-256 digest of their own semantic content as a **field**, recomputed on every
+construction including every deserialization. A record whose content and digest
+disagree is refused rather than repaired, so an edited payload is detected
+without the reader having to be handed the expected value separately.
+
+All five are frozen, reject unknown fields, check their schema version before
+validating anything else, reject non-finite numbers, and serialise to canonical
+JSON — sorted keys, ASCII, no incidental whitespace — that round-trips
+byte-identically. None carries a path, a timestamp, a host, an event identifier,
+a campaign identifier, or a pseudonym; the field names of every published schema
+are swept against the prohibited-metadata list at import.
+
+`CALIBRATION_SCHEMA_VERSION` and `THRESHOLD_SCHEMA_VERSION` are both `1.0.0` and
+are independent of the model contract's `ML_SCHEMA_VERSION`: a model, its
+calibrator, and its operating point change for different reasons.
+
+### The leakage argument, behaviourally
+
+Every Milestone 5 entry point is a pure function of train, validation-A, and
+validation-B. There is no parameter on any of them through which a test or
+holdout row could arrive except the typed provenance each one checks, and those
+checks are exercised directly. Beyond that:
+
+- changing validation-A changes the calibrator, its fit diagnostic, and — since
+  the calibrator moved — its validation-B quality report, while leaving the
+  category and anomaly thresholds byte-identical;
+- changing validation-B changes the quality report and the binary and category
+  thresholds, and leaves the calibrator and its fit diagnostic
+  **byte-identical** — the sharper of the two directions, since a calibrator
+  that shifted when the measurement rows changed would mean validation-B had
+  reached the fit;
+- changing validation-A *after* a calibrator is fitted changes neither it nor
+  its validation-B report: a frozen calibrator is a value, not a view onto the
+  rows that produced it;
+- changing the benign training scores changes the anomaly threshold and nothing
+  else;
+- test and holdout rows change nothing at all, because every entry point refuses
+  them — demonstrated by offering them to each in turn and comparing the
+  calibrator's and the quality report's bytes before and after.
+
+---
+
+## 19. Known limitations
+
+**No training orchestration exists yet.** Milestones 4 and 5 ship model
+adapters, artifacts, loading, calibration, and threshold selection. There is no
 training command, no experiment ledger, no champion selection, no prediction
 publication, no fusion, no evaluation, no explainability, and no drift
 detection. No figure in this repository describes model performance, because no
 model has been evaluated.
 
-**There is no `ml train`.** Fitting is a library contract exercised by tests. The
-only model command is `ml verify-manifest`, which reads an artifact and executes
-none of it.
+**There is no `ml train`.** Fitting, calibrating, and threshold selection are
+library contracts exercised by tests. The model commands are `ml catalog`,
+`ml audit-features`, and `ml verify-manifest`; none of them calibrates, selects a
+threshold, or reads the test split.
+
+**Calibration on synthetic validation data is not real-world calibration.** A
+fitted calibrator here is calibrated against the frozen synthetic validation-A
+distribution under the declared protocol, and that is an internal property.
+Concretely, none of the following is claimed:
+
+- that these calibrated probabilities are reliable on real authentication
+  traffic;
+- that a low ECE or Brier score is evidence of production calibration;
+- that reliability bins measured on generated traffic generalise to a real
+  authentication system.
+
+The generator produces the behaviour somebody wrote into it, so its score
+distribution is more separable and less varied than real traffic. A calibration
+map fitted to that distribution describes that distribution.
+
+**An in-sample fit diagnostic is not calibration quality.** The validation-A
+report exists to expose a pathological fit, and it is marked
+`admissible_as_champion_evidence: false` so nothing can offer it as evidence of
+calibration. Authoritative quality is the validation-B measurement — which is
+itself measured on the same rows that select the operating threshold, since a
+two-way split has no third partition to spare. See §16.
+
+**A raw-score Brier comparison is often unavailable, and that is correct.**
+Most decision scores carry no promise of living on `[0, 1]`, so there is nothing
+mathematically valid to compare against. No score is ever clipped to
+manufacture one.
+
+**A threshold is only as resolvable as its denominator.** A false-positive
+ceiling below `1/N` on `N` benign rows cannot be held by any threshold that
+fires; the layer reports that rather than returning a threshold under it. The
+same applies to a benign flag-rate target for the anomaly probe.
 
 **Champion eligibility is a property, not a decision.** Three families are
 eligible — M-001, M-010, M-020 — and none has been selected, compared, or

@@ -34,9 +34,12 @@ __all__ = [
     "PROBABILITY_SCORE_KINDS",
     "SUPERVISED_TASKS",
     "UNKNOWN_CATEGORY",
+    "AnomalyThresholdMethod",
     "AuditCheckStatus",
     "AuditStatus",
+    "CalibrationEvaluationKind",
     "CalibrationMethod",
+    "CalibrationStatus",
     "ChampionStatus",
     "ExperimentRecordType",
     "FeatureDecisionPoint",
@@ -45,9 +48,11 @@ __all__ = [
     "HyperparameterKind",
     "MLSplit",
     "MLTask",
+    "MetricStatus",
     "ModelEligibilityStatus",
     "ModelFamily",
     "ScoreKind",
+    "SelectionStatus",
     "ThresholdObjective",
     "ValidationPartition",
     "ValidationPartitionStatus",
@@ -144,6 +149,102 @@ class CalibrationMethod(StrEnum):
     PLATT = "platt"
     #: Monotone piecewise-constant fit; more flexible, needs more data.
     ISOTONIC = "isotonic"
+
+
+class CalibrationStatus(StrEnum):
+    """Whether a calibrator was fitted, and why not when it was not.
+
+    ``NOT_CALIBRATED`` is an ordinary, valid outcome: a configuration that names
+    :attr:`CalibrationMethod.NONE` asked for no calibrator, and got none.  The
+    other two are refusals, and neither may be read as a fit: a state object is
+    produced only for :attr:`FITTED`, so nothing downstream can describe an
+    output as a probability on the strength of a failed fit.
+    """
+
+    #: A calibrator was fitted from validation-A and its contract validated.
+    FITTED = "fitted"
+    #: The configuration asked for no calibrator.  Scores stay uncalibrated.
+    NOT_CALIBRATED = "not_calibrated"
+    #: Validation-A did not carry enough rows, enough of each class, or enough
+    #: distinct scores for the configured method to mean anything.
+    INSUFFICIENT_CALIBRATION_SUPPORT = "insufficient_calibration_support"
+    #: The solver ran and did not converge, or produced a non-finite parameter.
+    #: Distinct from insufficient support: the data was adequate and the fit
+    #: still failed, which is a different thing to investigate.
+    CONVERGENCE_FAILED = "convergence_failed"
+
+
+class CalibrationEvaluationKind(StrEnum):
+    """What a calibration report is evidence *of*.
+
+    The distinction is the whole point.  A calibrator fitted on validation-A and
+    then measured on validation-A has been asked to describe the rows it was
+    shaped by, and it will do well at that whether or not it generalises.  That
+    number is a useful diagnostic -- a wildly bad one means the fit went wrong --
+    and it is not evidence about calibration quality.
+
+    Only :attr:`OUT_OF_SAMPLE_VALIDATION` may be offered to a later champion
+    gate, and a report says which it is rather than leaving a reader to work it
+    out from the partition it names.
+    """
+
+    #: The frozen calibrator measured on the validation-A rows that fitted it.
+    #: Inspectable, useful for spotting a pathological fit, and **never**
+    #: admissible as champion calibration-quality evidence.
+    IN_SAMPLE_FIT_DIAGNOSTIC = "in_sample_fit_diagnostic"
+    #: The frozen calibrator measured on validation-B, which it never saw.  The
+    #: authoritative calibration-quality evidence for later model selection.
+    OUT_OF_SAMPLE_VALIDATION = "out_of_sample_validation"
+
+
+class MetricStatus(StrEnum):
+    """Whether an aggregate measurement means anything.
+
+    Three states, and the distinction between the last two is load-bearing.
+    ``UNAVAILABLE`` means the quantity is not defined at all -- an empty
+    denominator, a bin nothing landed in.  ``INSUFFICIENT_SUPPORT`` means it is
+    defined and was computed, but over too few rows to be evidence.  Collapsing
+    either into a number would let a reliability bin holding three rows read
+    exactly like one holding three thousand.
+    """
+
+    MEASURED = "measured"
+    INSUFFICIENT_SUPPORT = "insufficient_support"
+    UNAVAILABLE = "unavailable"
+
+
+class SelectionStatus(StrEnum):
+    """The outcome of selecting an operating point from a validation partition.
+
+    ``NO_FEASIBLE_THRESHOLD`` is a *measured* negative: the support was adequate
+    and no candidate satisfied the mandatory constraint.
+    ``INSUFFICIENT_VALIDATION_SUPPORT`` is the absence of a measurement: the
+    partition could not resolve the constraint in the first place.  Neither is a
+    success, and neither may be answered with a best-available threshold.
+    """
+
+    SELECTED = "selected"
+    INSUFFICIENT_VALIDATION_SUPPORT = "insufficient_validation_support"
+    NO_FEASIBLE_THRESHOLD = "no_feasible_threshold"
+
+
+class AnomalyThresholdMethod(StrEnum):
+    """Where the experimental anomaly probe's flag threshold comes from.
+
+    Two members, and both name a *benign* source.  The probe reads no
+    supervised target, so a threshold chosen against malicious outcomes would
+    turn an unsupervised measurement into a weakly supervised one without
+    saying so.  Neither member names the test split or the novel-anomaly
+    holdout, because the holdout is what the probe is measured against and a
+    threshold tuned on it would be measuring itself.
+    """
+
+    #: A quantile of the benign TRAIN score distribution.  No validation row is
+    #: consulted at all.
+    TRAIN_BENIGN_QUANTILE = "train_benign_quantile"
+    #: The largest threshold holding the benign flag rate on validation-A at or
+    #: under a configured target.  Validation-A only, benign rows only.
+    VALIDATION_A_BENIGN_FPR = "validation_a_benign_fpr"
 
 
 class ThresholdObjective(StrEnum):

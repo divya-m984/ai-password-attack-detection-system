@@ -65,6 +65,10 @@ calibration:
   max_expected_calibration_error: 0.5
   reliability_bin_count: 2
   min_calibration_rows: 1
+  min_reliability_bin_rows: 1
+  min_isotonic_distinct_scores: 2
+  platt_max_iter: 200
+  platt_tolerance: 1.0e-8
   require_calibration_for_probability_terminology: true
 
 thresholds:
@@ -84,6 +88,14 @@ category:
   class_order: sorted_scenario_value
   min_category_score: 0.2
   min_rows_per_category: 1
+  selection_partition: validation_b
+  abstention_objective: max_coverage_at_min_precision
+  # Loose relative to development, for the same reason the false-positive
+  # ceiling is: a micro-dataset cannot support a real precision floor.
+  min_known_category_precision: 0.5
+  min_known_malicious_rows: 1
+  abstention_search_grid_size: 16
+  abstention_tie_break: lowest_threshold
   report_conditional_metrics: true
   report_cascade_metrics: true
 
@@ -93,7 +105,9 @@ anomaly:
   enabled: false
   fit_on: train_benign
   threshold_method: train_benign_quantile
+  threshold_partition: validation_a
   quantile: 0.9
+  target_benign_flag_rate: 0.1
   min_fit_rows: 1
   influences_champion_selection: false
 

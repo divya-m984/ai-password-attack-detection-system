@@ -300,19 +300,21 @@ def test_the_package_version_is_unchanged_at_this_checkpoint() -> None:
 
 
 def test_the_ml_package_declares_no_orchestration_module() -> None:
-    """Milestone 4 fits and stores models. It still orchestrates nothing.
+    """Milestone 5 calibrates and chooses thresholds. It still orchestrates nothing.
 
     Model adapters, serialization, the deterministic archive, the manifest, and
-    inference arrived with Milestone 4 and are listed here. Calibration,
-    thresholds, training orchestration, the experiment ledger, champion
-    selection, prediction publication, fusion, evaluation, explanation, and
-    drift belong to later milestones, and an empty placeholder for any of them
-    would make the package look further along than it is.
+    inference arrived with Milestone 4; calibration and threshold selection
+    arrive with Milestone 5 and are listed here. Training orchestration, the
+    experiment ledger, champion selection, prediction publication, fusion,
+    evaluation, explanation, and drift belong to later milestones, and an empty
+    placeholder for any of them would make the package look further along than
+    it is.
     """
     package = _repo_root() / "src" / "password_attack_detector" / "ml"
     present = {path.stem for path in package.glob("*.py")}
     assert present == {
         "__init__",
+        "calibration",
         "catalog",
         "cli",
         "config",
@@ -330,6 +332,7 @@ def test_the_ml_package_declares_no_orchestration_module() -> None:
         "preprocessing",
         "schemas",
         "serialization",
+        "thresholds",
     }
 
 

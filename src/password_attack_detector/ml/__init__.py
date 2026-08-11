@@ -25,12 +25,14 @@ enumerations and contracts, the versioned configuration, and the executable
 model catalog.  Milestone 2 added the data contract: the reviewed opt-in feature
 allowlist, canonical row ordering, dataset assembly, campaign-disjoint
 validation partitioning, and the eligibility audit.  Milestone 3 added
-train-only preprocessing and class weighting.  Milestone 4 adds the model
+train-only preprocessing and class weighting.  Milestone 4 added the model
 adapters, the authoritative JSON-and-array artifact, the deterministic archive,
-the manifest, and fail-closed loading.  Calibration, threshold selection,
-training orchestration, the experiment ledger, champion selection, prediction
-publication, fusion, evaluation, explainability, and drift arrive in later
-milestones and are deliberately absent here.
+the manifest, and fail-closed loading.  Milestone 5 adds calibration fitted on
+validation-A, operating points chosen on validation-B, and the point at which
+the word "probability" becomes available.  Training orchestration, the
+experiment ledger, champion selection, prediction publication, fusion,
+evaluation, explainability, and drift arrive in later milestones and are
+deliberately absent here.
 
 ``dataset`` is re-exported deliberately sparingly.  It is the one module in this
 layer permitted to read ground truth, and keeping its label types out of the
@@ -40,6 +42,23 @@ by name -- which is exactly the moment the import-graph test notices.
 
 from __future__ import annotations
 
+from password_attack_detector.ml.calibration import (
+    CALIBRATION_SCHEMA_VERSION,
+    POSITIVE_CLASS,
+    BinaryScoreSample,
+    CalibrationOutcome,
+    CalibrationReport,
+    CalibrationState,
+    IsotonicParameters,
+    PlattParameters,
+    ReliabilityBin,
+    ScoreSampleSource,
+    apply_calibration,
+    diagnose_calibration_fit,
+    evaluate_calibration_quality,
+    fit_calibration,
+    require_out_of_sample_evidence,
+)
 from password_attack_detector.ml.catalog import (
     MODEL_CATALOG,
     MODEL_CATALOG_VERSION,
@@ -69,19 +88,24 @@ from password_attack_detector.ml.eligibility import (
 from password_attack_detector.ml.enums import (
     FIT_ELIGIBLE_SPLITS,
     UNKNOWN_CATEGORY,
+    AnomalyThresholdMethod,
     AuditCheckStatus,
     AuditStatus,
+    CalibrationEvaluationKind,
     CalibrationMethod,
+    CalibrationStatus,
     ChampionStatus,
     ExperimentRecordType,
     FeatureDecisionPoint,
     FusionStrategy,
     GateStatus,
+    MetricStatus,
     MLSplit,
     MLTask,
     ModelEligibilityStatus,
     ModelFamily,
     ScoreKind,
+    SelectionStatus,
     ThresholdObjective,
     ValidationPartition,
     ValidationPartitionStatus,
@@ -161,10 +185,30 @@ from password_attack_detector.ml.serialization import (
     model_id_for,
     write_model_directory,
 )
+from password_attack_detector.ml.thresholds import (
+    ANOMALY_DECISION_PREDICATE,
+    BINARY_DECISION_PREDICATE,
+    CATEGORY_DECISION_PREDICATE,
+    THRESHOLD_SCHEMA_VERSION,
+    AnomalyScoreSample,
+    AnomalyThresholdSelection,
+    CategoryAbstentionSelection,
+    CategoryClassSupport,
+    CategoryScoreSample,
+    ThresholdCurvePoint,
+    ThresholdSelection,
+    select_anomaly_threshold,
+    select_binary_threshold,
+    select_category_abstention,
+)
 
 __all__ = [
     "ALLOWLIST_SCHEMA_VERSION",
+    "ANOMALY_DECISION_PREDICATE",
     "BINARY_CLASS_ORDER",
+    "BINARY_DECISION_PREDICATE",
+    "CALIBRATION_SCHEMA_VERSION",
+    "CATEGORY_DECISION_PREDICATE",
     "CHECK_NAMES",
     "FIT_ELIGIBLE_SPLITS",
     "FORBIDDEN_DIRECT_IMPORTS",
@@ -178,16 +222,30 @@ __all__ = [
     "MODEL_CATALOG",
     "MODEL_CATALOG_VERSION",
     "MODEL_IMPLEMENTATIONS",
+    "POSITIVE_CLASS",
     "PREPROCESSING_SCHEMA_VERSION",
     "PUBLISHABLE_FAMILIES",
     "SKLEARN_REQUIREMENT",
+    "THRESHOLD_SCHEMA_VERSION",
     "UNKNOWN_CATEGORY",
+    "AnomalyScoreSample",
+    "AnomalyThresholdMethod",
+    "AnomalyThresholdSelection",
     "ArtifactDeclaration",
     "AuditCheckStatus",
     "AuditStatus",
+    "BinaryScoreSample",
     "BooleanEncoding",
+    "CalibrationEvaluationKind",
     "CalibrationMethod",
+    "CalibrationOutcome",
+    "CalibrationReport",
+    "CalibrationState",
+    "CalibrationStatus",
     "CategoricalEncoding",
+    "CategoryAbstentionSelection",
+    "CategoryClassSupport",
+    "CategoryScoreSample",
     "ChampionStatus",
     "ClassSupport",
     "ClassWeightState",
@@ -206,11 +264,13 @@ __all__ = [
     "GateStatus",
     "HyperparameterSpec",
     "InferenceModel",
+    "IsotonicParameters",
     "MLConfig",
     "MLEligibilityAuditResult",
     "MLEligibilityAuditor",
     "MLSplit",
     "MLTask",
+    "MetricStatus",
     "ModelAdapter",
     "ModelCatalog",
     "ModelCompatibility",
@@ -220,11 +280,17 @@ __all__ = [
     "ModelManifest",
     "ModelSpec",
     "NumericImputation",
+    "PlattParameters",
+    "ReliabilityBin",
     "ScalingStatistic",
     "ScoreKind",
+    "ScoreSampleSource",
     "ScoreSemantics",
+    "SelectionStatus",
     "SupportRequirement",
+    "ThresholdCurvePoint",
     "ThresholdObjective",
+    "ThresholdSelection",
     "TrainingBatch",
     "TransformedMatrix",
     "ValidationPartition",
@@ -232,6 +298,7 @@ __all__ = [
     "ValidationPartitionStatus",
     "VerificationOutcome",
     "adapter_class_for",
+    "apply_calibration",
     "array_digest",
     "assert_canonical",
     "build_model_catalog",
@@ -240,6 +307,9 @@ __all__ = [
     "canonicalize_rows",
     "collect_dependency_versions",
     "compute_class_weights",
+    "diagnose_calibration_fit",
+    "evaluate_calibration_quality",
+    "fit_calibration",
     "fit_preprocessor",
     "is_canonical",
     "is_probability",
@@ -250,7 +320,11 @@ __all__ = [
     "model_id_for",
     "partition_validation",
     "read_npz_bytes",
+    "require_out_of_sample_evidence",
     "resolve_eligible_features",
+    "select_anomaly_threshold",
+    "select_binary_threshold",
+    "select_category_abstention",
     "sklearn_compatible",
     "verify_model_artifact",
     "write_model_directory",

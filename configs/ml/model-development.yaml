@@ -109,11 +109,30 @@ calibration:
   # frequencies and a linear logit, and the distortion is not reliably
   # sigmoidal. Isotonic needs more data, which is what the 30-day dataset and
   # min_calibration_rows below are for.
+  #
+  # One method, fixed here rather than chosen by comparing candidates.
+  # Selecting a calibration method on validation-A would score every candidate
+  # on the rows that fitted it, and the winner of that comparison is whichever
+  # method overfits hardest; splitting validation-A again to referee it would
+  # leave neither half large enough to fit or to judge. So it is a reviewed
+  # decision, written down and fingerprinted.
   method: isotonic
   source_partition: validation_a
   max_expected_calibration_error: 0.05
   reliability_bin_count: 10
   min_calibration_rows: 200
+  # A reliability bin below this floor keeps its counts and reports
+  # `insufficient_support`; it is never folded into a neighbour, and its
+  # observed rate is never read as evidence.
+  min_reliability_bin_rows: 20
+  # A monotone piecewise fit over a handful of distinct scores is a lookup
+  # table for those scores. Below this the isotonic fit reports insufficient
+  # support rather than producing one.
+  min_isotonic_distinct_scores: 10
+  # Solver controls for the Platt alternative, stated rather than defaulted so
+  # a library changing its own default cannot change a fitted calibrator.
+  platt_max_iter: 1000
+  platt_tolerance: 1.0e-8
   require_calibration_for_probability_terminology: true
 
 thresholds:
@@ -135,16 +154,39 @@ category:
   # its best guess. Forcing a row into the nearest known class would report
   # confidence the model does not have, and would quietly convert novel
   # behaviour into a category somebody already wrote a rule for.
+  #
+  # This value is also the predeclared *conservative fallback*: when
+  # validation-B cannot support selecting a threshold, it is used and the
+  # selection records `data_selected: false`, permanently distinguishable from
+  # one a measurement chose.
   min_category_score: 0.35
   min_rows_per_category: 20
+  # Selection reads validation-B, like the binary threshold and for the same
+  # reason: validation-A fitted the calibrator.
+  selection_partition: validation_b
+  # Take the widest coverage whose known-category precision still clears the
+  # floor. Equivalently, a maximum category error of 0.20.
+  abstention_objective: max_coverage_at_min_precision
+  min_known_category_precision: 0.80
+  min_known_malicious_rows: 100
+  abstention_search_grid_size: 1000
+  abstention_tie_break: lowest_threshold
   report_conditional_metrics: true
   report_cascade_metrics: true
 
 anomaly:
   enabled: true
   fit_on: train_benign
+  # Two permitted provenance methods, both benign-only:
+  #   train_benign_quantile     -- benign TRAIN scores, no validation outcome
+  #   validation_a_benign_fpr   -- benign validation-A scores, capped flag rate
+  # Neither can name test or the novel-anomaly holdout: the holdout is what
+  # this probe is measured against, so a threshold tuned on it would be
+  # measuring itself.
   threshold_method: train_benign_quantile
+  threshold_partition: validation_a
   quantile: 0.99
+  target_benign_flag_rate: 0.01
   min_fit_rows: 500
   # Pinned off and not configurable. The anomaly probe measures generalisation
   # to behaviour nobody labelled; a measurement that can change the thing it
