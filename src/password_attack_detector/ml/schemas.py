@@ -29,8 +29,10 @@ declares a field that could hold either one.
 
 from __future__ import annotations
 
+import json
 import math
 import re
+import uuid
 from typing import Annotated, Any, Final, Self
 
 from pydantic import (
@@ -155,6 +157,17 @@ PROHIBITED_METADATA_FIELDS: Final[frozenset[str]] = frozenset(
         "private_key",
     }
 )
+
+#: Namespace for derived experiment-record identifiers.  Fixed, so the same
+#: semantics always derive the same identifier -- on any machine, in any run.
+_NS_EXPERIMENT_RECORD: Final[uuid.UUID] = uuid.UUID(
+    "9f1c0b7a-5d3e-5a41-8b6c-1e2d3f4a5b60"
+)
+
+#: A syntactically valid identifier used only while deriving the real one.
+#: Never stored: :meth:`ExperimentRecordIdentity.derive` replaces it before the
+#: identity is validated.
+_PLACEHOLDER_RUN_ID: Final[str] = "00000000-0000-5000-8000-000000000000"
 
 #: A float constrained to the closed unit interval.
 UnitInterval = Annotated[float, Field(ge=0.0, le=1.0)]
@@ -630,6 +643,7 @@ class ExperimentRecordIdentity(BaseModel):
     required_feature_schema_version: str
     task: MLTask | None = None
     model_family: ModelFamily | None = None
+    catalog_model_id: str | None = None
     seed: int = Field(ge=0)
     ml_config_fingerprint: Sha256Hex
     model_catalog_fingerprint: Sha256Hex
@@ -637,6 +651,48 @@ class ExperimentRecordIdentity(BaseModel):
     split_config_fingerprint: Sha256Hex | None = None
     label_fingerprint: Sha256Hex | None = None
     training_data_fingerprint: Sha256Hex | None = None
+
+    # -- the rest of the training lineage -----------------------------------
+    #
+    # Every one of these changes what was fitted, so every one belongs to
+    # identity.  All are optional because a record type other than a training
+    # run has no fitted model to describe -- but a training run supplies each
+    # one that applies to its task, and :meth:`derive` is what builds it.
+    #: Provenance over exactly the rows a run was permitted to read, kept as
+    #: three separate digests rather than one.
+    #:
+    #: The three unscoped fields above cover **every** row a dataset holds,
+    #: test split and novel-anomaly holdout included, so none of them can enter
+    #: a training run's identity: a run whose identifier moved when somebody
+    #: added a test row would be the split firewall leaking through the
+    #: identifier instead of through the fit.  These cover the readable rows
+    #: only, and they stay separate because collapsing data, labels, and split
+    #: membership into one opaque digest would tell a reader *that* something
+    #: changed and never *what*.
+    #:
+    #: Each is computed over row identity internally and publishes the digest
+    #: alone; no anchor identifier reaches a record.
+    readable_training_data_fingerprint: Sha256Hex | None = None
+    readable_label_fingerprint: Sha256Hex | None = None
+    readable_split_fingerprint: Sha256Hex | None = None
+
+    allowlist_fingerprint: Sha256Hex | None = None
+    eligible_feature_list_fingerprint: Sha256Hex | None = None
+    preprocessor_fingerprint: Sha256Hex | None = None
+    class_weight_fingerprint: Sha256Hex | None = None
+    validation_partition_fingerprint: Sha256Hex | None = None
+    candidate_fingerprint: Sha256Hex | None = None
+    model_content_fingerprint: Sha256Hex | None = None
+    calibration_state_fingerprint: Sha256Hex | None = None
+    threshold_selection_fingerprint: Sha256Hex | None = None
+    category_abstention_fingerprint: Sha256Hex | None = None
+    anomaly_threshold_fingerprint: Sha256Hex | None = None
+    serializer_id: str | None = None
+    serializer_version: int | None = Field(default=None, ge=1)
+    #: A digest over the declared dependency ranges this run was carried out
+    #: under.  The *declared* contract, never the resolved versions: those are
+    #: observational and live on the model manifest.
+    dependency_contract_fingerprint: Sha256Hex | None = None
 
     @field_validator(
         "ml_schema_version",
@@ -670,6 +726,48 @@ class ExperimentRecordIdentity(BaseModel):
         if self.record_type is ExperimentRecordType.TRAINING_RUN and self.task is None:
             raise ValueError("a training-run record must name a task")
         return self
+
+    def semantic_payload(self) -> dict[str, Any]:
+        """Return the canonical content this identity is derived from.
+
+        Everything except ``run_id`` itself, which is the digest of exactly
+        this mapping.  A field added to this model therefore joins identity
+        automatically; there is no second list to forget to update.
+        """
+        payload = dict(self.model_dump(mode="json"))
+        payload.pop("run_id", None)
+        return payload
+
+    def derived_run_id(self) -> str:
+        """Return the identifier this identity's semantics derive.
+
+        ``uuid5`` over the canonical payload, so the same semantics produce the
+        same identifier on any machine, in any directory, in any year -- which
+        is what makes appending to the ledger idempotent rather than merely
+        repeatable.
+        """
+        canonical = json.dumps(
+            self.semantic_payload(), sort_keys=True, ensure_ascii=True
+        )
+        return str(uuid.uuid5(_NS_EXPERIMENT_RECORD, canonical))
+
+    @classmethod
+    def derive(cls, **fields: Any) -> ExperimentRecordIdentity:
+        """Return an identity whose ``run_id`` is the one its content derives.
+
+        The only supported way to build a training-run identity.  A caller
+        cannot supply ``run_id``: an identifier that could be assigned would let
+        two different runs claim to be the same run, which is precisely what the
+        ledger's conflict detection exists to catch and precisely what it should
+        never have to.
+        """
+        if "run_id" in fields:
+            raise ValueError(
+                "run_id is derived from the identity's own content and cannot "
+                "be supplied; an assigned identifier is not an identity"
+            )
+        probe = cls.model_construct(**fields, run_id=_PLACEHOLDER_RUN_ID)
+        return cls(**fields, run_id=probe.derived_run_id())
 
 
 #: Every schema declared in this module.  Swept at import against

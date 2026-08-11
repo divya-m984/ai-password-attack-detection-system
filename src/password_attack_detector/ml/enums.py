@@ -54,6 +54,7 @@ __all__ = [
     "ScoreKind",
     "SelectionStatus",
     "ThresholdObjective",
+    "TrainingRunStatus",
     "ValidationPartition",
     "ValidationPartitionStatus",
     "is_probability",
@@ -211,6 +212,45 @@ class MetricStatus(StrEnum):
     MEASURED = "measured"
     INSUFFICIENT_SUPPORT = "insufficient_support"
     UNAVAILABLE = "unavailable"
+
+
+class TrainingRunStatus(StrEnum):
+    """How far one configured candidate got, and where it stopped.
+
+    A configured candidate that cannot be trained does **not** disappear.  It
+    produces a run outcome carrying the status below and the requirements it
+    failed, because a candidate list that silently shrinks is a comparison
+    nobody can audit: a family missing from a later report should be
+    distinguishable from a family that was never configured.
+
+    Only :attr:`COMPLETED` means every artifact a later selection needs is
+    present.  Every other member names a specific missing piece, and none of
+    them is a failure of the run as a whole -- the orchestration completes and
+    reports them.
+    """
+
+    #: Fitted, published, and carrying every artifact its task requires.
+    COMPLETED = "completed"
+    #: The family cannot be trained under this configuration at all: the
+    #: catalog does not admit it for the task, or a required reviewed setting
+    #: was not supplied.
+    UNAVAILABLE = "unavailable"
+    #: The model fitted, and the published artifact failed verification.
+    FAILED_VALIDATION = "failed_validation"
+    #: A support floor was not met, so nothing downstream could mean anything.
+    INSUFFICIENT_SUPPORT = "insufficient_support"
+    #: Configured calibration could not be fitted on validation-A.
+    CALIBRATION_UNAVAILABLE = "calibration_unavailable"
+    #: No operating point could be selected on validation-B.
+    THRESHOLD_UNAVAILABLE = "threshold_unavailable"
+    #: The family has no proven serializer, so a fitted model may be compared
+    #: in process but never stored.  M-021 is the standing example.
+    SERIALIZER_UNAVAILABLE = "serializer_unavailable"
+
+    @property
+    def complete(self) -> bool:
+        """Return whether this run produced every artifact its task requires."""
+        return self is TrainingRunStatus.COMPLETED
 
 
 class SelectionStatus(StrEnum):

@@ -5,12 +5,14 @@ Subcommands::
     password-attack-detector ml catalog          -- the versioned model catalog
     password-attack-detector ml audit-features   -- the eligibility and leakage audit
     password-attack-detector ml verify-manifest  -- check a published model artifact
+    password-attack-detector ml train            -- fit, calibrate, threshold, publish
+    password-attack-detector ml experiments      -- list the immutable run ledger
 
-Three commands, and the absences are deliberate.  Training, calibration,
-threshold selection, prediction, evaluation, and comparison arrive in later
-milestones, and no placeholder is registered for them: a command that exists
-but does nothing is worse than one that is honestly absent, because ``--help``
-would advertise a capability the code does not have.
+Five commands, and the absences are deliberate.  Champion selection, test
+evaluation, prediction, fusion, and comparison arrive in later milestones, and
+no placeholder is registered for them: a command that exists but does nothing is
+worse than one that is honestly absent, because ``--help`` would advertise a
+capability the code does not have.
 
 **No command prints an identifier.**  Not an event identifier, a campaign
 identifier, an entity pseudonym, a coordinate, a raw feature row, a secret, or
@@ -35,6 +37,8 @@ from password_attack_detector.exceptions import (
     ArtifactNotFoundError,
     ConfigurationError,
     DataValidationError,
+    ExperimentPublicationError,
+    LedgerConflictError,
     ManifestVerificationError,
     MLConfigurationError,
     ModelNotReadyError,
@@ -46,10 +50,11 @@ ml_app = typer.Typer(
     name="ml",
     help=(
         "Machine-learning detection layer: inspect the model catalog, audit "
-        "feature eligibility, and verify a published model artifact. Models "
-        "are fitted on Phase 3 feature "
-        "snapshots and are reported alongside the rule engine, never in "
-        "place of it."
+        "feature eligibility, train and publish immutable experiment runs, "
+        "list the run ledger, and verify a published model artifact. Models "
+        "are fitted on Phase 3 feature snapshots and are reported alongside "
+        "the rule engine, never in place of it. No champion is selected and "
+        "no test split is read."
     ),
     no_args_is_help=True,
 )
@@ -65,6 +70,8 @@ _REPORTABLE = (
     ArtifactNotFoundError,
     ConfigurationError,
     DataValidationError,
+    ExperimentPublicationError,
+    LedgerConflictError,
     MLConfigurationError,
     ManifestVerificationError,
     ModelNotReadyError,
@@ -579,4 +586,427 @@ def verify_manifest(
         "[dim]Structural and integrity verification only. No calibrator has "
         "been fitted, no champion has been selected, and no performance figure "
         "is recorded in a model artifact.[/dim]"
+    )
+
+
+# ---------------------------------------------------------------------------
+# train
+# ---------------------------------------------------------------------------
+
+
+def _load_training_inputs(
+    *,
+    features_path: Path,
+    labels_path: Path,
+    splits_path: Path,
+    campaign_labels: Path,
+    feature_manifest: Path,
+    allowlist_path: Path,
+    config_path: Path | None,
+    feature_config_path: Path | None,
+) -> Any:
+    """Load, audit, and freeze everything one training run is carried out under.
+
+    Every data source is read through ``ml.dataset``, the one module in this
+    layer permitted to see ground truth. Nothing here joins, filters, or fits:
+    the CLI is a composition root, and a training decision made inside it would
+    be a decision no test of the library could reach.
+    """
+    import json
+
+    from password_attack_detector.features.catalog import build_catalog
+    from password_attack_detector.features.config import (
+        FeatureConfig,
+        load_feature_config,
+    )
+    from password_attack_detector.ml.config import MLConfig, load_ml_config
+    from password_attack_detector.ml.dataset import load_ml_dataset
+    from password_attack_detector.ml.eligibility import MLEligibilityAuditor
+    from password_attack_detector.ml.enums import MLSplit
+    from password_attack_detector.ml.features import (
+        load_feature_allowlist,
+        resolve_eligible_features,
+    )
+    from password_attack_detector.ml.partition import partition_validation
+    from password_attack_detector.ml.training import TrainingContext
+
+    for path in (
+        features_path,
+        labels_path,
+        splits_path,
+        campaign_labels,
+        feature_manifest,
+        allowlist_path,
+    ):
+        if not path.exists():
+            _fail(f"Input not found: {_display(path)}")
+
+    config: MLConfig = _guard(
+        "Cannot load the ML configuration",
+        lambda: MLConfig() if config_path is None else load_ml_config(config_path),
+    )
+    feature_config = _guard(
+        "Cannot load the feature configuration",
+        lambda: (
+            FeatureConfig()
+            if feature_config_path is None
+            else load_feature_config(feature_config_path)
+        ),
+    )
+    catalog = _guard(
+        "Cannot build the feature catalog", lambda: build_catalog(feature_config)
+    )
+    allowlist = _guard(
+        "Cannot load the feature allowlist",
+        lambda: load_feature_allowlist(allowlist_path),
+    )
+    eligible = _guard(
+        "Cannot resolve the eligible feature set",
+        lambda: resolve_eligible_features(
+            catalog,
+            allowlist,
+            include_leakage_classes=config.preprocessing.include_leakage_classes,
+            include_feature_groups=config.preprocessing.include_feature_groups,
+            feature_schema_version=config.required_feature_schema_version,
+        ),
+    )
+
+    def _manifest() -> dict[str, Any]:
+        try:
+            loaded = json.loads(feature_manifest.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise DataValidationError(
+                f"Cannot read the feature manifest ({type(exc).__name__})"
+            ) from None
+        if not isinstance(loaded, dict):
+            raise DataValidationError("The feature manifest is not a JSON object")
+        return loaded
+
+    manifest = _guard("Feature manifest", _manifest)
+    dataset = _guard(
+        "Cannot assemble the dataset",
+        lambda: load_ml_dataset(
+            features_path=features_path,
+            labels_path=labels_path,
+            splits_path=splits_path,
+            campaign_labels_path=campaign_labels,
+            eligible=eligible,
+            feature_catalog_fingerprint=catalog.fingerprint(),
+        ),
+    )
+    partition = _guard(
+        "Cannot partition the validation split",
+        lambda: partition_validation(
+            dataset.for_split(MLSplit.VALIDATION),
+            config=config.validation_partition,
+            support=config.support,
+            campaign_metadata_supplied=True,
+        ),
+    )
+
+    # The audit runs before anything is fitted, and a failure stops the run.
+    # Training on a dataset whose feature contract or split discipline is
+    # unsound would produce artifacts nobody should use, and somebody would
+    # eventually use them.
+    audit = _guard(
+        "Cannot audit the dataset",
+        lambda: MLEligibilityAuditor(
+            catalog=catalog,
+            allowlist=allowlist,
+            eligible=eligible,
+            config=config,
+            feature_manifest=manifest,
+            partition=partition,
+        ).audit(dataset),
+    )
+    if not audit.passed:
+        _err.print(f"[red]Eligibility audit failed:[/red] {', '.join(audit.failures)}")
+        _err.print(
+            "[red]Training refused.[/red] A model fitted on a dataset that "
+            "failed the audit would be an artifact nobody should use."
+        )
+        raise typer.Exit(code=1)
+
+    return _guard(
+        "Cannot prepare the training context",
+        lambda: TrainingContext.prepare(
+            dataset,
+            config=config,
+            eligible=eligible,
+            feature_catalog=catalog,
+            partition=partition,
+            allowlist_fingerprint=allowlist.fingerprint(),
+        ),
+    )
+
+
+@ml_app.command()
+def train(
+    features_path: Annotated[
+        Path, typer.Option("--features", help="Phase 3 feature snapshots Parquet file.")
+    ],
+    labels_path: Annotated[
+        Path, typer.Option("--labels", help="Phase 3 feature labels Parquet file.")
+    ],
+    splits_path: Annotated[
+        Path, typer.Option("--splits", help="Phase 3 feature splits Parquet file.")
+    ],
+    campaign_labels: Annotated[
+        Path,
+        typer.Option(
+            "--campaign-labels",
+            help="Phase 2 label table, required for campaign-grouped validation.",
+        ),
+    ],
+    feature_manifest: Annotated[
+        Path,
+        typer.Option(
+            "--feature-manifest",
+            help="Phase 3 feature manifest, for the fingerprint provenance check.",
+        ),
+    ],
+    allowlist_path: Annotated[
+        Path,
+        typer.Option("--allowlist", help="Reviewed ML feature allowlist YAML file."),
+    ],
+    config_path: Annotated[
+        Path | None, typer.Option("--config", help="ML YAML configuration file.")
+    ] = None,
+    feature_config_path: Annotated[
+        Path | None,
+        typer.Option("--feature-config", help="Phase 3 feature YAML configuration."),
+    ] = None,
+    output_root: Annotated[
+        Path | None,
+        typer.Option(
+            "--output-root",
+            "-o",
+            help="Root for run artifacts and the ledger. Defaults to artifacts/ml.",
+        ),
+    ] = None,
+) -> None:
+    """Train every configured candidate and publish an immutable run for each.
+
+    Audits feature eligibility first and refuses to train on a dataset that
+    fails it. Then fits the binary head, the known-malicious category head, and
+    the experimental anomaly probe -- each on the rows its own task permits --
+    calibrates on validation-A, measures that calibrator on validation-B, and
+    selects operating points on validation-B.
+
+    The test split and the novel-anomaly holdout are read by nothing here. No
+    champion is selected, no ``champion.lock`` is written, and no test metric is
+    produced: this command records what was run, not which run won.
+
+    A candidate that cannot be trained is reported with a status and the run
+    continues, because a candidate list that silently shrinks is a comparison
+    nobody can audit. The command exits non-zero only when the orchestration
+    itself is invalid -- a failed audit, an unusable validation partition, or a
+    publication that could not be completed.
+
+    Output is run identifiers, statuses, tasks, and model identifiers. No event
+    identifier, campaign, row, coefficient, threshold value, or absolute path is
+    printed.
+    """
+    from password_attack_detector.ml.experiments import publish_training_run
+    from password_attack_detector.ml.ledger import ExperimentLedger
+    from password_attack_detector.ml.training import train_all
+
+    context = _load_training_inputs(
+        features_path=features_path,
+        labels_path=labels_path,
+        splits_path=splits_path,
+        campaign_labels=campaign_labels,
+        feature_manifest=feature_manifest,
+        allowlist_path=allowlist_path,
+        config_path=config_path,
+        feature_config_path=feature_config_path,
+    )
+
+    root = output_root or (_artifacts_root() / "ml")
+    ledger = ExperimentLedger(root / "ledger")
+
+    outcomes = _guard(
+        "Cannot train the configured candidates", lambda: train_all(context)
+    )
+
+    def _publish(outcome: Any) -> Any:
+        """Publish one run, converting a known failure into a sanitized exit."""
+        return _guard(
+            f"Cannot publish the {outcome.candidate.label} run",
+            lambda: publish_training_run(
+                outcome, context=context, root=root, ledger=ledger
+            ),
+        )
+
+    publications = [_publish(outcome) for outcome in outcomes]
+
+    table = Table(title="Training runs")
+    table.add_column("Run")
+    table.add_column("Model")
+    table.add_column("Task")
+    table.add_column("Status")
+    table.add_column("Model id")
+    for publication, outcome in zip(publications, outcomes, strict=True):
+        colour = "green" if outcome.complete else "yellow"
+        record_model_id = (
+            "unavailable" if outcome.fitted is None else _model_identifier(outcome)
+        )
+        table.add_row(
+            publication.run_id[:8],
+            publication.catalog_model_id,
+            str(publication.task),
+            f"[{colour}]{publication.status}[/{colour}]",
+            record_model_id,
+        )
+    _console.print(table)
+
+    counts = Table(title="Support", show_header=False, box=None)
+    counts.add_row("Validation-A rows", f"{context.partition.partition_a_row_count:,}")
+    counts.add_row("Validation-B rows", f"{context.partition.partition_b_row_count:,}")
+    counts.add_row(
+        "Runs published", f"{sum(1 for item in publications if item.created):,}"
+    )
+    counts.add_row(
+        "Runs already present",
+        f"{sum(1 for item in publications if not item.created):,}",
+    )
+    _console.print(counts)
+
+    _console.print(f"Wrote runs under {_display(root / 'runs')}")
+    _console.print(f"Ledger at {_display(root / 'ledger')}")
+    _console.print(
+        "[dim]No champion has been selected and no test split has been read. "
+        "A completed run means every artifact its task requires was published, "
+        "not that the model is any good.[/dim]"
+    )
+
+
+def _artifacts_root() -> Path:
+    """Return the project artifacts directory."""
+    from password_attack_detector.paths import get_artifacts_dir
+
+    return get_artifacts_dir()
+
+
+def _model_identifier(outcome: Any) -> str:
+    """Return the derived model identifier for a fitted outcome."""
+    from password_attack_detector.ml.serialization import model_id_for
+
+    fitted = outcome.fitted
+    return model_id_for(
+        fitted.content_fingerprint(), task=fitted.task, family=fitted.family
+    )[:8]
+
+
+# ---------------------------------------------------------------------------
+# experiments
+# ---------------------------------------------------------------------------
+
+
+@ml_app.command()
+def experiments(
+    output_root: Annotated[
+        Path | None,
+        typer.Option(
+            "--output-root",
+            "-o",
+            help="Root holding the ledger. Defaults to artifacts/ml.",
+        ),
+    ] = None,
+    reconcile_runs: Annotated[
+        bool,
+        typer.Option(
+            "--reconcile/--no-reconcile",
+            help=(
+                "Index any published run the ledger does not yet hold. Appends "
+                "only; nothing stored is ever rewritten."
+            ),
+        ),
+    ] = False,
+) -> None:
+    """List the immutable training runs the experiment ledger holds.
+
+    Identity and status only: run identifier, record type, task, model
+    identifier and family, run status, calibration method and outcome, and
+    threshold outcome. **No metric of any kind is shown** -- not a validation
+    score, and certainly not a test one -- because a listing that ranked runs
+    would be a champion selection under another name.
+
+    ``--reconcile`` appends a ledger record for any complete published run the
+    ledger is missing, reading the record from the run directory it was
+    published with. It is the recovery for a run that was promoted and then not
+    indexed; it rewrites nothing and deletes nothing.
+    """
+    from password_attack_detector.ml.enums import ExperimentRecordType
+    from password_attack_detector.ml.experiments import reconcile, summarize
+    from password_attack_detector.ml.ledger import ExperimentLedger
+
+    root = output_root or (_artifacts_root() / "ml")
+    ledger = ExperimentLedger(root / "ledger")
+
+    if reconcile_runs:
+        appended = _guard(
+            "Cannot reconcile the ledger", lambda: reconcile(root=root, ledger=ledger)
+        )
+        _console.print(f"Indexed {len(appended):,} previously unindexed run(s)")
+
+    records = _guard(
+        "Cannot read the experiment ledger", lambda: ledger.training_runs()
+    )
+    if not records:
+        _console.print("The experiment ledger holds no training runs.")
+        return
+
+    # Two tables rather than one wide one. Status names are long by design --
+    # ``insufficient_validation_support`` says exactly what happened -- and a
+    # single table would have to truncate them on an ordinary terminal, which
+    # is the one thing a status column must never do.
+    summaries = [summarize(record) for record in records]
+
+    identity = Table(
+        title="Experiment ledger",
+        caption=f"{len(summaries):,} immutable training_run record(s)",
+    )
+    identity.add_column("Run")
+    identity.add_column("Model")
+    identity.add_column("Task")
+    identity.add_column("Status")
+    identity.add_column("Flags")
+    for summary in summaries:
+        assert summary.record_type is ExperimentRecordType.TRAINING_RUN
+        flags = [
+            name
+            for name, present in (
+                ("reference", summary.reference_baseline),
+                ("experimental", summary.experimental),
+                ("eligible", summary.champion_eligible),
+            )
+            if present
+        ]
+        colour = "green" if summary.status.complete else "yellow"
+        identity.add_row(
+            summary.run_id[:8],
+            summary.catalog_model_id,
+            str(summary.task),
+            f"[{colour}]{summary.status}[/{colour}]",
+            ", ".join(flags) or "-",
+        )
+    _console.print(identity)
+
+    operating = Table(title="Operating points")
+    operating.add_column("Run")
+    operating.add_column("Model")
+    operating.add_column("Calibration")
+    operating.add_column("Threshold")
+    for summary in summaries:
+        operating.add_row(
+            summary.run_id[:8],
+            summary.catalog_model_id,
+            f"{summary.calibration_method}/{summary.calibration_status}",
+            summary.threshold_status,
+        )
+    _console.print(operating)
+    _console.print(
+        "[dim]Training runs only. No champion has been selected, no test "
+        "evaluation exists, and no figure here describes performance.[/dim]"
     )

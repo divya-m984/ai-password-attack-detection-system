@@ -27,12 +27,13 @@ allowlist, canonical row ordering, dataset assembly, campaign-disjoint
 validation partitioning, and the eligibility audit.  Milestone 3 added
 train-only preprocessing and class weighting.  Milestone 4 added the model
 adapters, the authoritative JSON-and-array artifact, the deterministic archive,
-the manifest, and fail-closed loading.  Milestone 5 adds calibration fitted on
+the manifest, and fail-closed loading.  Milestone 5 added calibration fitted on
 validation-A, operating points chosen on validation-B, and the point at which
-the word "probability" becomes available.  Training orchestration, the
-experiment ledger, champion selection, prediction publication, fusion,
-evaluation, explainability, and drift arrive in later milestones and are
-deliberately absent here.
+the word "probability" becomes available.  Milestone 6 adds the orchestration
+that composes all of it -- candidate enumeration, the three training tracks,
+staged run publication, and the append-only experiment ledger.  Champion
+selection, test evaluation, prediction publication, fusion, explainability, and
+drift arrive in later milestones and are deliberately absent here.
 
 ``dataset`` is re-exported deliberately sparingly.  It is the one module in this
 layer permitted to read ground truth, and keeping its label types out of the
@@ -107,9 +108,18 @@ from password_attack_detector.ml.enums import (
     ScoreKind,
     SelectionStatus,
     ThresholdObjective,
+    TrainingRunStatus,
     ValidationPartition,
     ValidationPartitionStatus,
     is_probability,
+)
+from password_attack_detector.ml.experiments import (
+    RunPublication,
+    RunSummary,
+    build_training_run_record,
+    publish_training_run,
+    reconcile,
+    summarize,
 )
 from password_attack_detector.ml.features import (
     ALLOWLIST_SCHEMA_VERSION,
@@ -128,6 +138,12 @@ from password_attack_detector.ml.imbalance import (
     compute_class_weights,
 )
 from password_attack_detector.ml.inference import InferenceModel, ModelCompatibility
+from password_attack_detector.ml.ledger import (
+    LEDGER_SCHEMA_VERSION,
+    ExperimentLedger,
+    LedgerAppendResult,
+    TrainingRunRecord,
+)
 from password_attack_detector.ml.manifest import (
     MANIFEST_SCHEMA_VERSION,
     ModelManifest,
@@ -201,6 +217,14 @@ from password_attack_detector.ml.thresholds import (
     select_binary_threshold,
     select_category_abstention,
 )
+from password_attack_detector.ml.training import (
+    CandidateSpec,
+    TrainingContext,
+    TrainingRunOutcome,
+    enumerate_candidates,
+    train_all,
+    train_candidate,
+)
 
 __all__ = [
     "ALLOWLIST_SCHEMA_VERSION",
@@ -213,6 +237,7 @@ __all__ = [
     "FIT_ELIGIBLE_SPLITS",
     "FORBIDDEN_DIRECT_IMPORTS",
     "IMBALANCE_SCHEMA_VERSION",
+    "LEDGER_SCHEMA_VERSION",
     "MANIFEST_SCHEMA_VERSION",
     "ML_DEPENDENCY_REQUIREMENTS",
     "ML_FINGERPRINT_EXCLUDED_FIELDS",
@@ -242,6 +267,7 @@ __all__ = [
     "CalibrationReport",
     "CalibrationState",
     "CalibrationStatus",
+    "CandidateSpec",
     "CategoricalEncoding",
     "CategoryAbstentionSelection",
     "CategoryClassSupport",
@@ -251,6 +277,7 @@ __all__ = [
     "ClassWeightState",
     "DependencyRequirement",
     "EligibleFeatureList",
+    "ExperimentLedger",
     "ExperimentRecordIdentity",
     "ExperimentRecordType",
     "FeatureAdmission",
@@ -265,6 +292,7 @@ __all__ = [
     "HyperparameterSpec",
     "InferenceModel",
     "IsotonicParameters",
+    "LedgerAppendResult",
     "MLConfig",
     "MLEligibilityAuditResult",
     "MLEligibilityAuditor",
@@ -282,6 +310,8 @@ __all__ = [
     "NumericImputation",
     "PlattParameters",
     "ReliabilityBin",
+    "RunPublication",
+    "RunSummary",
     "ScalingStatistic",
     "ScoreKind",
     "ScoreSampleSource",
@@ -292,6 +322,10 @@ __all__ = [
     "ThresholdObjective",
     "ThresholdSelection",
     "TrainingBatch",
+    "TrainingContext",
+    "TrainingRunOutcome",
+    "TrainingRunRecord",
+    "TrainingRunStatus",
     "TransformedMatrix",
     "ValidationPartition",
     "ValidationPartitionResult",
@@ -304,10 +338,12 @@ __all__ = [
     "build_model_catalog",
     "build_model_document",
     "build_model_manifest",
+    "build_training_run_record",
     "canonicalize_rows",
     "collect_dependency_versions",
     "compute_class_weights",
     "diagnose_calibration_fit",
+    "enumerate_candidates",
     "evaluate_calibration_quality",
     "fit_calibration",
     "fit_preprocessor",
@@ -319,13 +355,18 @@ __all__ = [
     "model_catalog_to_markdown",
     "model_id_for",
     "partition_validation",
+    "publish_training_run",
     "read_npz_bytes",
+    "reconcile",
     "require_out_of_sample_evidence",
     "resolve_eligible_features",
     "select_anomaly_threshold",
     "select_binary_threshold",
     "select_category_abstention",
     "sklearn_compatible",
+    "summarize",
+    "train_all",
+    "train_candidate",
     "verify_model_artifact",
     "write_model_directory",
     "write_npz_bytes",

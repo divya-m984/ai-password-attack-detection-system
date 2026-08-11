@@ -45,7 +45,11 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from password_attack_detector.exceptions import ConfigurationError, MLConfigurationError
-from password_attack_detector.features.catalog import FeatureGroup, LeakageClass
+from password_attack_detector.features.catalog import (
+    PROHIBITED_FEATURE_COLUMNS,
+    FeatureGroup,
+    LeakageClass,
+)
 from password_attack_detector.features.config import FEATURE_SCHEMA_VERSION
 from password_attack_detector.ml.catalog import (
     MODEL_CATALOG,
@@ -897,6 +901,24 @@ class MLConfig(BaseModel):
     model_catalog_version: Literal["1.0.0"] = MODEL_CATALOG_VERSION
     seed: int = Field(default=42, ge=0, le=2**31 - 1)
 
+    #: The transformed column the M-001 threshold baseline cuts on.
+    #:
+    #: **Configured, never discovered.**  Scanning every feature for the best
+    #: split would be a model-selection procedure run on training data and then
+    #: reported as a baseline, which flatters the baseline and understates
+    #: whatever it is compared against.  So the column is a reviewed decision,
+    #: written down and fingerprinted.
+    #:
+    #: Left unset, the M-001 candidate reports ``unavailable`` rather than
+    #: picking a column for itself.  A baseline nobody chose is not a baseline.
+    #:
+    #: The name is checked here against the prohibited-column set, and checked
+    #: again at fit time against the *resolved* transformed feature order --
+    #: which is where eligibility actually lives, because a column is admitted
+    #: by the reviewed allowlist and the configured leakage classes together,
+    #: neither of which this field can see on its own.
+    single_feature_baseline_column: str | None = None
+
     enabled_model_families: tuple[ModelFamily, ...] = (
         ModelFamily.PRIOR_BASELINE,
         ModelFamily.SINGLE_FEATURE_THRESHOLD,
@@ -933,6 +955,28 @@ class MLConfig(BaseModel):
     overwrite: bool = False
 
     # -- validation ---------------------------------------------------------
+
+    @field_validator("single_feature_baseline_column")
+    @classmethod
+    def check_baseline_column(cls, value: str | None) -> str | None:
+        """The baseline column is named, and is never a prohibited column.
+
+        A label, a split assignment, or a campaign identifier is not a feature,
+        so a baseline configured to threshold one would be reading ground truth
+        and reporting the result as a detector.
+        """
+        if value is None:
+            return None
+        if not value.strip():
+            raise ValueError(
+                "single_feature_baseline_column must name a column or be omitted"
+            )
+        if value in PROHIBITED_FEATURE_COLUMNS:
+            raise ValueError(
+                f"single_feature_baseline_column {value!r} is a prohibited "
+                f"column; a baseline may only threshold a reviewed feature"
+            )
+        return value
 
     @field_validator("required_feature_schema_version")
     @classmethod
@@ -1115,6 +1159,7 @@ class MLConfig(BaseModel):
             "required_feature_schema_version": self.required_feature_schema_version,
             "model_catalog_version": self.model_catalog_version,
             "seed": self.seed,
+            "single_feature_baseline_column": self.single_feature_baseline_column,
             "enabled_model_families": sorted(
                 str(family) for family in self.enabled_model_families
             ),

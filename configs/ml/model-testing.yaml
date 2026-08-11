@@ -17,6 +17,13 @@ model_catalog_version: "1.0.0"
 
 seed: 7
 
+# The reviewed column M-001 thresholds. Named here so the baseline's success
+# path is exercised end to end by the CI-sized workflow rather than reported as
+# permanently unavailable. Same reasoning as the development configuration: a
+# prior-only, post-event, non-nullable count of recent failures against one
+# account, chosen for its meaning and never for its measured performance.
+single_feature_baseline_column: user_failure_count__5m
+
 # The tree families are excluded: fitting a forest is the slowest thing this
 # layer does, and nothing in a contract test needs one. The prior baseline is
 # mandatory, and logistic regression covers the calibratable-candidate path.

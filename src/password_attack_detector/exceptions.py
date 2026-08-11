@@ -98,6 +98,28 @@ class ModelSerializationError(PasswordAttackDetectorError):
     """
 
 
+class LedgerConflictError(PasswordAttackDetectorError):
+    """Raised when a ledger identity is offered with different semantic content.
+
+    The experiment ledger is append-only.  Appending a record whose canonical
+    content is byte-identical to one already stored is idempotent and succeeds
+    quietly; appending *different* content under the same semantic identity is
+    a contradiction -- two runs claiming to be the same run -- and is refused.
+    Nothing is overwritten, merged, or amended, so a stored record's meaning
+    never changes after the fact.
+    """
+
+
+class ExperimentPublicationError(PasswordAttackDetectorError):
+    """Raised when a training run cannot be published as a complete artifact.
+
+    Covers a staged run that failed its own verification, an existing run whose
+    stored content differs from the one being published, and any failure during
+    promotion.  A raised publication leaves the destination and the ledger
+    exactly as they were.
+    """
+
+
 class RuleEvaluationError(PasswordAttackDetectorError):
     """Raised when a detection rule is prepared or evaluated outside its contract.
 

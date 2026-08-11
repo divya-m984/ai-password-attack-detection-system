@@ -3,14 +3,14 @@
 What the machine-learning layer may read, what it must return, and what it
 guarantees. This document covers the data contract established in Phase 5
 Milestone 2, the preprocessing and weighting of Milestone 3, the model adapters
-and artifacts of Milestone 4, and the calibration and threshold selection of
-Milestone 5.
+and artifacts of Milestone 4, the calibration and threshold selection of
+Milestone 5, and the training orchestration and experiment ledger of Milestone
+6. The ledger's own contract is `docs/experiment-ledger.md`.
 
-**Nothing has been trained, and no result is claimed.** These milestones ship
-library contracts: a model can be fitted, published, verified, calibrated, and
-given an operating point, and every one of those is exercised by tests on
-hand-specified fixtures. There is no training command, no experiment ledger, no
-champion, no fusion, and no evaluation. No figure anywhere in this repository
+**No result is claimed.** Models can now be fitted, calibrated, thresholded,
+published as immutable runs, and recorded in an append-only ledger. What has
+*not* happened is any comparison between them: there is no champion, no test
+evaluation, no fusion, and no ranking. No figure anywhere in this repository
 describes detection performance, because no model has been evaluated.
 
 ---
@@ -1623,19 +1623,100 @@ checks are exercised directly. Beyond that:
 
 ---
 
-## 19. Known limitations
+## 19. Training orchestration (Milestone 6)
 
-**No training orchestration exists yet.** Milestones 4 and 5 ship model
-adapters, artifacts, loading, calibration, and threshold selection. There is no
-training command, no experiment ledger, no champion selection, no prediction
-publication, no fusion, no evaluation, no explainability, and no drift
-detection. No figure in this repository describes model performance, because no
-model has been evaluated.
+Milestone 6 composes everything above into one ordered pipeline and writes down
+what happened. It adds no algorithm: the dataset, the row order, the design
+matrix, the weights, the fits, the calibrator, and the operating points are all
+implemented elsewhere, and a trainer that reimplemented one "for convenience"
+would be a second implementation that agreed until the day it did not.
 
-**There is no `ml train`.** Fitting, calibrating, and threshold selection are
-library contracts exercised by tests. The model commands are `ml catalog`,
-`ml audit-features`, and `ml verify-manifest`; none of them calibrates, selects a
-threshold, or reads the test split.
+**The full contract is `docs/experiment-ledger.md`.** What follows is the part
+that belongs beside the model contract.
+
+### Three tracks publish different things
+
+| track | fitted on | operating point |
+|---|---|---|
+| binary supervised | TRAIN, supervised-eligible | threshold on validation-B |
+| category supervised | TRAIN, known-malicious only | abstention on validation-B |
+| anomaly experimental | TRAIN, benign only, no target | benign quantile, or validation-A benign rate |
+
+A category head never inherits the binary threshold, an anomaly run never
+carries a calibrator or a calibrated probability, and a binary run never invents
+an abstention artifact. Each is a validator on the training-run record, and only
+the artifacts a task actually has are written — no empty directory stands in for
+one that cannot exist.
+
+### Preprocessing is fitted per track
+
+A fitted preprocessor learns imputation constants, category vocabularies,
+rare-value buckets, and scaling statistics, so its fitting population is part of
+the learned pipeline. Each track therefore fits its own on the rows its task
+permits: the binary head on supervised-eligible TRAIN rows, the category head on
+known-malicious TRAIN rows, the anomaly probe on benign TRAIN rows. Sharing one
+would let the probe's encoder be shaped by the labels it is supposed to be blind
+to. The reviewed raw allowlist is shared; the fitted state is not.
+
+### The reference baseline is not calibrated, by contract
+
+M-000 emits the training class prior for every row, so there is no score
+variation for a calibrator to map and both Milestone 5 methods require distinct
+scores. Faking a calibrator, or relaxing the support rules until one was
+accepted, would each make the mandatory comparator's number mean less. So
+calibration is *not applicable* for a reference baseline: the run keeps
+`decision_score`, chooses an operating point on it under the raw-score contract,
+and can reach `completed`. It remains permanently non-promotable, and the
+exemption reaches no other family.
+
+### A candidate that cannot be trained is recorded, not dropped
+
+Seven run statuses (§4 of the ledger document), of which only `completed` means
+every artifact the task requires is present. A candidate list that silently
+shrinks is a comparison nobody can audit.
+
+### Run identity excludes the frozen splits — deliberately
+
+The dataset's own `training_data_fingerprint`, `label_fingerprint`, and
+`split_fingerprint` cover **every** row it holds, test and holdout included. A
+run identity built from them would move whenever somebody added a test row —
+the firewall leaking through the identifier rather than through the fit.
+
+So a run carries three **role-scoped** digests instead, each over exactly the
+rows its own track may read: `readable_training_data_fingerprint`,
+`readable_label_fingerprint`, and `readable_split_fingerprint`. Three and not
+one, because a changed feature value, a changed label, and a row entering or
+leaving a readable role are three different findings. Row identity is used
+inside each digest and published by none of them.
+
+### Nothing is ranked and nothing is promoted
+
+No candidate is preferred, no `champion.lock` is written, and no training-run
+record has a `champion`, `rank`, or `ranking` field. `champion_eligible` is
+copied from the reviewed catalog and describes the *family*, not the run.
+M-000 stays the reference baseline and permanently non-promotable; M-030 stays
+experimental and never influences selection; M-021 stays unpublishable and
+therefore never produces an artifact.
+
+---
+
+## 20. Known limitations
+
+**No champion selection exists yet.** Milestones 4 through 6 ship model
+adapters, artifacts, loading, calibration, threshold selection, training
+orchestration, and the immutable experiment ledger. There is no champion
+selection, no test evaluation, no prediction publication, no fusion, no
+explainability, and no drift detection. No figure in this repository describes
+model performance, because no model has been evaluated.
+
+**`ml train` records what was run, not which run won.** It trains every
+configured candidate, publishes an immutable run for each, and prints
+identifiers and statuses. `ml experiments` lists the ledger and shows **no
+metric of any kind**, because a listing that ranked runs would be a champion
+selection under another name. Neither command reads the test split.
+
+**A completed run is not a good model.** `completed` means every artifact the
+task requires was published, and nothing more.
 
 **Calibration on synthetic validation data is not real-world calibration.** A
 fitted calibrator here is calibrated against the frozen synthetic validation-A

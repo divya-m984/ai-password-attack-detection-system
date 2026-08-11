@@ -21,6 +21,20 @@ model_catalog_version: "1.0.0"
 # written down is not a reproducibility control.
 seed: 42
 
+# The reviewed column the M-001 single-feature baseline thresholds.
+#
+# Configured, never discovered. Scanning every feature for the best split would
+# be a model-selection procedure run on training data and then reported as a
+# baseline, which flatters the baseline and understates whatever it is compared
+# against -- so the column is a decision, written down and fingerprinted.
+#
+# Chosen for what it *means*, not for how it scored: prior-only, post-event,
+# admitted by the reviewed allowlist, non-nullable, and the most direct
+# expression of the pattern this system exists to detect -- repeated failures
+# against one account in a short window. No validation figure took part in the
+# choice, and none may.
+single_feature_baseline_column: user_failure_count__5m
+
 # The prior baseline is mandatory: it is the reference every candidate is
 # measured against, and enabling a candidate without it would leave the
 # improvement gate with nothing to compare to.
