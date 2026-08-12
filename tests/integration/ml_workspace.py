@@ -187,3 +187,65 @@ def train(workspace: Path, output_root: Path, **replace: str) -> Result:
     for option, value in arguments.items():
         flat += [option, value]
     return invoke("ml", "train", *flat)
+
+
+#: The configuration every command in these suites is run under.
+ML_CONFIG = str(repo_root() / "configs" / "ml" / "model-testing.yaml")
+
+
+def freeze(workspace: Path, output_root: Path, reports: Path) -> Path:
+    """Train, select, and freeze a champion, returning the artifact root.
+
+    The prediction suites need a *frozen champion*, and a frozen champion is the
+    end of a real pipeline. Building one by hand would let those suites pass
+    against a shape the commands never produce.
+    """
+    trained = train(workspace, output_root)
+    assert trained.exit_code == 0, trained.output
+    selected = invoke(
+        "ml",
+        "select",
+        "--output-root",
+        str(output_root),
+        "--config",
+        ML_CONFIG,
+        "--reports-dir",
+        str(reports),
+    )
+    assert selected.exit_code == 0, selected.output
+    frozen = invoke(
+        "ml",
+        "freeze-champion",
+        "--output-root",
+        str(output_root),
+        "--config",
+        ML_CONFIG,
+    )
+    assert frozen.exit_code == 0, frozen.output
+    return output_root
+
+
+def predict(
+    workspace: Path, output_root: Path, *, split: str = "test", **replace: str
+) -> Result:
+    """Run ``ml predict`` over the frozen champion under *output_root*.
+
+    Notice what is absent from the argument map: there is no ``--labels`` and no
+    ``--campaign-labels``. Prediction is carried out on feature-side inputs
+    alone, and the fixture cannot supply ground truth even by mistake.
+    """
+    arguments = {
+        "--features": str(workspace / "processed" / "feature_snapshots.parquet"),
+        "--splits": str(workspace / "processed" / "feature_splits.parquet"),
+        "--feature-manifest": str(workspace / "processed" / "feature_manifest.json"),
+        "--allowlist": str(workspace / "allowlist.yaml"),
+        "--feature-config": str(workspace / "features.yaml"),
+        "--config": ML_CONFIG,
+        "--output-root": str(output_root),
+        "--split": split,
+    }
+    arguments.update(replace)
+    flat: list[str] = []
+    for option, value in arguments.items():
+        flat += [option, value]
+    return invoke("ml", "predict", *flat)

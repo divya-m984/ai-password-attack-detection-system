@@ -78,13 +78,18 @@ __all__ = [
     "UNKNOWN_CAMPAIGN_REFERENCE_CODE",
     "AnchorMetadata",
     "CampaignRow",
+    "InferenceAnchor",
+    "InferenceDataset",
+    "InferenceFrame",
     "LabelRow",
     "MLDataset",
     "SplitDataset",
     "SplitRow",
+    "assemble_inference_dataset",
     "assemble_ml_dataset",
     "campaign_association",
     "declared_campaign_ids",
+    "load_inference_dataset",
     "load_ml_dataset",
 ]
 
@@ -941,5 +946,261 @@ def load_ml_dataset(
         splits=split_records,
         campaigns=campaigns,
         eligible=eligible,
+        feature_catalog_fingerprint=feature_catalog_fingerprint,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Inference input -- features and split membership, and no ground truth at all
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class InferenceAnchor:
+    """A row's join identity, and the only identity inference carries.
+
+    Satisfies :class:`~password_attack_detector.ml.ordering.AnchoredRow`, which
+    is all the ordering guard and the preprocessor need.  There is no label
+    field here, no campaign, and no supervised-eligibility flag, because the
+    loader that builds these never opened a table containing any of them.
+    """
+
+    anchor_event_id: str
+    anchor_event_time: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class _InferenceRow:
+    """One scoped inference row, before it becomes a frame."""
+
+    anchor_event_id: str
+    anchor_event_time: datetime
+    values: tuple[Any, ...]
+    split: MLSplit
+
+
+@dataclass(frozen=True, slots=True)
+class InferenceFrame:
+    """The rows a frozen model may be scored over.
+
+    Structurally satisfies
+    :class:`~password_attack_detector.ml.preprocessing.FeatureFrame` and nothing
+    wider.  A frozen preprocessor accepts it exactly as it accepts a training
+    split, and there is no field on it a label could arrive in.
+    """
+
+    split: MLSplit
+    feature_names: tuple[str, ...]
+    anchors: tuple[InferenceAnchor, ...]
+    feature_matrix: tuple[tuple[Any, ...], ...]
+
+    @property
+    def row_count(self) -> int:
+        """Return the number of rows to be scored."""
+        return len(self.anchors)
+
+
+@dataclass(frozen=True)
+class InferenceDataset:
+    """One scope's inference input, canonically ordered and fingerprinted.
+
+    The deliberate counterpart of :class:`MLDataset`: same feature contract,
+    same canonical ordering, same fingerprint discipline -- and no
+    ``label_fingerprint``, because nothing here read a label to fingerprint.
+
+    ``inference_input_fingerprint`` covers the resolved feature contract, the
+    requested scope, and every anchor and cell that will be scored. It is what
+    makes a prediction's identity move when the input moves, and it cannot move
+    when a label changes.
+    """
+
+    scope: MLSplit
+    frame: InferenceFrame
+    feature_names: tuple[str, ...]
+    eligible_feature_list_fingerprint: str
+    allowlist_id: str
+    allowlist_version: str
+    feature_catalog_fingerprint: str | None
+    split_membership_fingerprint: str
+    inference_input_fingerprint: str
+    scoped_row_count: int
+    source_row_count: int
+
+    @property
+    def row_count(self) -> int:
+        """Return the number of rows in scope."""
+        return self.scoped_row_count
+
+
+def assemble_inference_dataset(
+    *,
+    feature_rows: Sequence[Mapping[str, Any]],
+    splits: Sequence[SplitRow],
+    eligible: EligibleFeatureList,
+    scope: MLSplit,
+    feature_catalog_fingerprint: str | None = None,
+) -> InferenceDataset:
+    """Join features to split membership for one scope, reading no ground truth.
+
+    The narrow inference counterpart of :func:`assemble_ml_dataset`. It takes no
+    labels, no campaign metadata, and no supervised-eligibility flags, and there
+    is no parameter through which any of them could be supplied -- which is the
+    firewall stated as a signature rather than as a convention. Split membership
+    *is* read, because scoring "the test rows" requires knowing which rows those
+    are, and split assignment is not an outcome.
+
+    Args:
+        feature_rows: Phase 3 feature snapshot rows, in any order.
+        splits: Phase 3 split assignments, one per event.
+        eligible: the resolved, reviewed feature contract the frozen model was
+            fitted under.
+        scope: the split whose rows are to be scored.
+        feature_catalog_fingerprint: recorded for provenance when supplied.
+
+    Raises:
+        DataValidationError: on a duplicate anchor, an asymmetric split table, a
+            prohibited column, a missing admitted feature, an unsupported split,
+            a naive timestamp, a non-finite value, or an empty scope.
+    """
+    _reject_matrix_contamination(eligible.feature_names)
+    if not feature_rows:
+        raise DataValidationError("No feature rows were supplied")
+    _reject_prohibited_columns(sorted({key for row in feature_rows for key in row}))
+
+    anchor_ids = [str(row[ANCHOR_EVENT_ID]) for row in feature_rows]
+    _unique_or_raise(anchor_ids, "The feature table")
+    _unique_or_raise([split.event_id for split in splits], "The split table")
+    split_by_id = {split.event_id: split for split in splits}
+    _require_symmetry(set(anchor_ids), set(split_by_id), "split")
+
+    rows: list[_InferenceRow] = []
+    for row in feature_rows:
+        anchor_id = str(row[ANCHOR_EVENT_ID])
+        missing = [name for name in eligible.feature_names if name not in row]
+        if missing:
+            raise DataValidationError(
+                f"The feature table is missing {len(missing)} admitted feature "
+                f"column(s), including {sorted(missing)[:5]}"
+            )
+        rows.append(
+            _InferenceRow(
+                anchor_event_id=anchor_id,
+                anchor_event_time=_validated_anchor_time(row[ANCHOR_EVENT_TIME]),
+                values=tuple(
+                    _validated_cell(row[name], name) for name in eligible.feature_names
+                ),
+                split=_validated_split(split_by_id[anchor_id].split),
+            )
+        )
+
+    # Canonicalised over the whole table before scoping, so the order a row ends
+    # up in does not depend on which other rows happened to share its scope.
+    ordered = canonicalize_rows(rows)
+    scoped = [row for row in ordered if row.split is scope]
+    if not scoped:
+        raise DataValidationError(
+            f"No rows are assigned to {str(scope)!r}; there is nothing to score"
+        )
+
+    frame = InferenceFrame(
+        split=scope,
+        feature_names=eligible.feature_names,
+        anchors=tuple(
+            InferenceAnchor(
+                anchor_event_id=row.anchor_event_id,
+                anchor_event_time=row.anchor_event_time,
+            )
+            for row in scoped
+        ),
+        feature_matrix=tuple(row.values for row in scoped),
+    )
+    return InferenceDataset(
+        scope=scope,
+        frame=frame,
+        feature_names=eligible.feature_names,
+        eligible_feature_list_fingerprint=eligible.fingerprint(),
+        allowlist_id=eligible.allowlist_id,
+        allowlist_version=eligible.allowlist_version,
+        feature_catalog_fingerprint=feature_catalog_fingerprint,
+        split_membership_fingerprint=_split_fingerprint(splits),
+        inference_input_fingerprint=_inference_input_fingerprint(
+            scoped, eligible=eligible, scope=scope
+        ),
+        scoped_row_count=len(scoped),
+        source_row_count=len(ordered),
+    )
+
+
+def _inference_input_fingerprint(
+    rows: Sequence[_InferenceRow], *, eligible: EligibleFeatureList, scope: MLSplit
+) -> str:
+    """Return a digest of exactly what will be scored.
+
+    The feature contract, the scope, the canonical row order, and every cell.
+    Physical file order cannot reach it -- the rows are already canonically
+    sorted -- and neither can a label, because none was read.
+    """
+    return _digest(
+        {
+            "eligible_feature_list_fingerprint": eligible.fingerprint(),
+            "feature_names": list(eligible.feature_names),
+            "scope": str(scope),
+            "rows": [
+                {
+                    "anchor_event_id": row.anchor_event_id,
+                    "anchor_event_time": row.anchor_event_time.isoformat(),
+                    "values": [_scalar(value) for value in row.values],
+                }
+                for row in rows
+            ],
+        }
+    )
+
+
+def load_inference_dataset(
+    *,
+    features_path: Path,
+    splits_path: Path,
+    eligible: EligibleFeatureList,
+    scope: MLSplit,
+    feature_catalog_fingerprint: str | None = None,
+) -> InferenceDataset:
+    """Read the feature and split tables from disk and scope them for inference.
+
+    Two paths, and there is no third: the label table is not a parameter here,
+    so a caller cannot supply one by mistake and a reviewer does not have to
+    check whether one was.
+
+    Raises:
+        DataValidationError: if a file cannot be read or a required column is
+            absent, in addition to every assembly failure.
+    """
+    feature_rows = _read_rows(features_path, "feature snapshot table")
+    split_rows = _read_rows(splits_path, "split table")
+
+    for row in feature_rows:
+        for column in (ANCHOR_EVENT_ID, ANCHOR_EVENT_TIME):
+            if column not in row:
+                raise DataValidationError(
+                    f"The feature snapshot table has no {column!r} column"
+                )
+        break
+
+    return assemble_inference_dataset(
+        feature_rows=feature_rows,
+        splits=[
+            SplitRow(
+                event_id=str(row["event_id"]),
+                split=str(row.get("split") or ""),
+                exclusion_reason=(
+                    None
+                    if row.get("exclusion_reason") is None
+                    else str(row["exclusion_reason"])
+                ),
+            )
+            for row in split_rows
+        ],
+        eligible=eligible,
+        scope=scope,
         feature_catalog_fingerprint=feature_catalog_fingerprint,
     )

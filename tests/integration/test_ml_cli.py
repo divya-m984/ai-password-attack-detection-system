@@ -36,21 +36,25 @@ _UUID_RE = re.compile(
 #: exists but does nothing is worse than an honest absence, because ``--help``
 #: would advertise a capability the code lacks.
 DEFERRED_COMMANDS = (
-    "train",
-    "predict",
     "evaluate",
     "compare",
-    "select",
-    "freeze-champion",
     "explain",
     "drift",
-    "experiments",
-    "validate",
-    "profile",
 )
 
 #: The complete set of commands this milestone registers.
-SHIPPED_COMMANDS = ("catalog", "audit-features", "verify-manifest")
+SHIPPED_COMMANDS = (
+    "catalog",
+    "audit-features",
+    "verify-manifest",
+    "train",
+    "experiments",
+    "select",
+    "freeze-champion",
+    "predict",
+    "validate",
+    "profile",
+)
 
 
 def _repo_root() -> Path:
@@ -90,13 +94,15 @@ def test_the_ml_group_shows_help_with_no_arguments() -> None:
 
 
 def test_the_ml_group_advertises_only_the_shipped_commands() -> None:
-    """Three commands, and the deferred ones must stay unregistered."""
+    """Ten commands, and the deferred ones must stay unregistered."""
     result = _invoke("ml", "--help")
     assert result.exit_code == 0
     for command in SHIPPED_COMMANDS:
         assert command in result.stdout, command
+    # Whole words: the group's own help text legitimately says "no champion is
+    # selected", and a substring search would read that as a deferred command.
     for command in DEFERRED_COMMANDS:
-        assert command not in result.stdout, command
+        assert not re.search(rf"\b{re.escape(command)}\b", result.stdout), command
 
 
 @pytest.mark.parametrize("command", DEFERRED_COMMANDS)
@@ -295,20 +301,106 @@ def test_the_package_version_is_unchanged_at_this_checkpoint() -> None:
 
 
 # ---------------------------------------------------------------------------
+# What Milestone 8 must not do
+# ---------------------------------------------------------------------------
+
+
+def test_no_fusion_is_implemented_anywhere() -> None:
+    """``FusionStrategy`` is a declared enum and nothing consumes it yet.
+
+    Fusion is Milestone 9's. The enum has existed since Milestone 1 so the shape
+    of the eventual contract is fixed, and a module that started combining a rule
+    verdict with a model score would be that milestone arriving early.
+    """
+    package = _repo_root() / "src" / "password_attack_detector" / "ml"
+    for module in sorted(package.rglob("*.py")):
+        source = module.read_text(encoding="utf-8")
+        assert "FusionDecision" not in source, module.name
+        assert "fused_flagged" not in source or module.stem in {
+            "features",
+            "predictions",
+        }, module.name
+
+
+def test_no_prediction_module_writes_a_test_evaluation_record() -> None:
+    """The fourth ledger record type stays reserved and unwritten.
+
+    Parsed rather than grepped: ``prediction_manifest`` legitimately names
+    ``test_evaluation`` in the set of fields it *forbids*, and a text search
+    would read that prohibition as a use of the thing it prohibits.
+    """
+    package = _repo_root() / "src" / "password_attack_detector" / "ml"
+    for name in (
+        "predictions",
+        "prediction_manifest",
+        "prediction_publisher",
+        "prediction_serialization",
+        "prediction_validation",
+        "quality",
+    ):
+        imported = _imported_names(package / f"{name}.py")
+        assert "ExperimentRecordType" not in imported, name
+        tree = ast.parse((package / f"{name}.py").read_text(encoding="utf-8"))
+        attributes = {
+            node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)
+        }
+        assert "TEST_EVALUATION" not in attributes, name
+
+
+def test_the_prediction_modules_read_no_ground_truth() -> None:
+    """The label-reader allowlist is unchanged by this milestone."""
+    package = _repo_root() / "src" / "password_attack_detector" / "ml"
+    for name in (
+        "predictions",
+        "prediction_manifest",
+        "prediction_publisher",
+        "prediction_serialization",
+        "prediction_validation",
+        "quality",
+    ):
+        imported = _imported_names(package / f"{name}.py")
+        offending = sorted(imported & (LABEL_BEARING_MODULES | LABEL_BEARING_SYMBOLS))
+        assert not offending, (name, offending)
+
+
+def test_the_reference_baseline_is_never_a_prediction_champion() -> None:
+    """M-000 remains the comparator, and the lock refuses it outright."""
+    from password_attack_detector.ml.catalog import MODEL_CATALOG
+
+    reference = [spec for spec in MODEL_CATALOG.specs if spec.reference_baseline]
+    assert [spec.model_id for spec in reference] == ["M-000"]
+    assert not reference[0].champion_eligible
+
+
+def test_the_unpublishable_and_experimental_families_stay_that_way() -> None:
+    """M-021 has no proven serializer; M-030 is experimental and anomaly-only."""
+    from password_attack_detector.ml.catalog import MODEL_CATALOG
+    from password_attack_detector.ml.models import PUBLISHABLE_FAMILIES
+
+    catalog = {spec.model_id: spec for spec in MODEL_CATALOG.specs}
+    assert catalog["M-021"].family not in PUBLISHABLE_FAMILIES
+    assert not catalog["M-021"].champion_eligible
+    assert catalog["M-030"].experimental
+    assert catalog["M-030"].anomaly_only
+    assert not catalog["M-030"].champion_eligible
+
+
+# ---------------------------------------------------------------------------
 # What Milestone 1 must not do
 # ---------------------------------------------------------------------------
 
 
-def test_the_ml_package_declares_no_orchestration_module() -> None:
-    """Milestone 5 calibrates and chooses thresholds. It still orchestrates nothing.
+def test_the_ml_package_declares_no_unbuilt_module() -> None:
+    """Milestone 8 predicts under the frozen champion. It still evaluates nothing.
 
-    Model adapters, serialization, the deterministic archive, the manifest, and
-    inference arrived with Milestone 4; calibration and threshold selection
-    arrive with Milestone 5 and are listed here. Training orchestration, the
-    experiment ledger, champion selection, prediction publication, fusion,
-    evaluation, explanation, and drift belong to later milestones, and an empty
-    placeholder for any of them would make the package look further along than
-    it is.
+    Model adapters and serialization arrived with Milestone 4; calibration and
+    threshold selection with Milestone 5; training orchestration, the immutable
+    experiment ledger, and run publication with Milestone 6; champion gates,
+    validation-only selection, and the champion freeze with Milestone 7; batch
+    inference, the prediction artifacts, their manifest, their validation, and
+    the aggregate profile with Milestone 8. Test *evaluation*, fusion,
+    explanation, and drift belong to later milestones, and an empty placeholder
+    for any of them would make the package look further along than it is.
     """
     package = _repo_root() / "src" / "password_attack_detector" / "ml"
     present = {path.stem for path in package.glob("*.py")}
@@ -316,23 +408,36 @@ def test_the_ml_package_declares_no_orchestration_module() -> None:
         "__init__",
         "calibration",
         "catalog",
+        "champion",
         "cli",
         "config",
         "dataset",
         "dependencies",
         "eligibility",
         "enums",
+        "experiments",
         "features",
+        "gates",
         "imbalance",
         "inference",
+        "ledger",
         "manifest",
         "npz",
         "ordering",
         "partition",
+        "prediction_manifest",
+        "prediction_publisher",
+        "prediction_serialization",
+        "prediction_validation",
+        "predictions",
         "preprocessing",
+        "quality",
+        "ranking",
         "schemas",
+        "selection",
         "serialization",
         "thresholds",
+        "training",
     }
 
 
@@ -428,17 +533,31 @@ def test_only_the_dataset_module_imports_a_label_reader() -> None:
     assert readers == [LABEL_READER], readers
 
 
-def test_only_the_dataset_module_opens_a_data_file() -> None:
-    """Parquet is read in exactly one place in this layer.
+#: The one module permitted to *write* -- and read back -- a Parquet file this
+#: layer produced itself.
+#:
+#: A deliberately different permission from :data:`LABEL_READER`'s. The
+#: prediction serializer opens no input table: it writes the rows a frozen model
+#: emitted and reads them back to verify them, and there is no join for it to do
+#: differently because there is nothing to join. It imports no label-bearing
+#: symbol, which the sweep above asserts separately and unchanged.
+PREDICTION_ARTIFACT_SERIALIZER = "prediction_serialization"
 
-    A second module that opened a table would be a second place where the join
-    could be done differently, and the first thing it would need is the label
-    column. ``cli`` is exempt as the composition root: it names the paths and
-    hands them to ``ml.dataset``, and imports no reader of its own.
+
+def test_only_two_modules_open_a_parquet_file() -> None:
+    """Parquet is touched in exactly two places, for two unrelated reasons.
+
+    A second module that opened an *input* table would be a second place where
+    the join could be done differently, and the first thing it would need is the
+    label column -- so ``ml.dataset`` remains the only reader of Phase 3 tables.
+    The prediction serializer is the only *writer* of this layer's own output,
+    and it never opens an input. ``cli`` is exempt as the composition root: it
+    names the paths and hands them on, importing no reader of its own.
     """
     package = _repo_root() / "src" / "password_attack_detector" / "ml"
+    permitted = {LABEL_READER, PREDICTION_ARTIFACT_SERIALIZER}
     for module in sorted(package.glob("*.py")):
-        if module.stem == LABEL_READER:
+        if module.stem in permitted:
             continue
         imported = {name.split(".")[0] for name in _imported_names(module)}
         assert "pyarrow" not in imported, module.name
@@ -452,6 +571,19 @@ def test_the_dataset_module_is_the_one_that_reads_parquet() -> None:
         name.split(".")[0] for name in _imported_names(package / f"{LABEL_READER}.py")
     }
     assert "pyarrow" in imported
+
+
+def test_the_prediction_serializer_reads_no_label_bearing_symbol() -> None:
+    """The writer's permission is narrower than the reader's, and stays narrower.
+
+    It may open a Parquet file it wrote itself. It may not import a ground-truth
+    reader, a split reader, or a campaign type -- so the exemption above cannot
+    become a second route to the label table.
+    """
+    package = _repo_root() / "src" / "password_attack_detector" / "ml"
+    imported = _imported_names(package / f"{PREDICTION_ARTIFACT_SERIALIZER}.py")
+    offending = sorted(imported & (LABEL_BEARING_MODULES | LABEL_BEARING_SYMBOLS))
+    assert not offending, offending
 
 
 def test_only_the_model_adapters_import_an_estimator() -> None:

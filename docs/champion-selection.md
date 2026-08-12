@@ -481,6 +481,12 @@ configurations, catalogs, feature contracts, or validation partitions are not
 comparable, and the lineage gate blocks the attempt rather than ranking across
 them.
 
+**Freezing is not evaluating, and predicting is not either.** The lock names
+what a later evaluation may run. Milestone 8 uses it to publish predictions —
+including on the TEST split — without opening a single test label, so nothing it
+writes revises, confirms, or contradicts any figure in a selection record. See
+`docs/prediction-artifacts.md`.
+
 **The CI-sized configuration is not a development run.**
 `configs/ml/model-testing.yaml` shrinks every count so a contract test can run in
 seconds. Its gate thresholds are loosened to match its loosened threshold search

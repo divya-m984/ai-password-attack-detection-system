@@ -17,12 +17,51 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from password_attack_detector.ml.calibration import BinaryScoreSample, ScoreSampleSource
+from password_attack_detector.ml.calibration import (
+    BinaryScoreSample,
+    ReliabilityBin,
+    ScoreSampleSource,
+)
 from password_attack_detector.ml.enums import (
+    CalibrationMethod,
     MLSplit,
     ScoreKind,
     ValidationPartition,
 )
+
+#: Re-exported for the suites that build frozen artifacts out of these builders
+#: rather than out of scores.  Named here so a gate fixture imports one module
+#: instead of five.
+__all__ = [
+    "CATEGORY_ORDER",
+    "CONFIG_FINGERPRINT",
+    "EPOCH",
+    "MODEL_FINGERPRINT",
+    "OTHER_FINGERPRINT",
+    "PARTITION_FINGERPRINT",
+    "PREPROCESSOR_FINGERPRINT",
+    "TRAIN_FINGERPRINT",
+    "Anchor",
+    "BinaryScoreSample",
+    "CalibrationMethod",
+    "MLSplit",
+    "ReliabilityBin",
+    "ScoreKind",
+    "ScoreSampleSource",
+    "ValidationPartition",
+    "anchors",
+    "anomaly_sample",
+    "anomaly_scores",
+    "binary_sample",
+    "category_rows",
+    "category_sample",
+    "graded_labels",
+    "graded_scores",
+    "source",
+    "train_source",
+    "validation_a",
+    "validation_b",
+]
 from password_attack_detector.ml.thresholds import (
     AnomalyScoreSample,
     CategoryScoreSample,

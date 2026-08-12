@@ -97,6 +97,10 @@ __all__ = [
     "CategoryScoreSample",
     "ThresholdCurvePoint",
     "ThresholdSelection",
+    "assign_category",
+    "best_class",
+    "flagged_anomalous",
+    "flagged_malicious",
     "select_anomaly_threshold",
     "select_binary_threshold",
     "select_category_abstention",
@@ -125,6 +129,93 @@ CATEGORY_DECISION_PREDICATE: Final[str] = "max(class_score) >= min_category_scor
 #: binary predicate is the point: two opposite comparisons sharing one name is
 #: how a detector ends up flagging the calmest traffic it can find.
 ANOMALY_DECISION_PREDICATE: Final[str] = "anomaly_score <= threshold"
+
+
+# ---------------------------------------------------------------------------
+# The frozen decision rules
+# ---------------------------------------------------------------------------
+#
+# Three functions, each the single implementation of one predicate declared
+# above.  Selection uses them to *choose* an operating point and a later batch
+# inference uses them to *apply* one, which is the entire reason they are
+# functions rather than three comparisons typed at three call sites: a threshold
+# chosen under ``>=`` and applied under ``>`` would flag a different set of rows
+# than the selection it was measured by, and the difference is invisible until
+# it matters.
+
+
+def flagged_malicious(score: float, *, threshold: float) -> bool:
+    """Return the binary decision for *score* under the frozen predicate.
+
+    ``score >= threshold``.  The caller is responsible for handing over the
+    score kind the threshold was selected against; this function has no way to
+    tell a raw decision score from a calibrated probability and deliberately
+    does not try.
+    """
+    return float(score) >= float(threshold)
+
+
+def flagged_anomalous(score: float, *, threshold: float) -> bool:
+    """Return the experimental probe's flag for *score*.
+
+    ``anomaly_score <= threshold`` -- the comparison is inverted relative to the
+    binary head because a lower anomaly score is more anomalous.
+    """
+    return float(score) <= float(threshold)
+
+
+def best_class(
+    scores: Sequence[float], class_order: Sequence[str]
+) -> tuple[float, str]:
+    """Return the highest class score in *scores* and the class that attained it.
+
+    Ties go to the **earliest class in the declared order**, compared with a
+    strict ``>``.  An arbitrary tie-break would make the assignment depend on
+    which class happened to be enumerated first by whichever library produced
+    the matrix, and the whole point of a declared order is that nothing else
+    gets to decide.
+
+    Raises:
+        ModelTrainingError: when the row and the class order disagree in width,
+            when either is empty, or when a score is not finite.
+    """
+    if not class_order:
+        raise ModelTrainingError("a category decision needs a declared class order")
+    if len(scores) != len(class_order):
+        raise ModelTrainingError(
+            f"a score row of width {len(scores)} cannot be read against "
+            f"{len(class_order)} declared class(es)"
+        )
+    best_index = 0
+    for index, value in enumerate(scores):
+        if not math.isfinite(float(value)):
+            raise ModelTrainingError("a class score must be finite")
+        if index and float(value) > float(scores[best_index]):
+            best_index = index
+    return (float(scores[best_index]), class_order[best_index])
+
+
+def assign_category(
+    scores: Sequence[float],
+    class_order: Sequence[str],
+    *,
+    min_category_score: float,
+) -> tuple[str, float]:
+    """Return the assigned category for one row, and the score it was decided on.
+
+    The frozen Milestone 5 rule, applied: ``max(class_score) >=
+    min_category_score`` yields the argmax class, and anything below it yields
+    :data:`~password_attack_detector.ml.enums.UNKNOWN_CATEGORY`.  Abstaining is
+    a first-class outcome rather than a failure -- forcing an unrecognised row
+    into the nearest known class would report a confident answer the model does
+    not have.
+    """
+    score, name = best_class(scores, class_order)
+    if not math.isfinite(float(min_category_score)):
+        raise ModelTrainingError("the abstention threshold must be finite")
+    if score >= float(min_category_score):
+        return (name, score)
+    return (UNKNOWN_CATEGORY, score)
 
 
 def _rate(numerator: int, denominator: int) -> float | None:
@@ -808,20 +899,12 @@ class CategoryScoreSample(BaseModel):
     def predictions(self) -> tuple[tuple[float, str], ...]:
         """Return each row's best class score and the class that attained it.
 
-        Ties go to the **earliest class in the declared order**.  An arbitrary
-        tie-break would make the reported precision depend on which class
-        happened to be enumerated first by whichever library produced the
-        matrix, and the whole point of a declared order is that nothing else
-        gets to decide.
+        Delegates to :func:`best_class`, which is also what a later batch
+        inference applies.  One implementation and not two: a selection that
+        broke ties one way while prediction broke them another would report a
+        precision the published rows do not exhibit.
         """
-        resolved: list[tuple[float, str]] = []
-        for row in self.class_scores:
-            best_index = 0
-            for index in range(1, len(row)):
-                if row[index] > row[best_index]:
-                    best_index = index
-            resolved.append((row[best_index], self.class_order[best_index]))
-        return tuple(resolved)
+        return tuple(best_class(row, self.class_order) for row in self.class_scores)
 
 
 class CategoryClassSupport(BaseModel):

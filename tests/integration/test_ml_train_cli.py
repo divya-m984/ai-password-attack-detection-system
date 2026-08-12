@@ -10,194 +10,43 @@ test that needs a month of traffic to express itself is testing the generator.
 What *is* asserted end to end is the orchestration, the artifact set, the
 sanitisation of terminal output, and the absences -- no champion, no test
 evaluation, no lock file.
+
+The dataset and the training invocation live in
+:mod:`tests.integration.ml_workspace`, shared with the Milestone 7 command
+suites so the three cannot drift into disagreeing about what a published
+experiment looks like.
 """
 
 from __future__ import annotations
 
 import json
 import re
-from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
-import yaml
-from typer.testing import CliRunner, Result
 
-from password_attack_detector.cli import app
-from password_attack_detector.data.enums import CampaignStage, ScenarioType
-from password_attack_detector.data.schemas import AuthEvent, GroundTruthLabel
-from password_attack_detector.data.serialization import (
-    write_events_parquet,
-    write_labels_parquet,
-)
 from password_attack_detector.ml.experiments import RUNS_DIR, TRAINING_RUN_FILE
 from password_attack_detector.ml.ledger import LEDGER_FILE
-from tests.features.factories import make_event
-
-runner = CliRunner()
-
-_PSEUDONYM_RE = re.compile(r"\b(?:u|s|d|sess):[0-9a-f]{32}\b")
-
-#: The fixture stream. Several campaigns, spread through it, so the validation
-#: split carries more than one group and the boundary has somewhere to fall.
-_CAMPAIGN_COUNT = 12
-_CAMPAIGN_LENGTH = 4
-_EVENT_COUNT = 160
-
-
-def _repo_root() -> Path:
-    """Return the repository root, located from this test file."""
-    return Path(__file__).resolve().parents[2]
-
-
-def _feature_config() -> dict[str, object]:
-    """A CI-sized feature configuration: short windows, a small purge."""
-    return {
-        "windows": ["1m", "5m"],
-        "cardinality_windows": ["5m"],
-        "dispersion_windows": ["5m"],
-        "device_session_windows": ["5m"],
-        "pair_windows": ["5m"],
-        "baseline": {
-            "rate_reference_window": "5m",
-            "min_events_per_user": 2,
-            "min_events_per_source": 2,
-            "response_time_min_events": 2,
-        },
-        "split": {
-            "purge": "5m",
-            "strict_isolation": True,
-            "max_excluded_fraction": 0.6,
-        },
-    }
-
-
-def _campaign_of(index: int) -> str | None:
-    """Return the campaign an event index belongs to, or ``None`` if benign."""
-    stride = _EVENT_COUNT // _CAMPAIGN_COUNT
-    position = index % stride
-    if position < _CAMPAIGN_LENGTH:
-        return f"campaign-{index // stride:02d}"
-    return None
-
-
-def _events() -> list[AuthEvent]:
-    """Return a deterministic event stream with periodic bursts of failures."""
-    return [
-        make_event(
-            t=float(index) * 60.0,
-            user=f"u{index % 5 + 1}",
-            source=f"s{1 if _campaign_of(index) else index % 3 + 2}",
-            device=f"d{index % 3 + 1}",
-            outcome="failure" if _campaign_of(index) else "success",
-            response_time_ms=40 if _campaign_of(index) else 200 + index % 50,
-            country="US" if _campaign_of(index) else "GB",
-            latitude=37.8 if _campaign_of(index) else 51.5,
-            longitude=-122.4 if _campaign_of(index) else -0.1,
-            key=str(index),
-        )
-        for index in range(_EVENT_COUNT)
-    ]
-
-
-def _labels(events: Sequence[AuthEvent]) -> list[GroundTruthLabel]:
-    """Return ground truth pairing each burst with a campaign identifier.
-
-    Two scenarios alternate across campaigns so the known-category head has more
-    than one class to learn. Benign rows carry the generator's ``normal-<seed>``
-    placeholder, exactly as real generator output does.
-    """
-    scenarios = (ScenarioType.BRUTE_FORCE, ScenarioType.PASSWORD_SPRAYING)
-    labels = []
-    for index, event in enumerate(events):
-        campaign = _campaign_of(index)
-        ordinal = 0 if campaign is None else int(campaign.split("-")[1])
-        labels.append(
-            GroundTruthLabel(
-                event_id=event.event_id,
-                campaign_id=campaign or "normal-864209",
-                scenario=(
-                    scenarios[ordinal % len(scenarios)]
-                    if campaign is not None
-                    else ScenarioType.NORMAL
-                ),
-                malicious=campaign is not None,
-                supervised_training_eligible=True,
-                generator_version="1.0.0",
-                campaign_stage=None if campaign is None else CampaignStage.ACTIVE,
-            )
-        )
-    return labels
-
-
-def _invoke(*arguments: str) -> Result:
-    """Run the CLI with *arguments* and return the result."""
-    return runner.invoke(app, list(arguments))
+from tests.integration.ml_workspace import (
+    PSEUDONYM_RE,
+    build_workspace,
+    invoke,
+    repo_root,
+    train,
+)
 
 
 @pytest.fixture(scope="module")
 def workspace(tmp_path_factory: pytest.TempPathFactory) -> Path:
     """Publish a feature dataset and a drafted allowlist once for the module."""
-    root = tmp_path_factory.mktemp("train-cli")
-    events = _events()
-    write_events_parquet(events, root / "events.parquet")
-    write_labels_parquet(_labels(events), root / "labels.parquet")
-    (root / "features.yaml").write_text(
-        yaml.safe_dump(_feature_config()), encoding="utf-8"
-    )
-
-    built = _invoke(
-        "features",
-        "build",
-        str(root / "events.parquet"),
-        "--labels",
-        str(root / "labels.parquet"),
-        "--config",
-        str(root / "features.yaml"),
-        "-o",
-        str(root / "processed"),
-        "--reports-dir",
-        str(root / "reports"),
-    )
-    assert built.exit_code == 0, built.output
-
-    drafted = _invoke(
-        "ml",
-        "catalog",
-        "--emit-allowlist",
-        str(root / "allowlist.yaml"),
-        "--feature-config",
-        str(root / "features.yaml"),
-    )
-    assert drafted.exit_code == 0, drafted.output
-    return root
-
-
-def _train(workspace: Path, output_root: Path, **replace: str) -> Result:
-    """Run ``ml train`` over the published workspace."""
-    arguments = {
-        "--features": str(workspace / "processed" / "feature_snapshots.parquet"),
-        "--labels": str(workspace / "processed" / "feature_labels.parquet"),
-        "--splits": str(workspace / "processed" / "feature_splits.parquet"),
-        "--campaign-labels": str(workspace / "labels.parquet"),
-        "--feature-manifest": str(workspace / "processed" / "feature_manifest.json"),
-        "--allowlist": str(workspace / "allowlist.yaml"),
-        "--feature-config": str(workspace / "features.yaml"),
-        "--config": str(_repo_root() / "configs" / "ml" / "model-testing.yaml"),
-        "--output-root": str(output_root),
-    }
-    arguments.update(replace)
-    flat: list[str] = []
-    for option, value in arguments.items():
-        flat += [option, value]
-    return _invoke("ml", "train", *flat)
+    return build_workspace(tmp_path_factory.mktemp("train-cli"))
 
 
 @pytest.fixture(scope="module")
 def trained(workspace: Path, tmp_path_factory: pytest.TempPathFactory) -> Path:
     """Train once and return the artifact root."""
     root = tmp_path_factory.mktemp("ml-artifacts")
-    result = _train(workspace, root)
+    result = train(workspace, root)
     assert result.exit_code == 0, result.output
     return root
 
@@ -211,7 +60,7 @@ def test_training_completes_on_a_published_dataset(
     workspace: Path, tmp_path: Path
 ) -> None:
     """The whole chain, end to end, on real published artifacts."""
-    result = _train(workspace, tmp_path / "artifacts")
+    result = train(workspace, tmp_path / "artifacts")
     assert result.exit_code == 0, result.output
     assert "Training runs" in result.stdout
 
@@ -312,10 +161,10 @@ def test_the_ledger_is_written_and_readable(trained: Path) -> None:
 def test_training_twice_is_idempotent(workspace: Path, tmp_path: Path) -> None:
     """The second run confirms the first rather than republishing it."""
     root = tmp_path / "artifacts"
-    first = _train(workspace, root)
+    first = train(workspace, root)
     assert first.exit_code == 0, first.output
     snapshot = {path: path.read_bytes() for path in root.rglob("*") if path.is_file()}
-    second = _train(workspace, root)
+    second = train(workspace, root)
     assert second.exit_code == 0, second.output
     assert {
         path: path.read_bytes() for path in root.rglob("*") if path.is_file()
@@ -331,7 +180,7 @@ def test_a_missing_input_is_refused_without_a_traceback(
     workspace: Path, tmp_path: Path
 ) -> None:
     """A typo names the missing input and nothing else."""
-    result = _train(
+    result = train(
         workspace,
         tmp_path / "artifacts",
         **{"--labels": str(tmp_path / "absent.parquet")},
@@ -341,7 +190,7 @@ def test_a_missing_input_is_refused_without_a_traceback(
     assert "Traceback" not in result.output
 
 
-def test_a_failed_audit_refuses_to_train(workspace: Path, tmp_path: Path) -> None:
+def test_a_failed_audit_refuses_totrain(workspace: Path, tmp_path: Path) -> None:
     """A model fitted on a dataset that failed the audit is one nobody should use.
 
     The manifest is what the fingerprint provenance check compares against, so a
@@ -356,7 +205,7 @@ def test_a_failed_audit_refuses_to_train(workspace: Path, tmp_path: Path) -> Non
     wrong.write_text(json.dumps(payload), encoding="utf-8")
 
     root = tmp_path / "artifacts"
-    result = _train(workspace, root, **{"--feature-manifest": str(wrong)})
+    result = train(workspace, root, **{"--feature-manifest": str(wrong)})
     assert result.exit_code == 1
     assert "Training refused" in result.output
     assert not (root / RUNS_DIR).exists()
@@ -371,10 +220,10 @@ def test_the_output_carries_no_identity_or_absolute_path(
     workspace: Path, tmp_path: Path
 ) -> None:
     """Run identifiers and statuses; never a row, a pseudonym, or a home directory."""
-    result = _train(workspace, tmp_path / "artifacts")
+    result = train(workspace, tmp_path / "artifacts")
     assert result.exit_code == 0
     output = result.stdout
-    assert not _PSEUDONYM_RE.search(output)
+    assert not PSEUDONYM_RE.search(output)
     assert "/home/" not in output
     assert str(Path.home()) not in output
     for banned in ("campaign-", "normal-864209", "coefficient", "intercept"):
@@ -389,7 +238,7 @@ def test_the_output_reports_no_performance_figure(
     Matched on whole words: run identifiers are hexadecimal, so a substring
     search for a short metric name finds one in roughly every other UUID.
     """
-    result = _train(workspace, trained)
+    result = train(workspace, trained)
     output = result.stdout.lower()
     for banned in (
         "accuracy",
@@ -436,7 +285,7 @@ def test_generated_artifacts_stay_under_the_configured_output_root(
 
 def test_the_repository_artifact_root_is_ignored_by_git() -> None:
     """Run artifacts are generated output and are never committed."""
-    ignore = (_repo_root() / ".gitignore").read_text(encoding="utf-8")
+    ignore = (repo_root() / ".gitignore").read_text(encoding="utf-8")
     assert "artifacts/*" in ignore
 
 
@@ -447,7 +296,7 @@ def test_the_repository_artifact_root_is_ignored_by_git() -> None:
 
 def test_experiments_lists_the_published_runs(trained: Path) -> None:
     """Identity and status, one row per immutable record."""
-    result = _invoke("ml", "experiments", "--output-root", str(trained))
+    result = invoke("ml", "experiments", "--output-root", str(trained))
     assert result.exit_code == 0, result.output
     assert "Experiment ledger" in result.stdout
     assert "M-010" in result.stdout
@@ -459,17 +308,17 @@ def test_experiments_lists_the_published_runs(trained: Path) -> None:
 
 def test_experiments_shows_no_metric_and_no_identity(trained: Path) -> None:
     """A listing that ranked runs would be a champion selection by another name."""
-    result = _invoke("ml", "experiments", "--output-root", str(trained))
+    result = invoke("ml", "experiments", "--output-root", str(trained))
     output = result.stdout.lower()
     for banned in ("brier", "ece", "auc", "accuracy", "recall", "precision"):
         assert banned not in output, banned
-    assert not _PSEUDONYM_RE.search(result.stdout)
+    assert not PSEUDONYM_RE.search(result.stdout)
     assert "/home/" not in result.stdout
 
 
 def test_experiments_on_an_empty_root_says_so(tmp_path: Path) -> None:
     """A ledger nobody has written to is empty, not broken."""
-    result = _invoke("ml", "experiments", "--output-root", str(tmp_path / "nothing"))
+    result = invoke("ml", "experiments", "--output-root", str(tmp_path / "nothing"))
     assert result.exit_code == 0, result.output
     assert "holds no training runs" in result.stdout
 
@@ -484,13 +333,11 @@ def test_experiments_can_reconcile_an_unindexed_run(
     shutil.copytree(trained, copied)
     shutil.rmtree(copied / "ledger")
 
-    listed = _invoke("ml", "experiments", "--output-root", str(copied))
+    listed = invoke("ml", "experiments", "--output-root", str(copied))
     assert listed.exit_code == 0
     assert "holds no training runs" in listed.stdout
 
-    recovered = _invoke(
-        "ml", "experiments", "--output-root", str(copied), "--reconcile"
-    )
+    recovered = invoke("ml", "experiments", "--output-root", str(copied), "--reconcile")
     assert recovered.exit_code == 0, recovered.output
     assert "previously unindexed run" in recovered.stdout
     assert "M-010" in recovered.stdout
@@ -498,7 +345,7 @@ def test_experiments_can_reconcile_an_unindexed_run(
 
 def test_both_commands_are_registered() -> None:
     """``--help`` advertises exactly what this build implements."""
-    result = _invoke("ml", "--help")
+    result = invoke("ml", "--help")
     assert result.exit_code == 0
     for command in (
         "train",
@@ -506,7 +353,12 @@ def test_both_commands_are_registered() -> None:
         "catalog",
         "audit-features",
         "verify-manifest",
+        "select",
+        "freeze-champion",
+        "predict",
+        "validate",
+        "profile",
     ):
         assert command in result.stdout, command
-    for absent in ("predict", "compare", "explain", "drift", "freeze"):
+    for absent in ("evaluate", "compare", "explain", "drift"):
         assert absent not in result.stdout, absent

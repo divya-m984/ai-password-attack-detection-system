@@ -28,6 +28,7 @@ from password_attack_detector.ml.enums import (
 from password_attack_detector.ml.experiments import (
     CALIBRATION_DIR,
     MODEL_DIR,
+    RANKING_DIR,
     RUNS_DIR,
     THRESHOLD_DIR,
     TRAINING_RUN_FILE,
@@ -104,6 +105,7 @@ def test_a_binary_run_publishes_a_model_a_calibrator_and_a_threshold(
         f"{CALIBRATION_DIR}/calibration_fit_diagnostic.json",
         f"{CALIBRATION_DIR}/calibration_validation_report.json",
         f"{THRESHOLD_DIR}/binary_threshold.json",
+        f"{RANKING_DIR}/validation_b_ranking.json",
     }
 
 

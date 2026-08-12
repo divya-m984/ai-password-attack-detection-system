@@ -3,11 +3,12 @@
 How a model gets trained, what gets written down about it, and what can never
 be changed afterwards. This document covers Phase 5 Milestone 6.
 
-**No champion has been selected.** Milestone 6 trains every configured
-candidate, publishes an immutable run for each, and records what happened. It
-ranks nothing, promotes nothing, writes no `champion.lock`, and reads no test
-split. Selection is Milestone 7's. No figure anywhere in this repository
-describes detection performance.
+**Training ranks nothing.** Milestone 6 trains every configured candidate,
+publishes an immutable run for each, and records what happened. It promotes
+nothing, writes no `champion.lock`, and reads no test split. Choosing a champion
+from those runs — on validation-B alone — is Milestone 7's, and is documented in
+`docs/champion-selection.md`. No figure anywhere in this repository describes
+detection performance on unseen data.
 
 ---
 
@@ -293,10 +294,11 @@ artifacts/ml/ledger/
     training_run/<run_id>.json       one immutable record
 ```
 
-Only the directory for a record type actually being written is created. The
-other three declared types — `validation_selection`, `champion_freeze`,
-`test_evaluation` — have reserved locations and no files, because Milestone 6
-produces none.
+Only the directory for a record type actually being written is created. Two
+further types are written by Milestone 7 — `validation_selection/` for each
+champion selection and `champion_freeze/` for each freeze receipt, both described
+in `docs/champion-selection.md`. `test_evaluation/` has a reserved location and
+no files, because nothing in this build evaluates on the test split.
 
 **One record per file, not a JSONL stream.** Appending a line to a shared file
 is a torn write waiting to happen: an interrupted process leaves a truncated
@@ -342,7 +344,19 @@ artifacts/ml/runs/<run_id>/
         calibration_validation_report.json
     thresholds/                         only what the task has
         binary_threshold.json | category_abstention.json | anomaly_threshold.json
+    ranking/                            binary runs with both classes present
+        validation_b_ranking.json
 ```
+
+**`ranking/` is not a second view of `thresholds/`.** The threshold curve comes
+off a *bounded* candidate grid and exists to justify one operating point; the
+ranking evidence is built from **every distinct validation-B score level** and
+exists to measure discrimination. Keeping them in separate artifacts is what
+stops a performance setting — `search_grid_size` — from reaching a champion
+gate. The evidence is written whenever the binary validation half carried both
+classes, including for a run that found no feasible threshold: a constant
+reference baseline is exactly that case, and its discrimination is still exactly
+measurable. Its contract is `docs/champion-selection.md` §6.
 
 The order:
 
@@ -435,10 +449,21 @@ output.
 
 ## 10. Known limitations
 
-**No champion, no selection, no test evaluation.** Milestone 6 records what was
-run. It does not decide which run was best, and the ledger listing deliberately
-shows no metric of any kind, because a listing that ranked runs would be a
-champion selection under another name.
+**Training records what was run; it does not decide which run was best.** The
+ledger listing deliberately shows no metric of any kind, because a listing that
+ranked runs would be a champion selection under another name. Selection happens
+in its own step, against predeclared gates, and writes its own immutable record —
+see `docs/champion-selection.md`.
+
+**No test evaluation.** Neither training nor selection reads the TEST split or
+the novel-anomaly holdout. Milestone 8 *predicts* on them under a frozen
+champion, which is not the same thing: it publishes what the model said without
+opening a label, so no outcome-dependent number is computable from what it
+writes. The `test_evaluation` record type is reserved and unwritten.
+
+**Predictions are not ledger records.** Milestone 8 appends nothing here. A
+prediction publication is identified by its own `PredictionManifest`, and the
+ledger's four record types are unchanged — see `docs/prediction-artifacts.md`.
 
 **A completed run is not a good model.** `completed` means every artifact the
 task requires was published. It says nothing about detection effectiveness, and
@@ -452,6 +477,11 @@ bound at best; the class balance is a configuration choice, not a measurement.
 
 **Calibration on synthetic validation data is not real-world calibration.** See
 `docs/model-contract.md` §16.
+
+**Ranking evidence is exact, and exactness is not accuracy.** The published
+curve carries every distinct score level, so the metric derived from it is not
+an approximation of itself — but it was still measured on synthetic validation
+traffic, and inherits every limitation above.
 
 **M-001's column is a reviewed decision in both shipped configurations.** Both
 name `user_failure_count__5m`: prior-only, post-event, admitted by the reviewed

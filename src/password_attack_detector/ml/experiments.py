@@ -66,6 +66,7 @@ from password_attack_detector.ml.manifest import (
     build_model_manifest,
     verify_model_artifact,
 )
+from password_attack_detector.ml.ranking import RankingEvidence
 from password_attack_detector.ml.schemas import ExperimentRecordIdentity
 from password_attack_detector.ml.serialization import (
     build_model_document,
@@ -82,6 +83,7 @@ from password_attack_detector.ml.training import TrainingContext, TrainingRunOut
 __all__ = [
     "CALIBRATION_DIR",
     "MODEL_DIR",
+    "RANKING_DIR",
     "RUNS_DIR",
     "THRESHOLD_DIR",
     "TRAINING_RUN_FILE",
@@ -102,6 +104,10 @@ RUNS_DIR: Final[str] = "runs"
 MODEL_DIR: Final[str] = "model"
 CALIBRATION_DIR: Final[str] = "calibration"
 THRESHOLD_DIR: Final[str] = "thresholds"
+#: Exact validation-B discrimination evidence, kept apart from the threshold
+#: directory on purpose: the operating point and the ranking metric answer
+#: different questions and must not be read as two views of one curve.
+RANKING_DIR: Final[str] = "ranking"
 
 #: The run receipt, written last.
 TRAINING_RUN_FILE: Final[str] = "training_run.json"
@@ -110,6 +116,7 @@ CALIBRATION_STATE_FILE: Final[str] = "calibration_state.json"
 CALIBRATION_DIAGNOSTIC_FILE: Final[str] = "calibration_fit_diagnostic.json"
 CALIBRATION_QUALITY_FILE: Final[str] = "calibration_validation_report.json"
 BINARY_THRESHOLD_FILE: Final[str] = "binary_threshold.json"
+VALIDATION_RANKING_FILE: Final[str] = "validation_b_ranking.json"
 CATEGORY_ABSTENTION_FILE: Final[str] = "category_abstention.json"
 ANOMALY_THRESHOLD_FILE: Final[str] = "anomaly_threshold.json"
 
@@ -486,6 +493,11 @@ def _stage_run(
     digests |= _write_records(
         staging / THRESHOLD_DIR, THRESHOLD_DIR, threshold_artifacts
     )
+
+    ranking_artifacts: list[tuple[str, Any]] = []
+    if outcome.validation_ranking is not None:
+        ranking_artifacts.append((VALIDATION_RANKING_FILE, outcome.validation_ranking))
+    digests |= _write_records(staging / RANKING_DIR, RANKING_DIR, ranking_artifacts)
     return digests
 
 
@@ -535,6 +547,10 @@ def _verify_staged_run(staging: Path, outcome: TrainingRunOutcome) -> None:
     if outcome.calibration_quality is not None:
         expected.append(
             (staging / CALIBRATION_DIR / CALIBRATION_QUALITY_FILE, CalibrationReport)
+        )
+    if outcome.validation_ranking is not None:
+        expected.append(
+            (staging / RANKING_DIR / VALIDATION_RANKING_FILE, RankingEvidence)
         )
     if outcome.binary_threshold is not None:
         expected.append(

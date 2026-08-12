@@ -239,10 +239,18 @@ def test_the_command_appears_in_help() -> None:
     assert "audit-features" in result.output
 
 
-def test_no_training_command_is_registered() -> None:
-    """Training orchestration belongs to a later milestone."""
+def test_no_evaluation_command_is_registered() -> None:
+    """Milestone 8 predicts under the frozen champion; it evaluates nothing.
+
+    ``predict`` is now registered and deliberately so: it publishes what the
+    model said without opening a label. What stays absent is anything that would
+    *score* those predictions against ground truth.
+    """
     result = invoke("ml", "--help")
-    assert "train" not in result.output.split("Commands")[-1]
+    commands = result.output.split("Commands")[-1]
+    for absent in ("evaluate", "compare", "explain", "drift"):
+        assert absent not in commands, absent
+    assert "predict" in commands
 
 
 def test_the_existing_commands_still_work() -> None:

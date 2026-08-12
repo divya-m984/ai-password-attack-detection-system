@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from password_attack_detector.features.catalog import FeatureCatalog
@@ -457,4 +458,114 @@ def reassign_anchor(rows: Rows, anchor: str, *, split: MLSplit) -> Rows:
             for row in rows.splits
         ],
         campaigns=list(rows.campaigns),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Milestone 7: published experiments ready to be selected from
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class Experiment:
+    """One complete published experiment: runs on disk and a ledger over them."""
+
+    root: Path
+    ledger: Any
+    context: Any
+    evidence: tuple[Any, ...]
+
+    def by_run_id(self) -> dict[str, Any]:
+        """Return the published evidence keyed by run identifier."""
+        return {item.run_id: item for item in self.evidence}
+
+    def by_model(self, catalog_model_id: str, task: Any) -> Any:
+        """Return one published run's evidence by catalog entry and task."""
+        return next(
+            item
+            for item in self.evidence
+            if item.catalog_model_id == catalog_model_id and item.run.task is task
+        )
+
+
+def publish_experiment(
+    root: Path,
+    *,
+    settings: Any = None,
+    rows: Rows | None = None,
+    context: Any = None,
+) -> Experiment:
+    """Train and publish a complete Milestone 6 experiment under *root*.
+
+    The starting point for every Milestone 7 test. Selection reads published
+    artifacts, so a selection fixture has to be a published experiment rather
+    than a hand-built object graph -- a stub would let a test pass against a
+    shape the real pipeline never produces.
+    """
+    from password_attack_detector.ml.experiments import publish_training_run
+    from password_attack_detector.ml.ledger import ExperimentLedger
+    from password_attack_detector.ml.selection import load_candidate_evidence
+    from password_attack_detector.ml.training import train_all
+
+    prepared = context if context is not None else runs_context(settings, rows)
+    ledger = ExperimentLedger(Path(root) / "ledger")
+    for outcome in train_all(prepared):
+        publish_training_run(outcome, context=prepared, root=Path(root), ledger=ledger)
+    return Experiment(
+        root=Path(root),
+        ledger=ledger,
+        context=prepared,
+        evidence=load_candidate_evidence(Path(root), ledger=ledger),
+    )
+
+
+def runs_context(settings: Any = None, rows: Rows | None = None) -> Any:
+    """Return a prepared training context for *settings* and *rows*."""
+    if rows is None:
+        return context(settings=settings)
+    return context(rows=rows, settings=settings)
+
+
+def drop_evidence(experiment: Experiment, *predicates: Any) -> tuple[Any, ...]:
+    """Return the experiment's evidence with matching runs removed.
+
+    Used to build the negative acceptance paths -- a missing reference baseline,
+    an absent candidate universe -- without touching the published artifacts,
+    so the same experiment can exercise several outcomes.
+    """
+    return tuple(
+        item
+        for item in experiment.evidence
+        if not any(predicate(item) for predicate in predicates)
+    )
+
+
+def strict_gates(**criteria: Any) -> MLConfig:
+    """Return a configuration whose champion gates are tightened past reach.
+
+    The configuration refuses a gate stricter than the search it judges, so the
+    threshold and calibration settings are dragged along with the gate. That is
+    the coupling the loader enforces, and a fixture that constructed the model
+    unvalidated would be judging candidates under a configuration nobody could
+    have loaded.
+    """
+    base = config()
+    gates = ChampionGateConfig(**{**base.gates.model_dump(), **criteria})
+    return config(
+        gates=gates,
+        thresholds=ThresholdConfig(
+            **{
+                **base.thresholds.model_dump(),
+                "max_false_positive_rate": gates.max_false_positive_rate,
+                "min_detection_rate": gates.min_detection_rate,
+            }
+        ),
+        calibration=CalibrationConfig(
+            **{
+                **base.calibration.model_dump(),
+                "max_expected_calibration_error": (
+                    gates.max_expected_calibration_error
+                ),
+            }
+        ),
     )

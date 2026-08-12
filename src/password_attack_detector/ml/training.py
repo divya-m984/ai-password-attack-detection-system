@@ -72,6 +72,7 @@ from password_attack_detector.ml.dataset import (
     MLDataset,
     SplitDataset,
 )
+from password_attack_detector.ml.dependencies import dependency_contract_fingerprint
 from password_attack_detector.ml.enums import (
     CalibrationMethod,
     CalibrationStatus,
@@ -99,6 +100,10 @@ from password_attack_detector.ml.partition import ValidationPartitionResult
 from password_attack_detector.ml.preprocessing import (
     FittedPreprocessor,
     fit_preprocessor,
+)
+from password_attack_detector.ml.ranking import (
+    RankingEvidence,
+    build_ranking_evidence,
 )
 from password_attack_detector.ml.thresholds import (
     AnomalyScoreSample,
@@ -743,20 +748,14 @@ class TrainingContext:
         )
 
     def dependency_contract_fingerprint(self) -> str:
-        """Return a digest over the declared dependency ranges."""
-        return _digest(
-            [
-                {
-                    "distribution": requirement.distribution,
-                    "minimum_version": requirement.minimum_version,
-                    "below_version": requirement.below_version,
-                }
-                for requirement in sorted(
-                    self.config.dependency_requirements,
-                    key=lambda item: item.distribution,
-                )
-            ]
-        )
+        """Return a digest over the declared dependency ranges.
+
+        Delegates to :func:`~password_attack_detector.ml.dependencies.\
+dependency_contract_fingerprint`, which a later prediction checks a champion
+        lock against. Two implementations of the same digest would agree until
+        one of them was edited.
+        """
+        return dependency_contract_fingerprint(self.config.dependency_requirements)
 
 
 # ---------------------------------------------------------------------------
@@ -793,6 +792,11 @@ class TrainingRunOutcome:
     binary_threshold: ThresholdSelection | None = None
     category_abstention: CategoryAbstentionSelection | None = None
     anomaly_threshold: AnomalyThresholdSelection | None = None
+    #: Exact validation-B discrimination evidence, built from every distinct
+    #: score level rather than from the bounded operating-point grid. Present
+    #: for a binary run whose validation half carried both classes, and absent
+    #: -- never zero, never approximated -- when it did not.
+    validation_ranking: RankingEvidence | None = None
     train_row_count: int = 0
 
     @property
@@ -1072,6 +1076,26 @@ def _train_binary(
     diagnostic: CalibrationReport | None = None
     quality: CalibrationReport | None = None
 
+    # Scored once, before anything downstream can transform it. This is the
+    # frozen pre-threshold model score, and it is what discrimination is
+    # measured on for *every* family -- a calibrated score for one candidate
+    # and a raw one for the next would be two different comparisons wearing one
+    # metric's name. The ranking evidence is built here rather than after
+    # threshold selection so a run that finds no feasible operating point still
+    # publishes the evidence a later comparison needs.
+    raw_validation_b = _binary_sample(
+        context,
+        preprocessor,
+        fitted,
+        adapter,
+        validation_b,
+        ValidationPartition.VALIDATION_B,
+    )
+    ranking = build_ranking_evidence(
+        raw_validation_b, ml_config_fingerprint=ml_config_fingerprint
+    )
+    partial = _replace(partial, validation_ranking=ranking)
+
     if not _calibration_applies(spec, context.config):
         # The mandatory comparator is not calibrated, by contract rather than by
         # accident. M-000 emits the training class prior for every row, so there
@@ -1090,14 +1114,7 @@ def _train_binary(
             negative_count=validation_a.benign_count,
             distinct_score_count=0,
         )
-        operating_sample = _binary_sample(
-            context,
-            preprocessor,
-            fitted,
-            adapter,
-            validation_b,
-            ValidationPartition.VALIDATION_B,
-        )
+        operating_sample = raw_validation_b
     elif context.config.calibration.method is not CalibrationMethod.NONE:
         if not spec.calibration_compatible:
             return _replace(
@@ -1133,14 +1150,7 @@ def _train_binary(
             ml_config_fingerprint=ml_config_fingerprint,
             raw_score_semantics=fitted.score_semantics,
         )
-        sample_b = _binary_sample(
-            context,
-            preprocessor,
-            fitted,
-            adapter,
-            validation_b,
-            ValidationPartition.VALIDATION_B,
-        )
+        sample_b = raw_validation_b
         quality = evaluate_calibration_quality(
             sample_b,
             state=calibration_state,
@@ -1152,14 +1162,7 @@ def _train_binary(
             calibration_state, sample_b, ml_config_fingerprint=ml_config_fingerprint
         )
     else:
-        operating_sample = _binary_sample(
-            context,
-            preprocessor,
-            fitted,
-            adapter,
-            validation_b,
-            ValidationPartition.VALIDATION_B,
-        )
+        operating_sample = raw_validation_b
 
     selection = select_binary_threshold(
         operating_sample,

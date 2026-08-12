@@ -165,3 +165,38 @@ error report codes, column names, and counts. A scope-table failure reports how
 many anchors mismatched, never which. The CLI renders paths relative to the
 working directory and falls back to a bare file name, so an absolute path under
 a personal home directory never reaches a terminal.
+
+## Phase 5: prediction artifacts (Milestone 8)
+
+A prediction row carries the minimum technical identity a later evaluation needs
+in order to join it to an outcome, and nothing else:
+
+| Artifact | Columns | Sensitivity |
+|---|---|---|
+| `binary_predictions.parquet` | `anchor_event_id`, `anchor_event_time` | Join key |
+| `category_predictions.parquet` | `anchor_event_id`, `anchor_event_time` | Join key |
+| `anomaly_scores.parquet` | `anchor_event_id`, `anchor_event_time` | Join key |
+
+An anchor identifier is a Phase 3 join key, not an entity identifier: feature
+snapshots carry no user, source, device, or session pseudonym, so a prediction
+built from them has no path to one. `PROHIBITED_PREDICTION_COLUMNS` names every
+category a prediction table may not carry — pseudonyms, campaign identity, raw
+IPs, credentials, coordinates, the raw feature vector, and every spelling of
+ground truth — and an import-time guard refuses a row schema that declares one.
+
+### The aggregate artifacts render no identifier at all
+
+The `PredictionManifest`, the `MLValidationResult`, the `MLQualityReport` in both
+its JSON and Markdown renderings, and every line the `ml predict`, `ml validate`,
+and `ml profile` commands print carry counts, declared names, stable check codes,
+and fingerprints. The join keys stay in the Parquet the next milestone will join
+on. Privacy sweeps run over all of them, including the failure paths: a
+validation failure reports how many rows contradicted their own threshold, never
+which.
+
+### No ground truth is read
+
+Milestone 8 opens no label table. `ml predict` has no `--labels` option, the
+inference loader has no label parameter, and the published artifacts carry no
+label, no label fingerprint, and no outcome-dependent number — so there is
+nothing for a prediction artifact to disclose about which events were attacks.

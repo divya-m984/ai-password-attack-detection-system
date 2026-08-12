@@ -1236,15 +1236,33 @@ def test_the_anomaly_threshold_moves_only_with_its_own_benign_source() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_the_ml_layer_still_exposes_no_training_command() -> None:
-    """Milestone 5 is a library contract. Orchestration belongs to Milestone 6."""
+def test_the_ml_layer_exposes_no_evaluation_command() -> None:
+    """Threshold selection is a library contract, and evaluation is not shipped.
+
+    Milestone 6 added ``train`` and ``experiments``; Milestone 7 added
+    ``select`` and ``freeze-champion``, both of which read validation evidence
+    only; Milestone 8 added ``predict``, ``validate``, and ``profile``, which
+    may score the test split and never open a label. What stays absent is
+    anything that would combine those predictions with ground truth.
+    """
     from password_attack_detector.ml.cli import ml_app
 
     names = {
         command.name or (command.callback.__name__ if command.callback else "")
         for command in ml_app.registered_commands
     }
-    assert names == {"catalog", "audit-features", "verify-manifest"}
+    assert names == {
+        "catalog",
+        "audit-features",
+        "verify-manifest",
+        "train",
+        "experiments",
+        "select",
+        "freeze-champion",
+        "predict",
+        "validate",
+        "profile",
+    }
 
 
 def test_the_package_version_is_unchanged() -> None:

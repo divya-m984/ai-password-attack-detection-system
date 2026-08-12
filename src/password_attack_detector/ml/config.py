@@ -80,6 +80,7 @@ __all__ = [
     "CalibrationConfig",
     "CategoryConfig",
     "ChampionGateConfig",
+    "ChampionSelectionConfig",
     "DriftConfig",
     "ExplainConfig",
     "FusionConfig",
@@ -780,6 +781,82 @@ class ChampionGateConfig(BaseModel):
         }
 
 
+class ChampionSelectionConfig(BaseModel):
+    """How eligible candidates are ordered once every mandatory gate has passed.
+
+    Declared, never improvised.  Ranking is the step where a project is most
+    tempted to look at the numbers and then decide what to optimise, so the
+    objective and the complete tie-break chain are written down here, included
+    in the gate-configuration fingerprint, and recorded on every selection.
+
+    Ranking happens **after** the gates, never instead of them: the gates decide
+    who is admissible and this decides only the order among those who already
+    are.  A candidate outside the gates is not ranked last, it is not ranked.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    #: Maximise the detection rate at the frozen operating point.
+    #:
+    #: One value.  The false-positive ceiling is already a *gate*, so among
+    #: candidates that hold it the one that finds more attacks is the better
+    #: one -- the same reasoning that made ``max_recall_at_max_fpr`` the
+    #: threshold objective.  Ranking by a symmetric score instead would let a
+    #: candidate win by being cautious in a way the ceiling already priced in.
+    ranking_objective: Literal["max_detection_rate"] = "max_detection_rate"
+    #: Applied in order, and every one is semantic.
+    #:
+    #: ``catalog_model_id`` is last and is the only non-semantic key: it exists
+    #: so two genuinely indistinguishable candidates still produce a stable
+    #: answer rather than one that depends on directory iteration order.  A
+    #: selection that reaches it says so in its rationale.
+    tie_break_order: tuple[
+        Literal[
+            "min_false_positive_rate",
+            "max_baseline_pr_auc_gain",
+            "min_expected_calibration_error",
+            "catalog_model_id",
+        ],
+        ...,
+    ] = (
+        "min_false_positive_rate",
+        "max_baseline_pr_auc_gain",
+        "min_expected_calibration_error",
+        "catalog_model_id",
+    )
+    #: Rate uncertainty published beside every gated rate.  Wilson rather than
+    #: normal-approximation: at the small counts a validation half produces, the
+    #: normal interval runs past zero and one and understates the width exactly
+    #: where it matters most.
+    rate_interval_confidence: float = Field(default=0.95, gt=0.5, lt=1.0)
+
+    @field_validator("tie_break_order")
+    @classmethod
+    def check_tie_breaks(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        """The chain is non-empty, repeats nothing, and ends deterministically."""
+        if not value:
+            raise ValueError("tie_break_order must name at least one criterion")
+        if len(set(value)) != len(value):
+            raise ValueError("tie_break_order repeats a criterion")
+        if value[-1] != "catalog_model_id":
+            raise ValueError(
+                "tie_break_order must end with 'catalog_model_id'; without a "
+                "final total key two indistinguishable candidates would be "
+                "ordered by whatever the filesystem returned first"
+            )
+        return value
+
+    def fingerprint_data(self) -> dict[str, Any]:
+        """Return the semantic fields contributing to the config fingerprint."""
+        return {
+            "ranking_objective": self.ranking_objective,
+            "tie_break_order": list(self.tie_break_order),
+            "rate_interval_confidence": _fingerprint_scalar(
+                self.rate_interval_confidence
+            ),
+        }
+
+
 class FusionConfig(BaseModel):
     """Which rule-and-model fusion strategies are built and compared.
 
@@ -941,6 +1018,7 @@ class MLConfig(BaseModel):
     anomaly: AnomalyConfig = Field(default_factory=AnomalyConfig)
     support: SupportRequirement = Field(default_factory=SupportRequirement)
     gates: ChampionGateConfig = Field(default_factory=ChampionGateConfig)
+    selection: ChampionSelectionConfig = Field(default_factory=ChampionSelectionConfig)
     fusion: FusionConfig = Field(default_factory=FusionConfig)
     explain: ExplainConfig = Field(default_factory=ExplainConfig)
     drift: DriftConfig = Field(default_factory=DriftConfig)
@@ -1179,6 +1257,7 @@ class MLConfig(BaseModel):
             "anomaly": self.anomaly.fingerprint_data(),
             "support": self.support.fingerprint_data(),
             "gates": self.gates.fingerprint_data(),
+            "selection": self.selection.fingerprint_data(),
             "fusion": self.fusion.fingerprint_data(),
             "explain": self.explain.fingerprint_data(),
             "drift": self.drift.fingerprint_data(),

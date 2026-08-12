@@ -4,14 +4,18 @@ What the machine-learning layer may read, what it must return, and what it
 guarantees. This document covers the data contract established in Phase 5
 Milestone 2, the preprocessing and weighting of Milestone 3, the model adapters
 and artifacts of Milestone 4, the calibration and threshold selection of
-Milestone 5, and the training orchestration and experiment ledger of Milestone
-6. The ledger's own contract is `docs/experiment-ledger.md`.
+Milestone 5, the training orchestration and experiment ledger of Milestone 6,
+and the validation-only champion selection and freeze of Milestone 7. The
+ledger's own contract is `docs/experiment-ledger.md`; selection's is
+`docs/champion-selection.md`.
 
 **No result is claimed.** Models can now be fitted, calibrated, thresholded,
-published as immutable runs, and recorded in an append-only ledger. What has
-*not* happened is any comparison between them: there is no champion, no test
-evaluation, no fusion, and no ranking. No figure anywhere in this repository
-describes detection performance, because no model has been evaluated.
+published as immutable runs, recorded in an append-only ledger, compared against
+predeclared gates on validation-B, and frozen as a champion. What has *not*
+happened is any evaluation on unseen data: there is no test evaluation and no
+fusion, the TEST split and the novel-anomaly holdout have been read by nothing,
+and **no figure anywhere in this repository describes detection performance on
+data a model has not seen**.
 
 ---
 
@@ -1689,6 +1693,16 @@ one, because a changed feature value, a changed label, and a row entering or
 leaving a readable role are three different findings. Row identity is used
 inside each digest and published by none of them.
 
+### Exact ranking evidence is published beside the operating point
+
+A binary run whose validation half carried both classes publishes
+`ranking/validation_b_ranking.json`: every distinct score level with its class
+counts, cumulative counts, precision, and recall, plus the PR-AUC they imply.
+It is built from the **raw pre-threshold score** for every family, so one
+scoring stage is compared across models, and it is deliberately not derived from
+the threshold search's bounded curve. Milestone 7 reads it; Milestone 6 ranks
+nothing with it.
+
 ### Nothing is ranked and nothing is promoted
 
 No candidate is preferred, no `champion.lock` is written, and no training-run
@@ -1700,14 +1714,118 @@ therefore never produces an artifact.
 
 ---
 
-## 20. Known limitations
+## 20. Champion selection and the freeze (Milestone 7)
 
-**No champion selection exists yet.** Milestones 4 through 6 ship model
-adapters, artifacts, loading, calibration, threshold selection, training
-orchestration, and the immutable experiment ledger. There is no champion
-selection, no test evaluation, no prediction publication, no fusion, no
-explainability, and no drift detection. No figure in this repository describes
-model performance, because no model has been evaluated.
+Milestone 7 chooses one of those runs and freezes it, **on validation-B alone**.
+It adds no algorithm either: every number it compares was measured and sealed by
+Milestones 5 and 6, and it opens no Parquet table, imports no label reader, and
+refits nothing.
+
+**The full contract is `docs/champion-selection.md`.** The part that belongs
+beside the model contract:
+
+- the candidate universe is derived from the reviewed catalog
+  (`champion_eligible` and task support), so M-000, M-021, and M-030 fall out
+  rather than being special-cased;
+- the discrimination metric is **exact PR-AUC** under a declared step-wise
+  integration rule, computed over every distinct validation-B score level from
+  the frozen pre-threshold model score, with rows sharing a score treated as one
+  group; it is deliberately independent of the bounded operating-point grid, and
+  no approximation may satisfy the gate;
+- every binary selection requires the one M-000 reference run as its comparator,
+  and the comparator supplies ranking evidence rather than an operating point —
+  a constant baseline with no feasible threshold is still a valid comparator (its
+  PR-AUC is the positive prevalence), and is still never promotable;
+- every gate is mandatory and answers pass, fail, or **inconclusive**, and an
+  inconclusive gate blocks promotion exactly as a failed one does;
+- ranking happens only among candidates that already cleared every gate, under
+  an objective and tie-break chain declared in configuration before the evidence
+  was seen;
+- the champion lock names every fingerprint a later evaluation may rely on and
+  **carries no metric at all**; the selection record beside it says why the
+  choice was made;
+- there is no force, override, or bypass on either step.
+
+---
+
+## 21. Batch prediction (Milestone 8)
+
+Milestone 8 scores rows under the frozen champion and publishes the result. It
+adds no algorithm and fits nothing: the model, the preprocessor, the calibrator,
+and the operating point were all fixed by the lock before this milestone ran.
+
+**The full contract is `docs/prediction-artifacts.md`.** The part that belongs
+beside the model contract:
+
+- **Prediction is not evaluation.** Milestone 8 may score the TEST split, and it
+  never opens a TEST label. There is no `--labels` option on `ml predict`, the
+  inference loader has no label parameter, and nothing published carries an
+  outcome-dependent number. Changing a test label cannot change a byte of what is
+  published, because no test label was read.
+- **Inference begins from `champion.lock`, always.** Seventeen things are checked
+  against the artifacts they name before a single row is scored, and there is no
+  `--force`, no `--ignore-lock`, and no way to substitute a model path or a model
+  identifier for a lock.
+- **The frozen predicate is applied, not re-derived.** `flagged_malicious` is
+  `score >= decision_threshold`, where `score` is exactly the score kind the
+  threshold was selected against — the calibrated probability when the lineage
+  has a calibrator, and the raw decision score when it does not. There is no
+  silent substitution between the two, and `malicious_probability` exists only
+  where a verified calibrator produced it.
+- **Category triage is downstream of the binary decision.** The head was fitted
+  on known-malicious rows only, so the category artifact contains **exactly the
+  rows the binary champion flagged**. A row it cleared is *not applicable* and is
+  absent from the table entirely; `unknown` means the head was asked and its best
+  class score fell below the frozen floor. The two are never collapsed, and every
+  category rate in a profile is over the applicable population rather than over
+  the whole table.
+- **The category head abstains rather than guesses.** Among applicable rows,
+  `max(class_score) >= min_category_score` yields the argmax class under the
+  Milestone 5 tie rule (ties to the earliest class in the declared order);
+  anything below it yields `unknown`. A head that was not frozen produces no
+  artifact, and no all-`unknown` stand-in is fabricated.
+- **The anomaly probe stays separate.** Its rows are published in their own
+  artifact from an explicitly named experimental run, are permanently
+  `experimental`, emit an `anomaly_score` and never a probability, and influence
+  no supervised decision, threshold, or selection. It is never attached to
+  `champion.lock`.
+- **A publication is identified by what it predicts.** `prediction_id` is derived
+  from the frozen lineage, the resolved feature contract, the inference input, the
+  scope, and the exact content of the rows — and from nothing observational.
+  Publishing the same predictions twice is idempotent; publishing different
+  content at one identity is refused rather than merged.
+- **The novel-anomaly holdout is a separate scope**, published under the
+  `generalisation_probe` role and never merged into a supervised artifact.
+- **No ledger record is written.** Prediction identity lives on the
+  `PredictionManifest`. `test_evaluation` remains reserved for Milestone 9.
+
+---
+
+## 22. Known limitations
+
+**No test evaluation exists yet.** Milestones 4 through 8 ship model adapters,
+artifacts, loading, calibration, threshold selection, training orchestration, the
+immutable experiment ledger, validation-only champion selection, the champion
+freeze, and batch prediction. There is no test evaluation, no fusion, no
+explainability, and no drift detection. **No figure in this repository describes
+model performance on unseen data**, because no model has been evaluated on any.
+
+**Predictions on the test split are not a test result.** Milestone 8 publishes
+what the frozen champion *said* about those rows. Whether it was right is
+unmeasured, unmeasurable from what it publishes, and the subject of a separate
+later evaluation that has not been run.
+
+**Structural validity is not predictive quality.** `ml validate` establishes that
+a prediction artifact is internally consistent and attributable to the champion
+that produced it. A publication can pass every one of its checks and still come
+from a model that flags the wrong rows. `ml profile` refuses to summarise a
+publication that fails validation at all, so a profile is never evidence about a
+tampered artifact.
+
+**A frozen champion is a subject, not a result.** The lock says what a later
+evaluation will be permitted to run. It says nothing about how that model
+behaves, and its validation figures were measured on the same partition that
+chose its operating point.
 
 **`ml train` records what was run, not which run won.** It trains every
 configured candidate, publishes an immutable run for each, and prints

@@ -16,6 +16,7 @@ leaves about 120. That difference is the entire reason these files exist.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 import yaml
@@ -393,3 +394,82 @@ def test_generating_the_dataset_is_not_triggered_by_these_tests(
             if path.name != ".gitkeep"
         }
         assert not contents
+
+
+# ---------------------------------------------------------------------------
+# The M-001 baseline column (Milestone 6)
+# ---------------------------------------------------------------------------
+
+
+def _ml_config(name: str) -> Any:
+    """Return a shipped ML configuration by file name."""
+    from password_attack_detector.ml.config import load_ml_config
+
+    return load_ml_config(_repo_root() / "configs" / "ml" / name)
+
+
+@pytest.mark.parametrize("name", ["model-development.yaml", "model-testing.yaml"])
+def test_the_shipped_configs_name_the_single_feature_baseline_column(
+    name: str,
+) -> None:
+    """M-001 is a reviewed baseline, so its column is a reviewed decision.
+
+    Left unset, the candidate reports ``unavailable`` -- which is the right
+    behaviour for a column nobody chose, and the wrong outcome for a shipped
+    configuration that intends to run the baseline. Both configurations enable
+    the family, so both name the column.
+    """
+    from password_attack_detector.ml.enums import ModelFamily
+
+    config = _ml_config(name)
+    assert ModelFamily.SINGLE_FEATURE_THRESHOLD in config.enabled_model_families
+    assert config.single_feature_baseline_column == "user_failure_count__5m"
+
+
+def test_the_baseline_column_is_admitted_by_the_reviewed_allowlist() -> None:
+    """It must be a feature the champion allowlist already admits.
+
+    Checked against the reviewed file rather than against the catalog: catalog
+    membership does not admit a feature to any model, and a baseline reading an
+    unreviewed column would be reading outside the contract.
+    """
+    from password_attack_detector.ml.features import load_feature_allowlist
+
+    allowlist = load_feature_allowlist(
+        _repo_root() / "configs" / "ml" / "features-allowlist-v1.yaml"
+    )
+    column = _ml_config("model-development.yaml").single_feature_baseline_column
+    admitted = {entry.name: entry for entry in allowlist.entries}
+    assert column in admitted
+    entry = admitted[column]
+    assert str(entry.decision_point) == "post_event"
+    assert str(entry.leakage_class) == "prior_only"
+
+
+def test_the_baseline_column_is_eligible_under_the_configured_leakage_classes() -> None:
+    """Both configurations admit the class the column belongs to."""
+    for name in ("model-development.yaml", "model-testing.yaml"):
+        config = _ml_config(name)
+        assert "prior_only" in config.preprocessing.include_leakage_classes, name
+
+
+def test_a_prohibited_baseline_column_is_refused() -> None:
+    """A label is not a feature, and a baseline thresholding one is not a detector."""
+    from pydantic import ValidationError
+
+    from password_attack_detector.ml.config import MLConfig
+
+    with pytest.raises(ValidationError, match="prohibited column"):
+        MLConfig(single_feature_baseline_column="malicious")
+    with pytest.raises(ValidationError, match="must name a column"):
+        MLConfig(single_feature_baseline_column="   ")
+
+
+def test_the_baseline_column_is_part_of_the_configuration_fingerprint() -> None:
+    """A different reviewed column is a different reviewed decision."""
+    from password_attack_detector.ml.config import MLConfig
+
+    baseline = MLConfig(single_feature_baseline_column="user_failure_count__5m")
+    other = MLConfig(single_feature_baseline_column="user_failure_count__15m")
+    assert baseline.fingerprint() != other.fingerprint()
+    assert MLConfig().fingerprint() != baseline.fingerprint()

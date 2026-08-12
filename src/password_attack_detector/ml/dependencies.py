@@ -24,7 +24,10 @@ model and "whatever was installed" is not information at all.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import sys
+from collections.abc import Sequence
 from importlib.metadata import PackageNotFoundError, version
 from typing import Final
 
@@ -39,6 +42,7 @@ __all__ = [
     "SKLEARN_MINIMUM_VERSION",
     "SKLEARN_REQUIREMENT",
     "collect_dependency_versions",
+    "dependency_contract_fingerprint",
     "installed_version",
     "sklearn_compatible",
 ]
@@ -155,6 +159,29 @@ def collect_dependency_versions() -> dict[str, str]:
         if found is not None:
             resolved[distribution] = found
     return resolved
+
+
+def dependency_contract_fingerprint(
+    requirements: Sequence[DependencyRequirement],
+) -> str:
+    """Return a digest over the declared dependency ranges *requirements* names.
+
+    The **declared** contract, never the resolved versions: those are
+    observational and live on a model manifest.  Written here rather than at
+    each call site because a training run records this digest and a later
+    prediction checks a lock against it -- two computations that agree only by
+    being the same one.
+    """
+    payload = [
+        {
+            "distribution": requirement.distribution,
+            "minimum_version": requirement.minimum_version,
+            "below_version": requirement.below_version,
+        }
+        for requirement in sorted(requirements, key=lambda item: item.distribution)
+    ]
+    canonical = json.dumps(payload, sort_keys=True, ensure_ascii=True)
+    return hashlib.sha256(canonical.encode()).hexdigest()
 
 
 def sklearn_compatible(installed: str | None = None) -> bool:
