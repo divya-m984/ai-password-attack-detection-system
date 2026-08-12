@@ -36,8 +36,6 @@ _UUID_RE = re.compile(
 #: exists but does nothing is worse than an honest absence, because ``--help``
 #: would advertise a capability the code lacks.
 DEFERRED_COMMANDS = (
-    "evaluate",
-    "compare",
     "explain",
     "drift",
 )
@@ -54,6 +52,8 @@ SHIPPED_COMMANDS = (
     "predict",
     "validate",
     "profile",
+    "evaluate",
+    "compare",
 )
 
 
@@ -94,7 +94,7 @@ def test_the_ml_group_shows_help_with_no_arguments() -> None:
 
 
 def test_the_ml_group_advertises_only_the_shipped_commands() -> None:
-    """Ten commands, and the deferred ones must stay unregistered."""
+    """Twelve commands, and the deferred ones must stay unregistered."""
     result = _invoke("ml", "--help")
     assert result.exit_code == 0
     for command in SHIPPED_COMMANDS:
@@ -305,21 +305,50 @@ def test_the_package_version_is_unchanged_at_this_checkpoint() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_no_fusion_is_implemented_anywhere() -> None:
-    """``FusionStrategy`` is a declared enum and nothing consumes it yet.
+#: The Milestone 9 modules that own fusion.  Every other module in the layer --
+#: and in particular the whole Milestone 8 prediction path -- still knows nothing
+#: about it: a prediction artifact publishes no fused verdict, and a fused
+#: decision reaches a report only through the locked TEST evaluation.
+FUSION_MODULES = frozenset(
+    {"enums", "fusion", "stacking", "test_evaluation", "alerts", "comparison"}
+)
 
-    Fusion is Milestone 9's. The enum has existed since Milestone 1 so the shape
-    of the eventual contract is fixed, and a module that started combining a rule
-    verdict with a model score would be that milestone arriving early.
+
+def test_fusion_is_confined_to_the_milestone_nine_modules() -> None:
+    """The Milestone 8 prediction path publishes no fused decision.
+
+    Fusion arrived with Milestone 9. What must not happen is a fused verdict
+    leaking into the prediction artifacts, where it would be published beside a
+    frozen champion's own decision and be indistinguishable from one.
     """
     package = _repo_root() / "src" / "password_attack_detector" / "ml"
     for module in sorted(package.rglob("*.py")):
+        if module.stem in FUSION_MODULES:
+            continue
         source = module.read_text(encoding="utf-8")
         assert "FusionDecision" not in source, module.name
         assert "fused_flagged" not in source or module.stem in {
             "features",
             "predictions",
         }, module.name
+
+
+def test_no_prediction_artifact_publishes_a_fused_verdict() -> None:
+    """``fused_flagged`` stays a forbidden *input* and an unpublished output."""
+    from password_attack_detector.ml.predictions import (
+        ANOMALY_PREDICTION_COLUMNS,
+        BINARY_PREDICTION_COLUMNS,
+        CATEGORY_PREDICTION_COLUMNS,
+        PROHIBITED_PREDICTION_COLUMNS,
+    )
+
+    for columns in (
+        BINARY_PREDICTION_COLUMNS,
+        CATEGORY_PREDICTION_COLUMNS,
+        ANOMALY_PREDICTION_COLUMNS,
+    ):
+        assert "fused_flagged" not in columns
+    assert "fused_flagged" in PROHIBITED_PREDICTION_COLUMNS
 
 
 def test_no_prediction_module_writes_a_test_evaluation_record() -> None:
@@ -391,7 +420,7 @@ def test_the_unpublishable_and_experimental_families_stay_that_way() -> None:
 
 
 def test_the_ml_package_declares_no_unbuilt_module() -> None:
-    """Milestone 8 predicts under the frozen champion. It still evaluates nothing.
+    """Milestone 9 evaluates the frozen champion against the TEST labels.
 
     Model adapters and serialization arrived with Milestone 4; calibration and
     threshold selection with Milestone 5; training orchestration, the immutable
@@ -399,8 +428,8 @@ def test_the_ml_package_declares_no_unbuilt_module() -> None:
     validation-only selection, and the champion freeze with Milestone 7; batch
     inference, the prediction artifacts, their manifest, their validation, and
     the aggregate profile with Milestone 8. Test *evaluation*, fusion,
-    explanation, and drift belong to later milestones, and an empty placeholder
-    for any of them would make the package look further along than it is.
+    explanation and drift belong to later milestones, and an empty placeholder for
+    either would make the package look further along than it is.
     """
     package = _repo_root() / "src" / "password_attack_detector" / "ml"
     present = {path.stem for path in package.glob("*.py")}
@@ -424,6 +453,10 @@ def test_the_ml_package_declares_no_unbuilt_module() -> None:
         "manifest",
         "npz",
         "ordering",
+        "alerts",
+        "comparison",
+        "fusion",
+        "metrics",
         "partition",
         "prediction_manifest",
         "prediction_publisher",
@@ -436,6 +469,8 @@ def test_the_ml_package_declares_no_unbuilt_module() -> None:
         "schemas",
         "selection",
         "serialization",
+        "stacking",
+        "test_evaluation",
         "thresholds",
         "training",
     }

@@ -877,6 +877,11 @@ class FusionConfig(BaseModel):
         ValidationPartition.VALIDATION_B
     )
     stacked_max_iter: int = Field(default=1000, ge=50, le=100_000)
+    #: How many campaign-indivisible folds the out-of-fold meta-features are
+    #: cut into.  Declared in configuration rather than derived from the data,
+    #: so the fold count is a choice somebody made once and not a quantity that
+    #: moves when the dataset does.
+    stacked_fold_count: int = Field(default=5, ge=2, le=20)
 
     @field_validator("strategies")
     @classmethod

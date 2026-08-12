@@ -12,32 +12,37 @@ Subcommands::
     password-attack-detector ml predict          -- score rows under the frozen champion
     password-attack-detector ml validate         -- check a published prediction artifact
     password-attack-detector ml profile          -- the aggregate shape of that output
+    password-attack-detector ml evaluate         -- the once-only locked test evaluation
+    password-attack-detector ml compare          -- report a published comparison
 
-Ten commands, and the absences are deliberate.  Test evaluation, fusion, system
-comparison, explainability, and drift arrive in later milestones, and no
-placeholder is registered for them: a command that exists but does nothing is
-worse than one that is honestly absent, because ``--help`` would advertise a
-capability the code does not have.
+Twelve commands, and the absences are deliberate.  Explainability and drift
+arrive in later milestones, and no placeholder is registered for them: a command
+that exists but does nothing is worse than one that is honestly absent, because
+``--help`` would advertise a capability the code does not have.
 
-**No command here reads a label.**  ``ml predict`` takes no ``--labels`` option,
-``ml validate`` computes no accuracy, and ``ml profile`` reports the
-*distribution* of what a model said rather than whether it was right.  Producing
-predictions for the test split is safe precisely because everything that could
-be tuned was frozen before this milestone ran; measuring them is a separate,
-later, once-only step.
+**Exactly one command here reads a label.**  ``ml predict`` takes no ``--labels``
+option, ``ml validate`` computes no accuracy, ``ml profile`` reports the
+*distribution* of what a model said rather than whether it was right, and
+``ml compare`` reproduces figures another command already measured.  Only
+``ml evaluate`` opens the TEST ground truth, and it is allowed to because
+everything it could otherwise have tuned -- the model, the preprocessor, the
+calibrator, the operating point, the category head, the rule configuration, and
+the hybrid strategy -- was frozen before it ran.
 
 **No command prints an identifier.**  Not an event identifier, a campaign
 identifier, an entity pseudonym, a coordinate, a raw feature row, a secret, or
 an absolute path.  Output is metadata and aggregate counts.  No executable
 configuration and no source code is emitted, and no measured performance figure
-appears anywhere -- these commands describe what *may* be fitted, never how well
-anything did.
+appears anywhere except in the locked evaluation's own reports and in the
+command that reproduces them -- every other command describes what *may* be
+fitted, never how well anything did.
 
 Heavy imports live inside the command bodies so ``--help`` stays fast.
 """
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -65,8 +70,8 @@ ml_app = typer.Typer(
         "feature eligibility, train and publish immutable experiment runs, "
         "list the run ledger, and verify a published model artifact. Models "
         "are fitted on Phase 3 feature snapshots and are reported alongside "
-        "the rule engine, never in place of it. No champion is selected and "
-        "no test split is read."
+        "the rule engine, never in place of it. The test split is read once, "
+        "by 'evaluate', against a lineage frozen before it ran."
     ),
     no_args_is_help=True,
 )
@@ -2054,4 +2059,799 @@ def _anomaly_table(report: Any) -> Table:
     table.add_row("Flagged", _unavailable(anomaly.flagged_count))
     table.add_row("Experimental", "yes")
     table.add_row("Influences champion selection", "no")
+    return table
+
+
+# ---------------------------------------------------------------------------
+# evaluate
+# ---------------------------------------------------------------------------
+
+
+def _rule_evidence(path: Path, what: str) -> Any:
+    """Read Phase 4 risk assessments into per-anchor rule evidence.
+
+    The rule side of a comparison comes from a *published* detection run, never
+    from re-running the engine here: a comparison whose rule arm was recomputed
+    under whatever configuration happened to be on disk would be a comparison
+    against a moving target.
+    """
+    from password_attack_detector.detection.serialization import read_risk_assessments
+    from password_attack_detector.ml.fusion import RuleEvidence
+
+    assessments = _guard(f"Cannot read the {what}", lambda: read_risk_assessments(path))
+    evidence: dict[str, Any] = {}
+    for assessment in assessments:
+        evidence[assessment.anchor_event_id] = RuleEvidence(
+            flagged=assessment.fired_rule_count > 0,
+            ordinal_risk_score=float(assessment.risk_score),
+        )
+    return evidence
+
+
+def _outcomes_for(dataset: Any, split: Any, proof: Any) -> tuple[Any, ...]:
+    """Return one typed ground-truth value per row of *split*.
+
+    This is the whole of the label boundary. ``ml.dataset`` reads the table --
+    it is one of the two modules permitted to -- and hands back typed values;
+    ``ml.test_evaluation`` receives them as arguments and opens nothing itself.
+    The reader allowlist is unchanged by this milestone.
+
+    *proof* is a :class:`~password_attack_detector.ml.stacking.FusionFreezeProof`
+    and is not decorative. Only ``prepare_fusion_selection`` can produce one, so
+    this function is unreachable until every fusion candidate has been
+    constructed or typed unavailable and a selection outcome has been frozen.
+    That ordering is what makes the hybrid arm honest, and a comment asserting
+    it would be worth nothing.
+    """
+    from password_attack_detector.ml.stacking import FusionFreezeProof
+    from password_attack_detector.ml.test_evaluation import TestOutcome
+
+    if not isinstance(proof, FusionFreezeProof):
+        raise ModelNotReadyError(
+            "the TEST ground-truth reader requires a frozen fusion selection; "
+            "reading a test label before the hybrid arm is decided would let "
+            "the test set influence which system is reported"
+        )
+
+    rows = dataset.for_split(split)
+    return tuple(
+        TestOutcome(
+            anchor_event_id=anchor.anchor_event_id,
+            malicious=malicious,
+            known_category=category,
+            split=split,
+        )
+        for anchor, malicious, category in zip(
+            rows.anchors, rows.malicious, rows.known_category, strict=True
+        )
+    )
+
+
+def _published_predictions(directory: Path) -> Any:
+    """Validate a prediction publication and return its manifest and rows.
+
+    Validation is not optional and nothing is read past a failure. An
+    evaluation of a publication whose manifest, checksums, or lineage do not
+    verify would produce a report that reads exactly like an evaluation of a
+    sound one.
+    """
+    from password_attack_detector.ml.prediction_manifest import (
+        ANOMALY_PREDICTION_FILE,
+        BINARY_PREDICTION_FILE,
+        CATEGORY_PREDICTION_FILE,
+        PREDICTION_MANIFEST_FILE,
+        PredictionManifest,
+    )
+    from password_attack_detector.ml.prediction_serialization import (
+        read_anomaly_scores,
+        read_binary_predictions,
+        read_category_predictions,
+    )
+    from password_attack_detector.ml.prediction_validation import validate_publication
+
+    outcome = _guard(
+        "Cannot validate the prediction publication",
+        lambda: validate_publication(directory),
+    )
+    if not outcome.passed:
+        _err.print(
+            f"[red]Refusing to evaluate an invalid publication:[/red] "
+            f"{', '.join(outcome.failures)}"
+        )
+        _err.print(
+            "No evaluation was written. Run 'ml validate' for the full check "
+            "listing; evaluation is not a way past manifest, checksum, or "
+            "lineage verification."
+        )
+        raise typer.Exit(code=1)
+
+    def _read() -> Any:
+        manifest = PredictionManifest.from_json(
+            (directory / PREDICTION_MANIFEST_FILE).read_text(encoding="utf-8")
+        )
+        declared = {item.logical_name for item in manifest.files}
+        binary = read_binary_predictions(directory / BINARY_PREDICTION_FILE)
+        category = (
+            read_category_predictions(directory / CATEGORY_PREDICTION_FILE)
+            if CATEGORY_PREDICTION_FILE in declared
+            else None
+        )
+        anomaly = (
+            read_anomaly_scores(directory / ANOMALY_PREDICTION_FILE)
+            if ANOMALY_PREDICTION_FILE in declared
+            else None
+        )
+        return (manifest, binary, category, anomaly)
+
+    return _guard("Cannot read the prediction publication", _read)
+
+
+def _fusion_selection(
+    *,
+    root: Path,
+    dataset: Any,
+    catalog: Any,
+    eligible: Any,
+    allowlist: Any,
+    champion: Any,
+    validation_directory: Path | None,
+    validation_risk_path: Path | None,
+    rule: Mapping[str, Any],
+    rule_configuration_fingerprint: str,
+    config: Any,
+) -> Any:
+    """Construct every fusion candidate and freeze a selection, before TEST.
+
+    Every input here is TRAIN-side, validation-side, or frozen lineage. There is
+    no TEST value in scope when this runs, and the orchestration it calls
+    refuses at import to grow a TEST-shaped parameter.
+
+    Returning ``None`` is an ordinary outcome: an operator who published no
+    validation prediction gets a comparison of the rule engine and the model,
+    and the hybrid arm says why it is absent rather than being fabricated. But
+    when validation evidence *is* supplied, all three declared strategies take
+    part -- including STACKED, which is fitted here from genuine out-of-fold
+    TRAIN refits rather than reported unavailable.
+    """
+    from password_attack_detector.ml.enums import MLSplit
+    from password_attack_detector.ml.fusion import MLEvidence
+    from password_attack_detector.ml.partition import partition_validation
+    from password_attack_detector.ml.stacking import prepare_fusion_selection
+    from password_attack_detector.ml.training import TrainingContext
+
+    if validation_directory is None:
+        return None
+    if validation_risk_path is not None:
+        rule = {**rule, **_rule_evidence(validation_risk_path, "validation risk")}
+
+    manifest, binary, _category, _anomaly = _published_predictions(validation_directory)
+    if str(manifest.scope) != str(MLSplit.VALIDATION):
+        _fail(
+            "The publication given to --validation-prediction does not score "
+            "the validation split; fusion selected on any other split would "
+            "not be selected on validation"
+        )
+
+    validation = dataset.for_split(MLSplit.VALIDATION)
+    partition = _guard(
+        "Cannot partition the validation split",
+        lambda: partition_validation(
+            validation,
+            config=config.validation_partition,
+            support=config.support,
+            campaign_metadata_supplied=dataset.campaign_fingerprint is not None,
+        ),
+    )
+    if not partition.usable:
+        _err.print(
+            "[yellow]No hybrid strategy was selected:[/yellow] the validation "
+            "split does not carry enough support to cut a selection half from."
+        )
+        return None
+
+    # The training context the fold refits are carried out on. Preparing it
+    # fits the binary track's preprocessing state; the fold refits below
+    # deliberately do not reuse it, and fit their own on each fold's rows.
+    context = _guard(
+        "Cannot prepare the training context",
+        lambda: TrainingContext.prepare(
+            dataset,
+            config=config,
+            eligible=eligible,
+            feature_catalog=catalog,
+            partition=partition,
+            allowlist_fingerprint=allowlist.fingerprint(),
+        ),
+    )
+
+    scored = {row.anchor_event_id: row for row in binary}
+    selection_half = _selection_half()
+    anchors: list[str] = []
+    times: list[Any] = []
+    malicious: list[bool] = []
+    rule_rows: list[Any] = []
+    ml_rows: list[Any] = []
+    for anchor, is_malicious in zip(
+        validation.anchors, validation.malicious, strict=True
+    ):
+        identifier = anchor.anchor_event_id
+        if partition.assignment.get(identifier) is not selection_half:
+            continue
+        row = scored.get(identifier)
+        evidence = rule.get(identifier)
+        if row is None or evidence is None:
+            _fail(
+                "A validation-B row carries no published model score or no "
+                "frozen rule decision; a strategy chosen on a subset would be "
+                "chosen on a different population than it names"
+            )
+            return None  # pragma: no cover - _fail always exits
+        anchors.append(identifier)
+        times.append(anchor.anchor_event_time)
+        malicious.append(is_malicious)
+        rule_rows.append(evidence)
+        ml_rows.append(
+            MLEvidence(
+                flagged=row.flagged_malicious,
+                decision_score=row.malicious_decision_score,
+                calibrated_probability=row.malicious_probability,
+                score_kind=row.score_kind,
+            )
+        )
+
+    if not anchors:
+        _err.print(
+            "[yellow]No hybrid strategy was selected:[/yellow] validation-B is "
+            "empty under this partition."
+        )
+        return None
+
+    return _guard(
+        "Cannot prepare the fusion selection",
+        lambda: prepare_fusion_selection(
+            context=context,
+            catalog_model_id=champion.lock.catalog_model_id,
+            champion_lock_fingerprint=champion.lock.lock_fingerprint,
+            champion_freeze_record_id=champion.freeze_record_id,
+            rule_flags={anchor: evidence.flagged for anchor, evidence in rule.items()},
+            rule_configuration_fingerprint=rule_configuration_fingerprint,
+            validation_anchor_event_ids=tuple(anchors),
+            validation_anchor_event_times=tuple(times),
+            validation_malicious=tuple(malicious),
+            validation_rule=tuple(rule_rows),
+            validation_ml=tuple(ml_rows),
+            fold_count=config.fusion.stacked_fold_count,
+            min_detection_rate=config.gates.min_detection_rate,
+            max_false_positive_rate=config.gates.max_false_positive_rate,
+            min_validation_positive_rows=config.support.min_validation_positive_rows,
+            min_validation_benign_rows=config.support.min_validation_benign_rows,
+        ),
+    )
+
+
+def _selection_half() -> Any:
+    """Return the validation half a selection is allowed to be made on."""
+    from password_attack_detector.ml.enums import ValidationPartition
+
+    return ValidationPartition.VALIDATION_B
+
+
+def _rule_configuration_fingerprint(config_path: Path | None) -> str:
+    """Return the fingerprint of the frozen Phase 4 configuration."""
+    from password_attack_detector.detection.config import (
+        DetectionConfig,
+        load_detection_config,
+    )
+
+    loaded = _guard(
+        "Cannot load the detection configuration",
+        lambda: (
+            DetectionConfig()
+            if config_path is None
+            else load_detection_config(config_path)
+        ),
+    )
+    return str(loaded.fingerprint())
+
+
+@ml_app.command()
+def evaluate(
+    features_path: Annotated[
+        Path, typer.Option("--features", help="Phase 3 feature snapshots Parquet file.")
+    ],
+    labels_path: Annotated[
+        Path, typer.Option("--labels", help="Phase 3 feature labels Parquet file.")
+    ],
+    splits_path: Annotated[
+        Path, typer.Option("--splits", help="Phase 3 feature splits Parquet file.")
+    ],
+    allowlist_path: Annotated[
+        Path,
+        typer.Option("--allowlist", help="Reviewed ML feature allowlist YAML file."),
+    ],
+    risk_path: Annotated[
+        Path,
+        typer.Option(
+            "--risk-assessments",
+            help="Phase 4 risk assessments for the TEST anchors, from a "
+            "published detection run.",
+        ),
+    ],
+    campaign_labels: Annotated[
+        Path | None,
+        typer.Option("--campaign-labels", help="Phase 2 label table."),
+    ] = None,
+    rule_config_path: Annotated[
+        Path | None,
+        typer.Option("--rule-config", help="Frozen Phase 4 detection YAML."),
+    ] = None,
+    config_path: Annotated[
+        Path | None, typer.Option("--config", help="ML YAML configuration file.")
+    ] = None,
+    feature_config_path: Annotated[
+        Path | None,
+        typer.Option("--feature-config", help="Phase 3 feature YAML configuration."),
+    ] = None,
+    output_root: Annotated[
+        Path | None,
+        typer.Option(
+            "--output-root",
+            "-o",
+            help="Root holding the champion, the predictions, and the ledger.",
+        ),
+    ] = None,
+    prediction_id: Annotated[
+        str | None,
+        typer.Option(
+            "--prediction", help="Which TEST prediction publication to score."
+        ),
+    ] = None,
+    scope_key: Annotated[
+        str | None,
+        typer.Option("--scope-key", help="Which frozen champion scope to evaluate."),
+    ] = None,
+    validation_prediction: Annotated[
+        str | None,
+        typer.Option(
+            "--validation-prediction",
+            help="A published validation prediction. Supplying it, with "
+            "--validation-risk-assessments, lets a hybrid strategy be chosen "
+            "on validation-B before any TEST label is opened.",
+        ),
+    ] = None,
+    validation_risk_path: Annotated[
+        Path | None,
+        typer.Option(
+            "--validation-risk-assessments",
+            help="Phase 4 risk assessments for the validation anchors.",
+        ),
+    ] = None,
+    holdout_prediction: Annotated[
+        str | None,
+        typer.Option(
+            "--holdout-prediction",
+            help="A published novel-anomaly-holdout prediction carrying "
+            "experimental anomaly scores. Reported separately and never "
+            "folded into a supervised figure.",
+        ),
+    ] = None,
+    reports_dir: Annotated[
+        Path | None,
+        typer.Option("--reports-dir", help="Directory for the rendered reports."),
+    ] = None,
+) -> None:
+    """Evaluate the frozen champion against TEST ground truth, once.
+
+    **The first and only command in this layer that reads a TEST label**, and
+    it is allowed to because everything it could otherwise have tuned was
+    frozen before it ran: the model, the preprocessor, the calibrator, the
+    operating point, the category head, the rule configuration, and -- when one
+    is established -- the hybrid strategy, which is chosen on validation-B by a
+    function that has no TEST parameter at all.
+
+    Rule-only, ML-only, and hybrid are measured over **one identical
+    population**. A system that could not be measured is reported as
+    unavailable with its reason; none is dropped to make a comparison look
+    complete, and nothing here names a winner.
+
+    The novel-anomaly holdout is evaluated separately and marked experimental.
+    Its rows are never folded into a supervised metric: no rule and no
+    supervised model was fitted for them, so a combined number would describe
+    neither population.
+
+    Publication is transactional and the receipt is written last. Publishing an
+    identical evaluation twice writes nothing the second time.
+    """
+    from password_attack_detector.features.catalog import build_catalog
+    from password_attack_detector.features.config import (
+        FeatureConfig,
+        load_feature_config,
+    )
+    from password_attack_detector.ml.config import MLConfig, load_ml_config
+    from password_attack_detector.ml.dataset import load_ml_dataset
+    from password_attack_detector.ml.enums import MLSplit, TestEvaluationStatus
+    from password_attack_detector.ml.features import (
+        load_feature_allowlist,
+        resolve_eligible_features,
+    )
+    from password_attack_detector.ml.ledger import ExperimentLedger
+    from password_attack_detector.ml.predictions import FrozenChampion
+    from password_attack_detector.ml.test_evaluation import (
+        EVALUATIONS_DIR,
+        evaluate_test,
+        publish_evaluation,
+    )
+
+    for path in (features_path, labels_path, splits_path, allowlist_path, risk_path):
+        if not path.exists():
+            _fail(f"Input not found: {_display(path)}")
+
+    config: Any = _guard(
+        "Cannot load the ML configuration",
+        lambda: MLConfig() if config_path is None else load_ml_config(config_path),
+    )
+    feature_config = _guard(
+        "Cannot load the feature configuration",
+        lambda: (
+            FeatureConfig()
+            if feature_config_path is None
+            else load_feature_config(feature_config_path)
+        ),
+    )
+    catalog = _guard(
+        "Cannot build the feature catalog", lambda: build_catalog(feature_config)
+    )
+    allowlist = _guard(
+        "Cannot load the feature allowlist",
+        lambda: load_feature_allowlist(allowlist_path),
+    )
+    eligible = _guard(
+        "Cannot resolve the eligible feature set",
+        lambda: resolve_eligible_features(
+            catalog,
+            allowlist,
+            include_leakage_classes=config.preprocessing.include_leakage_classes,
+            include_feature_groups=config.preprocessing.include_feature_groups,
+            feature_schema_version=config.required_feature_schema_version,
+        ),
+    )
+    dataset = _guard(
+        "Cannot assemble the labelled dataset",
+        lambda: load_ml_dataset(
+            features_path=features_path,
+            labels_path=labels_path,
+            splits_path=splits_path,
+            eligible=eligible,
+            campaign_labels_path=campaign_labels,
+            feature_catalog_fingerprint=catalog.fingerprint(),
+        ),
+    )
+
+    root = output_root or (_artifacts_root() / "ml")
+    ledger = ExperimentLedger(root / "ledger")
+    champion = _guard(
+        "Cannot load the frozen champion",
+        lambda: FrozenChampion.load(
+            root, ledger=ledger, scope_key=scope_key, config=config
+        ),
+    )
+
+    directory = _publication_directory(root, prediction_id)
+    manifest, binary, category, _anomaly = _published_predictions(directory)
+    if str(manifest.scope) != str(MLSplit.TEST):
+        _fail(
+            "That publication does not score the TEST split. This command "
+            "evaluates the locked test population and nothing else."
+        )
+
+    rule = _rule_evidence(risk_path, "risk assessments")
+    fingerprint = _rule_configuration_fingerprint(rule_config_path)
+
+    # -- the pre-TEST fusion stage ------------------------------------------
+    # Everything below this call may read a TEST label; nothing above it can.
+    # The proof this returns is what unlocks the ground-truth reader, so the
+    # ordering is enforced by the types rather than by the order of the lines.
+    preparation = _fusion_selection(
+        root=root,
+        dataset=dataset,
+        catalog=catalog,
+        eligible=eligible,
+        allowlist=allowlist,
+        champion=champion,
+        validation_directory=(
+            None
+            if validation_prediction is None
+            else _publication_directory(root, validation_prediction)
+        ),
+        validation_risk_path=validation_risk_path,
+        rule=rule,
+        rule_configuration_fingerprint=fingerprint,
+        config=config,
+    )
+    selection = None if preparation is None else preparation.selection
+    stacked_state = None if preparation is None else preparation.stacked_state
+    proof = _no_fusion_proof() if preparation is None else preparation.proof
+    if preparation is not None:
+        _console.print(_fusion_table(preparation))
+
+    holdout_scores = None
+    if holdout_prediction is not None:
+        holdout_directory = _publication_directory(root, holdout_prediction)
+        holdout_manifest, _b, _c, holdout_scores = _published_predictions(
+            holdout_directory
+        )
+        if str(holdout_manifest.scope) != str(MLSplit.NOVEL_ANOMALY_HOLDOUT):
+            _fail(
+                "The publication given to --holdout-prediction does not score "
+                "the novel-anomaly holdout"
+            )
+        if holdout_scores is None:
+            _fail(
+                "That holdout publication carries no experimental anomaly "
+                "scores; there is nothing to evaluate on the holdout"
+            )
+
+    evaluation = _guard(
+        "Cannot evaluate the test split",
+        lambda: evaluate_test(
+            champion=champion,
+            manifest=manifest,
+            binary=binary,
+            category=category,
+            rule_decisions=rule,
+            rule_configuration_fingerprint=fingerprint,
+            fusion=selection,
+            stacked_state=stacked_state,
+            outcomes=_outcomes_for(dataset, MLSplit.TEST, proof),
+            anomaly=holdout_scores,
+            holdout_outcomes=_outcomes_for(
+                dataset, MLSplit.NOVEL_ANOMALY_HOLDOUT, proof
+            ),
+        ),
+    )
+    publication = _guard(
+        "Cannot publish the evaluation",
+        lambda: publish_evaluation(evaluation, root=root, ledger=ledger),
+    )
+
+    target = reports_dir or Path("reports")
+    target.mkdir(parents=True, exist_ok=True)
+    for name, payload in evaluation.reports.items():
+        (target / name).write_text(payload, encoding="utf-8")
+
+    _console.print(_evaluation_table(evaluation, publication))
+    _console.print(_systems_table(evaluation.comparison))
+    _console.print(
+        f"Published under {_display(root / EVALUATIONS_DIR)}/{publication.record_id}"
+    )
+    for name in sorted(evaluation.reports):
+        _console.print(f"Wrote {_display(target / name)}")
+    _console.print(
+        "[dim]Synthetic ground truth. These figures describe generated "
+        "authentication traffic and are not evidence of real-world detection "
+        "effectiveness.[/dim]"
+    )
+
+    if evaluation.status is not TestEvaluationStatus.COMPLETED:
+        raise typer.Exit(code=2)
+
+
+def _evaluation_table(evaluation: Any, publication: Any) -> Table:
+    """Return the identity and scope of one locked evaluation."""
+    table = Table(title="Test evaluation", show_header=False, box=None)
+    record = evaluation.record
+    table.add_row("Evaluation", publication.record_id[:8])
+    table.add_row("Status", str(evaluation.status))
+    table.add_row("Rows evaluated", f"{publication.row_count:,}")
+    table.add_row("Model id", record.selected_model_id[:8])
+    table.add_row(
+        "Fusion strategy",
+        "none established"
+        if record.selected_fusion_strategy is None
+        else str(record.selected_fusion_strategy),
+    )
+    table.add_row("Newly written", _yes_no(publication.created))
+    if evaluation.category is not None:
+        category = evaluation.category
+        table.add_row(
+            "Category head",
+            f"{category.applicable_row_count:,} applicable, "
+            f"{category.not_applicable_count:,} not applicable, "
+            f"{category.unknown_count:,} unknown",
+        )
+    table.add_row(
+        "Novel-anomaly holdout",
+        "not evaluated"
+        if evaluation.anomaly is None
+        else f"{evaluation.anomaly.row_count:,} row(s), experimental",
+    )
+    return table
+
+
+def _systems_table(comparison: Any) -> Table:
+    """Return the three systems side by side, over one identical population."""
+    table = Table(title="Rule-only, ML-only, hybrid")
+    table.add_column("System")
+    table.add_column("Detection rate", justify="right")
+    table.add_column("False positive rate", justify="right")
+    table.add_column("Precision", justify="right")
+    table.add_column("F1", justify="right")
+    table.add_column("PR-AUC", justify="right")
+    for system in comparison.systems:
+        metrics = system.metrics
+        table.add_row(
+            str(system.system),
+            _unavailable(None if metrics is None else metrics.recall.value),
+            _unavailable(
+                None if metrics is None else metrics.false_positive_rate.value
+            ),
+            _unavailable(None if metrics is None else metrics.precision.value),
+            _unavailable(None if metrics is None else metrics.f1),
+            _unavailable(None if metrics is None else metrics.pr_auc),
+        )
+    if comparison.hybrid_unavailable_reason is not None:
+        table.caption = f"hybrid unavailable: {comparison.hybrid_unavailable_reason}"
+    return table
+
+
+# ---------------------------------------------------------------------------
+# compare
+# ---------------------------------------------------------------------------
+
+
+def _evaluation_directory(root: Path, record_id: str | None) -> Path:
+    """Return the published evaluation to read, or exit naming why there is none."""
+    from password_attack_detector.ml.test_evaluation import (
+        EVALUATION_RECEIPT_FILE,
+        EVALUATIONS_DIR,
+    )
+
+    evaluations_root = root / EVALUATIONS_DIR
+    if not evaluations_root.is_dir():
+        _fail(
+            "No evaluation has been published under this root. Run 'ml evaluate' first."
+        )
+    published = sorted(
+        item.name
+        for item in evaluations_root.iterdir()
+        if item.is_dir() and (item / EVALUATION_RECEIPT_FILE).is_file()
+    )
+    if not published:
+        _fail("No complete evaluation publication is present under this root")
+    if record_id is None:
+        if len(published) > 1:
+            _fail(
+                "Several evaluations are present; name one with --evaluation. "
+                "Reporting whichever came first would make the result depend "
+                "on directory enumeration order"
+            )
+        record_id = published[0]
+    elif record_id not in published:
+        _fail("No evaluation with that identifier is present")
+    return evaluations_root / record_id
+
+
+@ml_app.command()
+def compare(
+    output_root: Annotated[
+        Path | None,
+        typer.Option(
+            "--output-root", "-o", help="Root holding the published evaluations."
+        ),
+    ] = None,
+    record_id: Annotated[
+        str | None,
+        typer.Option("--evaluation", help="Which published evaluation to report."),
+    ] = None,
+    output_format: Annotated[
+        str, typer.Option("--format", help="Output format: 'text' or 'markdown'.")
+    ] = "text",
+    output_path: Annotated[
+        Path | None,
+        typer.Option("--output", help="Write the Markdown comparison here."),
+    ] = None,
+) -> None:
+    """Report an already-published TEST evaluation's system comparison.
+
+    **Reads no label and computes no metric.** Every figure it prints was
+    measured once by ``ml evaluate``, published immutably, and is reproduced
+    here verbatim. Re-deriving a number at report time would make the report
+    and the receipt able to disagree, and the receipt is the record.
+
+    The three systems are shown over the one population all of them were
+    measured on. A system with no discrimination metric shows the reason it has
+    none rather than a zero, and **nothing here declares a winner**: which
+    system to run is an operational decision that depends on alert budget and
+    on what a missed detection costs, and neither is in this artifact.
+    """
+    from password_attack_detector.ml.comparison import SystemComparison
+    from password_attack_detector.ml.test_evaluation import (
+        SYSTEM_COMPARISON_JSON,
+        SYSTEM_COMPARISON_MD,
+    )
+
+    if output_format not in {"text", "markdown"}:
+        _fail(f"Unknown format {output_format!r}; use 'text' or 'markdown'")
+
+    root = output_root or (_artifacts_root() / "ml")
+    directory = _evaluation_directory(root, record_id)
+
+    comparison_path = directory / SYSTEM_COMPARISON_JSON
+    markdown_path = directory / SYSTEM_COMPARISON_MD
+    for path in (comparison_path, markdown_path):
+        if not path.is_file():
+            _fail(
+                "That evaluation carries no published system comparison; "
+                "nothing here recomputes one"
+            )
+
+    def _read() -> Any:
+        import json
+
+        payload = json.loads(comparison_path.read_text(encoding="utf-8"))
+        return SystemComparison.from_dict(payload["comparison"])
+
+    comparison = _guard("Cannot read the published comparison", _read)
+    rendered = markdown_path.read_text(encoding="utf-8")
+
+    if output_path is not None:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(rendered, encoding="utf-8")
+
+    if output_format == "markdown":
+        _console.print(rendered)
+    else:
+        _console.print(_systems_table(comparison))
+        _console.print(
+            f"Population: {comparison.row_count:,} row(s), "
+            f"{comparison.positive_count:,} malicious, "
+            f"{comparison.negative_count:,} benign ({comparison.support_status})"
+        )
+        _console.print(
+            "[dim]No winner is declared. Which system to run depends on alert "
+            "budget and on the cost of a missed detection, and neither is in "
+            "this artifact.[/dim]"
+        )
+        _console.print(
+            "[dim]Synthetic ground truth. Not evidence of real-world "
+            "detection effectiveness.[/dim]"
+        )
+
+    if output_path is not None:
+        _console.print(f"Wrote {_display(output_path)}")
+
+
+def _no_fusion_proof() -> Any:
+    """Return the freeze proof for a run where no fusion evidence was supplied.
+
+    Still a proof, and still produced by the fusion stage rather than by the
+    caller: "nobody supplied validation evidence" is a frozen outcome exactly
+    as "OR_GATE was selected" is, and the TEST reader must be gated on both the
+    same way.
+    """
+    from password_attack_detector.ml.stacking import no_fusion_evidence_proof
+
+    return no_fusion_evidence_proof()
+
+
+def _fusion_table(preparation: Any) -> Table:
+    """Return the declared candidate universe and what happened to each."""
+    table = Table(title="Fusion selection (validation-B, before TEST)")
+    table.add_column("Strategy")
+    table.add_column("Outcome")
+    selection = preparation.selection
+    for strategy in preparation.proof.declared_candidates:
+        table.add_row(
+            str(strategy), preparation.proof.candidate_status.get(strategy, "unknown")
+        )
+    if selection is not None:
+        table.caption = (
+            f"{selection.status}"
+            + (
+                ""
+                if selection.selected_strategy is None
+                else f": {selection.selected_strategy}"
+            )
+            + f" | out-of-fold folds: {preparation.out_of_fold.fold_count}"
+        )
     return table

@@ -58,10 +58,12 @@ from password_attack_detector.ml.enums import (
     CalibrationStatus,
     ChampionStatus,
     ExperimentRecordType,
+    FusionStrategy,
     GateStatus,
     MLTask,
     ModelFamily,
     SelectionStatus,
+    TestEvaluationStatus,
     TrainingRunStatus,
 )
 from password_attack_detector.ml.gates import GateEvidence
@@ -80,6 +82,7 @@ __all__ = [
     "ExperimentLedger",
     "LedgerAppendResult",
     "LedgerRecord",
+    "TestEvaluationRecord",
     "TrainingRunRecord",
     "ValidationSelectionRecord",
 ]
@@ -566,13 +569,145 @@ class ChampionFreezeRecord(SealedModel):
         return self.identity.run_id
 
 
+class TestEvaluationRecord(SealedModel):
+    """The immutable receipt for one locked TEST evaluation.
+
+    The fourth record type, and the only one written after the test labels are
+    opened. It **references** the frozen state it evaluated -- the freeze
+    receipt, the lock, the run, the model, the calibrator, the operating point,
+    the published TEST predictions, the rule configuration, the validation-only
+    fusion selection -- and amends none of it. A training run does not grow a
+    test metric, a selection is not revised in the light of one, and a freeze is
+    not annotated with how it turned out.
+
+    Its identity is derived from the **whole** frozen evaluation state, not from
+    a weak key like task-plus-split-plus-labels. Two evaluations that differ in
+    the champion, the predictions, the rule configuration, the fusion selection,
+    the evaluated population, or the metric definitions are different
+    evaluations and derive different identifiers; two runs of the identical
+    frozen evaluation derive the same one, which is what makes appending
+    idempotent rather than merely repeatable.
+
+    Nothing observational takes part: no output directory, no host, no user, no
+    publication time. And no field here is reserved for a later back-fill -- a
+    record with somewhere to put a number later is a record somebody eventually
+    puts one in.
+    """
+
+    fingerprint_field: ClassVar[str] = "record_fingerprint"
+    schema_version_field: ClassVar[str] = "ledger_schema_version"
+    schema_version: ClassVar[str] = LEDGER_SCHEMA_VERSION
+    record_label: ClassVar[str] = "test-evaluation record"
+
+    ledger_schema_version: str = LEDGER_SCHEMA_VERSION
+    record_type: ExperimentRecordType
+    identity: ExperimentRecordIdentity
+    evaluation_schema_version: str
+    status: TestEvaluationStatus
+
+    # -- the frozen supervised lineage this evaluation was permitted to run ---
+    champion_freeze_record_id: str
+    champion_lock_fingerprint: Sha256Hex
+    champion_scope_key: Sha256Hex
+    validation_selection_id: str
+    selected_run_id: str
+    selected_model_id: str
+    selected_model_content_fingerprint: Sha256Hex
+    preprocessor_fingerprint: Sha256Hex
+    calibration_state_fingerprint: Sha256Hex | None
+    binary_threshold_fingerprint: Sha256Hex
+    category_run_id: str | None = None
+    category_model_content_fingerprint: Sha256Hex | None = None
+    category_abstention_fingerprint: Sha256Hex | None = None
+
+    # -- what was evaluated --------------------------------------------------
+    prediction_id: str
+    prediction_manifest_fingerprint: Sha256Hex
+    prediction_content_fingerprint: Sha256Hex
+    #: Digest of the TEST outcomes, scoped to exactly the evaluated population.
+    #: Not the whole label table: a receipt whose identity moved when somebody
+    #: added a label for a row outside this evaluation would be recording the
+    #: wrong thing.
+    test_label_fingerprint: Sha256Hex
+    evaluation_population_fingerprint: Sha256Hex
+
+    # -- the comparators -----------------------------------------------------
+    rule_configuration_fingerprint: Sha256Hex
+    fusion_selection_fingerprint: Sha256Hex | None
+    selected_fusion_strategy: FusionStrategy | None
+    comparison_configuration_fingerprint: Sha256Hex
+    metric_definition_fingerprint: Sha256Hex
+
+    # -- the results, as content rather than as a path -----------------------
+    comparison_fingerprint: Sha256Hex
+    report_fingerprints: tuple[tuple[str, str], ...]
+
+    row_count: int = Field(ge=0)
+    positive_count: int = Field(ge=0)
+    negative_count: int = Field(ge=0)
+
+    record_fingerprint: Sha256Hex
+
+    @model_validator(mode="after")
+    def check_record(self) -> Self:
+        """A test-evaluation receipt describes one locked evaluation, coherently."""
+        if self.record_type is not ExperimentRecordType.TEST_EVALUATION:
+            raise ValueError(
+                f"a test-evaluation record has record type "
+                f"{str(ExperimentRecordType.TEST_EVALUATION)!r}, not "
+                f"{str(self.record_type)!r}"
+            )
+        if self.identity.record_type is not ExperimentRecordType.TEST_EVALUATION:
+            raise ValueError("the identity describes a different record type")
+        if self.identity.run_id != self.identity.derived_run_id():
+            raise ValueError(
+                "the evaluation identifier is not the one this identity's "
+                "content derives; an assigned identifier is not an identity"
+            )
+        if (self.fusion_selection_fingerprint is None) != (
+            self.selected_fusion_strategy is None
+        ):
+            raise ValueError(
+                "an evaluated hybrid names both the frozen selection and the "
+                "strategy it chose, or neither"
+            )
+        category = (
+            self.category_run_id,
+            self.category_model_content_fingerprint,
+            self.category_abstention_fingerprint,
+        )
+        present = [item is not None for item in category]
+        if any(present) and not all(present):
+            raise ValueError(
+                "an evaluated category head is named in full or not at all"
+            )
+        if self.positive_count + self.negative_count != self.row_count:
+            raise ValueError("class support does not sum to the evaluated row count")
+        names = [name for name, _ in self.report_fingerprints]
+        if names != sorted(names) or len(set(names)) != len(names):
+            raise ValueError(
+                "report fingerprints are given once each, in report-name order"
+            )
+        return self
+
+    @property
+    def record_id(self) -> str:
+        """Return the derived evaluation identifier."""
+        return self.identity.run_id
+
+
 #: Every immutable record kind the ledger stores.
 #:
-#: A union rather than a shared base class with behaviour: the three records
+#: A union rather than a shared base class with behaviour: the four records
 #: have a sealing contract in common and nothing else, and a common ancestor
 #: would invite a field that "every record has" -- which is how a training run
 #: eventually grows somewhere to put a test metric.
-type LedgerRecord = TrainingRunRecord | ValidationSelectionRecord | ChampionFreezeRecord
+type LedgerRecord = (
+    TrainingRunRecord
+    | ValidationSelectionRecord
+    | ChampionFreezeRecord
+    | TestEvaluationRecord
+)
 
 
 class LedgerAppendResult(BaseModel):
@@ -761,6 +896,21 @@ class ExperimentLedger:
         return tuple(
             _read_record(path, ChampionFreezeRecord)
             for path in self._paths_for(ExperimentRecordType.CHAMPION_FREEZE)
+        )
+
+    def test_evaluations(self) -> tuple[TestEvaluationRecord, ...]:
+        """Return every stored test-evaluation record, in identifier order."""
+        return tuple(
+            _read_record(path, TestEvaluationRecord)
+            for path in self._paths_for(ExperimentRecordType.TEST_EVALUATION)
+        )
+
+    def read_evaluation(self, record_id: str) -> TestEvaluationRecord:
+        """Return one stored test-evaluation record, or raise."""
+        return self._read(
+            record_id,
+            record_type=ExperimentRecordType.TEST_EVALUATION,
+            model=TestEvaluationRecord,
         )
 
     def iter_training_runs(self) -> Iterator[TrainingRunRecord]:

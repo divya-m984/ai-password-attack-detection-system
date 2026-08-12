@@ -358,7 +358,12 @@ def test_both_commands_are_registered() -> None:
         "predict",
         "validate",
         "profile",
+        "evaluate",
+        "compare",
     ):
         assert command in result.stdout, command
-    for absent in ("evaluate", "compare", "explain", "drift"):
-        assert absent not in result.stdout, absent
+    # Whole words: the group's own help text explains that the test split is
+    # read once by 'evaluate', and a substring search would read that sentence
+    # as a command registration.
+    for absent in ("explain", "drift"):
+        assert not re.search(rf"\b{re.escape(absent)}\b", result.stdout), absent

@@ -128,18 +128,64 @@ def labels(events: Sequence[AuthEvent]) -> list[GroundTruthLabel]:
     return labels
 
 
+#: Campaigns reassigned to the novel-anomaly holdout.  Two of twelve, and
+#: deliberately *early* ones: the splits are chronological, so carving out late
+#: campaigns would starve validation and TEST of positives and the eligibility
+#: audit would refuse the run -- correctly. Nothing is weakened to accommodate
+#: the holdout; the campaigns are chosen so every supervised split keeps the
+#: support it already required.
+HOLDOUT_CAMPAIGNS = ("campaign-01", "campaign-02")
+
+
+def labels_with_holdout(events: Sequence[AuthEvent]) -> list[GroundTruthLabel]:
+    """Return ground truth in which two campaigns are genuine novel anomalies.
+
+    A novel-anomaly row is one the supervised pipeline was never allowed to fit
+    on: it carries the ``NOVEL_ANOMALY_HOLDOUT`` scenario and
+    ``supervised_training_eligible=False``, which is what routes it out of
+    TRAIN, validation, and TEST alike. The rows are otherwise ordinary, so the
+    holdout is a real population rather than a marker column.
+    """
+    rewritten = []
+    for label in labels(events):
+        if label.campaign_id in HOLDOUT_CAMPAIGNS:
+            rewritten.append(
+                label.model_copy(
+                    update={
+                        "scenario": ScenarioType.NOVEL_ANOMALY_HOLDOUT,
+                        "supervised_training_eligible": False,
+                    }
+                )
+            )
+        else:
+            rewritten.append(label)
+    return rewritten
+
+
 def invoke(*arguments: str) -> Result:
     """Run the CLI with *arguments* and return the result."""
     return runner.invoke(app, list(arguments))
 
 
-def build_workspace(root: Path) -> Path:
-    """Publish a feature dataset and a drafted allowlist under *root*."""
+def build_workspace(
+    root: Path,
+    *,
+    config: dict[str, object] | None = None,
+    with_holdout: bool = False,
+) -> Path:
+    """Publish a feature dataset and a drafted allowlist under *root*.
+
+    *config* overrides the feature configuration. The comparison suites need a
+    catalog wide enough for the Phase 4 rules as well as for the model, and
+    widening the default would silently retrain every other suite.
+    """
     stream = events()
     write_events_parquet(stream, root / "events.parquet")
-    write_labels_parquet(labels(stream), root / "labels.parquet")
+    ground_truth = labels_with_holdout(stream) if with_holdout else labels(stream)
+    write_labels_parquet(ground_truth, root / "labels.parquet")
     (root / "features.yaml").write_text(
-        yaml.safe_dump(feature_config()), encoding="utf-8"
+        yaml.safe_dump(config if config is not None else feature_config()),
+        encoding="utf-8",
     )
 
     built = invoke(
@@ -249,3 +295,111 @@ def predict(
     for option, value in arguments.items():
         flat += [option, value]
     return invoke("ml", "predict", *flat)
+
+
+def write_rule_config(path: Path) -> Path:
+    """Write the Phase 4 configuration these suites run under."""
+    path.write_text(yaml.safe_dump(rule_config()), encoding="utf-8")
+    return path
+
+
+def detect(workspace: Path, output_dir: Path) -> Result:
+    """Run the Phase 4 engine over the same feature snapshots.
+
+    The comparison suites need a *published* rule run, not a recomputed one: an
+    evaluation whose rule arm was produced on the fly under whatever
+    configuration happened to be in scope would be an evaluation against a
+    moving target.
+    """
+    config = write_rule_config(output_dir / "rules.yaml")
+    return invoke(
+        "detection",
+        "run",
+        "--config",
+        str(config),
+        "--features",
+        str(workspace / "processed" / "feature_snapshots.parquet"),
+        "--feature-manifest",
+        str(workspace / "processed" / "feature_manifest.json"),
+        "--feature-config",
+        str(workspace / "features.yaml"),
+        "-o",
+        str(output_dir),
+        "--reports-dir",
+        str(output_dir / "reports"),
+    )
+
+
+def prediction_ids(output_root: Path) -> dict[str, str]:
+    """Return every published prediction identifier, keyed by the split it scored."""
+    import json
+
+    from password_attack_detector.ml.prediction_manifest import (
+        PREDICTION_MANIFEST_FILE,
+        PREDICTIONS_DIR,
+    )
+
+    found: dict[str, str] = {}
+    for item in sorted((output_root / PREDICTIONS_DIR).iterdir()):
+        manifest = item / PREDICTION_MANIFEST_FILE
+        if manifest.is_file():
+            scope = json.loads(manifest.read_text(encoding="utf-8"))["scope"]
+            found[str(scope)] = item.name
+    return found
+
+
+def evaluate(
+    workspace: Path,
+    output_root: Path,
+    detection_dir: Path,
+    reports: Path,
+    **replace: str,
+) -> Result:
+    """Run ``ml evaluate`` over a frozen champion and a published TEST prediction."""
+    from password_attack_detector.detection.serialization import RISK_FILE
+
+    arguments = {
+        "--features": str(workspace / "processed" / "feature_snapshots.parquet"),
+        "--labels": str(workspace / "processed" / "feature_labels.parquet"),
+        "--splits": str(workspace / "processed" / "feature_splits.parquet"),
+        "--campaign-labels": str(workspace / "labels.parquet"),
+        "--allowlist": str(workspace / "allowlist.yaml"),
+        "--feature-config": str(workspace / "features.yaml"),
+        "--config": ML_CONFIG,
+        "--risk-assessments": str(detection_dir / RISK_FILE),
+        "--output-root": str(output_root),
+        "--reports-dir": str(reports),
+    }
+    arguments.update(replace)
+    flat: list[str] = []
+    for option, value in arguments.items():
+        flat += [option, value]
+    return invoke("ml", "evaluate", *flat)
+
+
+def rule_config() -> dict[str, object]:
+    """A Phase 4 configuration whose rules read the CI catalog's own windows.
+
+    The rule catalog's defaults reach for 15-minute and 1-hour windows. A
+    CI-sized stream cannot declare those and still leave a supervised split
+    with any support, so the *rules* are pointed at the windows this workspace
+    publishes rather than the workspace being widened to suit the rules.
+
+    Every rule stays enabled. Disabling the ones whose default windows do not
+    fit would hand the comparison a rule arm weaker than the real engine, which
+    is exactly the unfairness the comparison exists to avoid.
+    """
+    windows = {
+        "PAD-BF-001": {"window": "5m", "cardinality_window": "5m"},
+        "PAD-BOT-001": {"dispersion_window": "5m", "cardinality_window": "5m"},
+        "PAD-CS-001": {"window": "5m", "cardinality_window": "5m"},
+        "PAD-DBF-001": {"window": "5m", "cardinality_window": "5m"},
+        "PAD-MFA-001": {"window": "5m"},
+        "PAD-PS-001": {"window": "5m", "cardinality_window": "5m"},
+    }
+    return {
+        "rules": {
+            rule_id: {"parameters": parameters}
+            for rule_id, parameters in windows.items()
+        }
+    }

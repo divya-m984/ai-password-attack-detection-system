@@ -78,6 +78,7 @@ __all__ = [
     "ScoreLevel",
     "build_ranking_evidence",
     "pr_auc",
+    "score_levels",
 ]
 
 #: The ranking-evidence contract's own version.
@@ -245,6 +246,58 @@ def pr_auc(levels: Sequence[ScoreLevel], *, positive_count: int) -> float:
     return quantize(area)
 
 
+def score_levels(
+    scores: Sequence[float], malicious: Sequence[bool]
+) -> tuple[ScoreLevel, ...] | None:
+    """Return the exact tie-grouped curve for *scores*, or ``None`` when undefined.
+
+    The single implementation of the convention this module documents, shared by
+    Milestone 7's validation-B evidence and by Milestone 9's TEST metric. Two
+    implementations would agree on every fixture and diverge on the tie that
+    mattered.
+
+    ``None`` means the curve has no value on these rows: a set with no positive
+    row has no recall, and one with no benign row has no precision to lose.
+    That is an absence of evidence rather than a zero.
+    """
+    positive_total = sum(1 for flag in malicious if flag)
+    negative_total = len(malicious) - positive_total
+    if positive_total == 0 or negative_total == 0:
+        return None
+
+    # Grouped by score, never by row. Two rows sharing a score are one level
+    # whatever order they arrived in, which is what makes the metric invariant
+    # to the row order and to every identifier the rows carry.
+    grouped: dict[float, list[int]] = {}
+    for score, flag in zip(scores, malicious, strict=True):
+        counts = grouped.setdefault(float(score), [0, 0])
+        counts[0 if flag else 1] += 1
+
+    levels: list[ScoreLevel] = []
+    positives = 0
+    negatives = 0
+    for score in sorted(grouped, reverse=True):
+        at_level = grouped[score]
+        positives += at_level[0]
+        negatives += at_level[1]
+        # Every distinct level is published, including those above the first
+        # positive row. They contribute no recall and therefore no area, and
+        # keeping them is what makes the published curve the complete one rather
+        # than the part of it that happened to matter.
+        levels.append(
+            ScoreLevel(
+                score=quantize(score),
+                positive_count=at_level[0],
+                negative_count=at_level[1],
+                cumulative_true_positives=positives,
+                cumulative_false_positives=negatives,
+                precision=quantize(positives / (positives + negatives)),
+                recall=quantize(positives / positive_total),
+            )
+        )
+    return tuple(levels)
+
+
 def build_ranking_evidence(
     sample: BinaryScoreSample, *, ml_config_fingerprint: str
 ) -> RankingEvidence | None:
@@ -278,41 +331,11 @@ def build_ranking_evidence(
             f"compare two different quantities"
         )
 
+    levels = score_levels(sample.scores, sample.malicious)
+    if levels is None:
+        return None
     positive_total = sum(1 for flag in sample.malicious if flag)
     negative_total = len(sample.malicious) - positive_total
-    if positive_total == 0 or negative_total == 0:
-        return None
-
-    # Grouped by score, never by row. Two rows sharing a score are one level
-    # whatever order they arrived in, which is what makes the metric invariant
-    # to the row order and to every identifier the rows carry.
-    grouped: dict[float, list[int]] = {}
-    for score, malicious in zip(sample.scores, sample.malicious, strict=True):
-        counts = grouped.setdefault(score, [0, 0])
-        counts[0 if malicious else 1] += 1
-
-    levels: list[ScoreLevel] = []
-    positives = 0
-    negatives = 0
-    for score in sorted(grouped, reverse=True):
-        at_level = grouped[score]
-        positives += at_level[0]
-        negatives += at_level[1]
-        # Every distinct level is published, including those above the first
-        # positive row. They contribute no recall and therefore no area, and
-        # keeping them is what makes the published curve the complete one rather
-        # than the part of it that happened to matter.
-        levels.append(
-            ScoreLevel(
-                score=quantize(score),
-                positive_count=at_level[0],
-                negative_count=at_level[1],
-                cumulative_true_positives=positives,
-                cumulative_false_positives=negatives,
-                precision=quantize(positives / (positives + negatives)),
-                recall=quantize(positives / positive_total),
-            )
-        )
 
     return RankingEvidence.seal(
         score_kind=sample.score_kind,
@@ -321,7 +344,7 @@ def build_ranking_evidence(
         positive_count=positive_total,
         negative_count=negative_total,
         distinct_score_count=len(levels),
-        levels=tuple(levels),
+        levels=levels,
         source_partition=ValidationPartition.VALIDATION_B,
         source_partition_fingerprint=sample.source.source_fingerprint,
         model_id=sample.model_id,

@@ -1236,14 +1236,19 @@ def test_the_anomaly_threshold_moves_only_with_its_own_benign_source() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_the_ml_layer_exposes_no_evaluation_command() -> None:
-    """Threshold selection is a library contract, and evaluation is not shipped.
+def test_the_ml_layer_ships_exactly_the_declared_commands() -> None:
+    """Threshold selection is a library contract, not a command.
 
     Milestone 6 added ``train`` and ``experiments``; Milestone 7 added
     ``select`` and ``freeze-champion``, both of which read validation evidence
     only; Milestone 8 added ``predict``, ``validate``, and ``profile``, which
-    may score the test split and never open a label. What stays absent is
-    anything that would combine those predictions with ground truth.
+    may score the test split and never open a label; Milestone 9 added
+    ``evaluate``, the one command permitted to combine those predictions with
+    ground truth, and ``compare``, which only reports what it published.
+
+    No command selects or re-derives a threshold. The operating point is chosen
+    by the library, on validation, and frozen -- an option that let an operator
+    move it after the fact would undo that.
     """
     from password_attack_detector.ml.cli import ml_app
 
@@ -1262,7 +1267,11 @@ def test_the_ml_layer_exposes_no_evaluation_command() -> None:
         "predict",
         "validate",
         "profile",
+        "evaluate",
+        "compare",
     }
+    for name in names:
+        assert "threshold" not in name
 
 
 def test_the_package_version_is_unchanged() -> None:

@@ -242,15 +242,16 @@ def test_the_command_appears_in_help() -> None:
 def test_no_evaluation_command_is_registered() -> None:
     """Milestone 8 predicts under the frozen champion; it evaluates nothing.
 
-    ``predict`` is now registered and deliberately so: it publishes what the
-    model said without opening a label. What stays absent is anything that would
-    *score* those predictions against ground truth.
+    ``predict`` publishes what the model said without opening a label, and
+    ``evaluate`` scores it once against a lineage frozen beforehand. What stays
+    absent is explanation and drift, which no milestone has built.
     """
     result = invoke("ml", "--help")
     commands = result.output.split("Commands")[-1]
-    for absent in ("evaluate", "compare", "explain", "drift"):
+    for absent in ("explain", "drift"):
         assert absent not in commands, absent
-    assert "predict" in commands
+    for present in ("predict", "evaluate", "compare"):
+        assert present in commands, present
 
 
 def test_the_existing_commands_still_work() -> None:

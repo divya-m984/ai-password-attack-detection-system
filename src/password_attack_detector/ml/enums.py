@@ -41,6 +41,7 @@ __all__ = [
     "CalibrationMethod",
     "CalibrationStatus",
     "ChampionStatus",
+    "ComparisonSystem",
     "ExperimentRecordType",
     "FeatureDecisionPoint",
     "FusionStrategy",
@@ -53,6 +54,7 @@ __all__ = [
     "ModelFamily",
     "ScoreKind",
     "SelectionStatus",
+    "TestEvaluationStatus",
     "ThresholdObjective",
     "TrainingRunStatus",
     "ValidationPartition",
@@ -335,6 +337,41 @@ class FusionStrategy(StrEnum):
     AND_GATE = "and_gate"
     #: A meta-model over the model score and typed rule features.
     STACKED = "stacked"
+
+
+class ComparisonSystem(StrEnum):
+    """Which detection system produced a decision in the final comparison.
+
+    Three named systems, compared over one identical event universe.  The
+    hybrid is present only when a validation-only fusion selection actually
+    chose one: there is no fallback member for "whichever hybrid we defaulted
+    to", because there is no default hybrid.
+    """
+
+    #: The frozen Phase 4 rule engine, unmodified.
+    RULE_ONLY = "rule_only"
+    #: The frozen Milestone 7 champion, applied through its Milestone 8
+    #: predictions.
+    ML_ONLY = "ml_only"
+    #: The validation-selected fusion of the two.
+    HYBRID = "hybrid"
+
+
+class TestEvaluationStatus(StrEnum):
+    """Whether a locked TEST evaluation could be carried out, and what it found.
+
+    ``COMPLETED`` means the frozen lineage verified, the labels were opened
+    once, and the metrics were computed under the contract declared before they
+    were.  The other two are refusals *before* any label was read -- which is
+    the only useful place to refuse.
+    """
+
+    COMPLETED = "completed"
+    #: The frozen lineage was incomplete or inconsistent, so nothing was opened.
+    LINEAGE_INCOMPLETE = "lineage_incomplete"
+    #: The TEST population carried too little of a class for the metrics to be
+    #: measurements rather than anecdotes.
+    INSUFFICIENT_TEST_SUPPORT = "insufficient_test_support"
 
 
 class GateStatus(StrEnum):

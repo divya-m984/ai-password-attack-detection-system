@@ -118,10 +118,12 @@ from password_attack_detector.ml.thresholds import (
 
 __all__ = [
     "CandidateSpec",
+    "OutOfFoldScores",
     "ReadableLineage",
     "TrainingContext",
     "TrainingRunOutcome",
     "enumerate_candidates",
+    "out_of_fold_binary_scores",
     "train_all",
     "train_candidate",
 ]
@@ -1398,4 +1400,227 @@ def train_all(context: TrainingContext) -> tuple[TrainingRunOutcome, ...]:
     return tuple(
         train_candidate(candidate, context=context)
         for candidate in enumerate_candidates(context.config, catalog=context.catalog)
+    )
+
+
+# ---------------------------------------------------------------------------
+# Out-of-fold TRAIN scores, for a stacked fusion's meta-features
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class OutOfFoldScores:
+    """Per-row TRAIN scores, each from a model that never saw its own row.
+
+    The whole point of this object is the guarantee in that sentence. A stacked
+    meta-learner fitted on ordinary in-sample TRAIN predictions learns that the
+    base model is right, because on its own training rows it usually is -- and
+    the stacker then trusts the base model most in exactly the region where it
+    should be cautious. So every score here was produced by a model fitted on
+    the *other* folds.
+
+    ``unavailable_reason`` is set, and every sequence empty, when the folds
+    could not be cut safely. That is an honest outcome: a stacker is simply not
+    available, and the fusion selection records it as such rather than falling
+    back to a row-level approximation.
+    """
+
+    anchor_event_ids: tuple[str, ...] = ()
+    scores: tuple[float, ...] = ()
+    malicious: tuple[bool, ...] = ()
+    fold_assignments: tuple[int, ...] = ()
+    fold_count: int = 0
+    fold_definition_fingerprint: str = ""
+    unavailable_reason: str | None = None
+
+    @property
+    def available(self) -> bool:
+        """Return whether out-of-fold scores were produced at all."""
+        return self.unavailable_reason is None and bool(self.anchor_event_ids)
+
+
+def out_of_fold_binary_scores(
+    context: TrainingContext,
+    candidate: CandidateSpec,
+    *,
+    fold_count: int,
+    min_fold_positive_rows: int = 1,
+    min_fold_benign_rows: int = 1,
+) -> OutOfFoldScores:
+    """Return one out-of-fold TRAIN score per supervised-eligible row.
+
+    The folds are cut at **campaign** boundaries by
+    :func:`~password_attack_detector.ml.fusion.campaign_folds`: a campaign is a
+    coordinated burst whose events share a cause, and splitting one across a
+    fold would let the base model learn a campaign and then be scored on the
+    rest of it. Assignment is a pure function of the campaign identifiers and
+    the canonical row order -- no shuffling, no random state, no ``KFold``.
+
+    Only TRAIN rows take part. Validation, TEST, and the novel-anomaly holdout
+    are never in a fit population and never scored here: the object is built
+    from :meth:`TrainingContext.supervised_train` and nothing else.
+
+    Every fold refits the whole pipeline on that fold's legal population --
+    preprocessing, class weights, and the model -- because a preprocessor
+    fitted on all of TRAIN would carry the held-out rows' statistics into the
+    model that is supposed not to have seen them.
+
+    Args:
+        context: the frozen training context.
+        candidate: the base-model candidate to refit per fold.
+        fold_count: how many folds to cut.
+        min_fold_positive_rows: the support each fold's fit population needs of
+            the malicious class before a fit is attempted.
+        min_fold_benign_rows: the same floor for the benign class.
+
+    Returns:
+        Scores in canonical TRAIN order, or an :class:`OutOfFoldScores` whose
+        ``unavailable_reason`` names why none could be produced.
+    """
+    from password_attack_detector.ml.fusion import campaign_folds
+
+    if candidate.task is not MLTask.BINARY_MALICIOUS:
+        return OutOfFoldScores(
+            unavailable_reason=(
+                "out_of_fold_requires_binary_task: a stacked fusion consumes the "
+                "binary head's score"
+            )
+        )
+
+    population = context.supervised_train()
+    if population.row_count == 0:
+        return OutOfFoldScores(unavailable_reason="no_supervised_train_rows")
+
+    campaigns = [anchor.campaign_id for anchor in population.frame.anchors]
+    try:
+        folds = campaign_folds(campaigns, fold_count=fold_count)
+    except Exception as exc:
+        return OutOfFoldScores(
+            unavailable_reason=f"fold_construction_failed: {type(exc).__name__}"
+        )
+
+    scored: dict[str, float] = {}
+    for fold in range(fold_count):
+        fit_keep = [assigned != fold for assigned in folds]
+        held_keep = [assigned == fold for assigned in folds]
+        if not any(held_keep) or not any(fit_keep):
+            return OutOfFoldScores(
+                unavailable_reason=f"empty_fold: fold {fold} has no rows on one side"
+            )
+
+        fit_population = _slice(population, fit_keep)
+        held_population = _slice(population, held_keep)
+        if (
+            fit_population.positive_count < min_fold_positive_rows
+            or fit_population.benign_count < min_fold_benign_rows
+        ):
+            return OutOfFoldScores(
+                unavailable_reason=(
+                    "insufficient_fold_support: a fold's fit population carries "
+                    "too little of a class for the base model to mean anything"
+                )
+            )
+
+        # Refitted per fold, all of it: a preprocessor fitted on the whole of
+        # TRAIN would carry the held-out rows' imputation constants, category
+        # vocabulary, and scaling statistics into the model scoring them.
+        try:
+            preprocessor = fit_preprocessor(
+                fit_population.frame,
+                catalog=context.feature_catalog,
+                eligible=context.eligible,
+                config=context.config.preprocessing,
+            )
+            targets = fit_population.binary_targets()
+            weights = (
+                None
+                if context.config.imbalance.class_weight_policy == "none"
+                else compute_class_weights(
+                    list(targets),
+                    task=MLTask.BINARY_MALICIOUS,
+                    class_order=BINARY_CLASS_ORDER,
+                    config=context.config.imbalance,
+                )
+            )
+            adapter, fitted = _fit(
+                candidate,
+                context=context,
+                preprocessor=preprocessor,
+                population=fit_population,
+                targets=targets,
+                class_order=BINARY_CLASS_ORDER,
+                weights=weights,
+            )
+        except ModelTrainingError as exc:
+            return OutOfFoldScores(
+                unavailable_reason=f"fold_fit_failed: {type(exc).__name__}"
+            )
+
+        index = fitted.class_order.index(BINARY_CLASS_ORDER[1])
+        rows = _score(preprocessor, fitted, adapter, held_population)
+        for anchor, values in zip(held_population.frame.anchors, rows, strict=True):
+            if anchor.anchor_event_id in scored:
+                raise ModelTrainingError(
+                    "a TRAIN row received two out-of-fold scores; the folds "
+                    "overlap and one of the two models saw the row it scored"
+                )
+            scored[anchor.anchor_event_id] = float(values[index])
+
+    anchors = [anchor.anchor_event_id for anchor in population.frame.anchors]
+    missing = [anchor for anchor in anchors if anchor not in scored]
+    if missing:
+        raise ModelTrainingError(
+            f"{len(missing)} TRAIN row(s) received no out-of-fold score; the "
+            f"folds do not cover the population they were cut from"
+        )
+
+    return OutOfFoldScores(
+        anchor_event_ids=tuple(anchors),
+        scores=tuple(scored[anchor] for anchor in anchors),
+        malicious=tuple(population.malicious),
+        fold_assignments=tuple(folds),
+        fold_count=fold_count,
+        fold_definition_fingerprint=_fold_fingerprint(
+            campaigns=campaigns, folds=folds, fold_count=fold_count
+        ),
+    )
+
+
+def _slice(population: _Population, keep: Sequence[bool]) -> _Population:
+    """Return the rows of *population* where *keep* is true, order preserved."""
+    indices = [index for index, flag in enumerate(keep) if flag]
+    return _Population(
+        frame=_Frame(
+            split=population.frame.split,
+            feature_names=population.frame.feature_names,
+            anchors=tuple(population.frame.anchors[index] for index in indices),
+            feature_matrix=tuple(
+                population.frame.feature_matrix[index] for index in indices
+            ),
+        ),
+        malicious=tuple(population.malicious[index] for index in indices),
+        known_category=tuple(population.known_category[index] for index in indices),
+    )
+
+
+def _fold_fingerprint(
+    *, campaigns: Sequence[str | None], folds: Sequence[int], fold_count: int
+) -> str:
+    """Return the digest of exactly how the folds were cut.
+
+    Over the campaign-to-fold assignment and the per-row folds, so a different
+    cut is a different stacker lineage. No anchor identifier leaves this
+    function: what it returns is a hash.
+    """
+    assignment: dict[str, int] = {}
+    for campaign, fold in zip(campaigns, folds, strict=True):
+        if campaign:
+            assignment[campaign] = fold
+    return _digest(
+        {
+            "fold_count": fold_count,
+            "row_count": len(folds),
+            "campaign_assignment": sorted(assignment.items()),
+            "per_row_folds": list(folds),
+        }
     )
