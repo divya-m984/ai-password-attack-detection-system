@@ -1244,11 +1244,14 @@ def test_the_ml_layer_ships_exactly_the_declared_commands() -> None:
     only; Milestone 8 added ``predict``, ``validate``, and ``profile``, which
     may score the test split and never open a label; Milestone 9 added
     ``evaluate``, the one command permitted to combine those predictions with
-    ground truth, and ``compare``, which only reports what it published.
+    ground truth, and ``compare``, which only reports what it published;
+    Milestone 10 added ``explain`` and ``drift``, neither of which reads a
+    label at all.
 
     No command selects or re-derives a threshold. The operating point is chosen
     by the library, on validation, and frozen -- an option that let an operator
-    move it after the fact would undo that.
+    move it after the fact would undo that, and a drift finding that could move
+    it would undo it more quietly.
     """
     from password_attack_detector.ml.cli import ml_app
 
@@ -1269,6 +1272,8 @@ def test_the_ml_layer_ships_exactly_the_declared_commands() -> None:
         "profile",
         "evaluate",
         "compare",
+        "explain",
+        "drift",
     }
     for name in names:
         assert "threshold" not in name
@@ -1278,7 +1283,7 @@ def test_the_package_version_is_unchanged() -> None:
     """Milestone 5 adds contracts, not a release."""
     from password_attack_detector import __version__
 
-    assert __version__ == "0.4.0"
+    assert __version__ == "0.5.0"
 
 
 # ---------------------------------------------------------------------------

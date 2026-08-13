@@ -555,9 +555,12 @@ def _imported_modules(module: ModuleType) -> set[str]:
 #:   a layer where the preprocessor reads "just the split column" and the
 #:   partitioner reads "just the campaign id" cannot.  Every other ML module --
 #:   ``features``, ``ordering``, ``eligibility``, ``partition``, and the
-#:   ``preprocessing``, ``models``, ``inference``, ``fusion``, ``explain``, and
-#:   ``drift`` modules later milestones add -- receives what it needs as typed
-#:   arguments and is covered by the package sweep below the moment it exists.
+#:   ``preprocessing``, ``models``, ``inference``, ``fusion``, ``stacking``,
+#:   ``test_evaluation``, ``explain``, ``reference``, and ``drift`` modules --
+#:   receives what it needs as typed arguments and is covered by the package
+#:   sweep below.  Milestone 9 deliberately did **not** widen this set:
+#:   ``ml.test_evaluation`` takes typed outcome values rather than opening a
+#:   table, and Milestone 10 reads no label at all.
 LABEL_READER_ALLOWLIST = frozenset(
     {
         "password_attack_detector.detection.evaluation",
@@ -762,15 +765,21 @@ def test_every_composition_root_exemption_is_load_bearing(exemption: str) -> Non
         "password_attack_detector.ml.models",
         "password_attack_detector.ml.inference",
         "password_attack_detector.ml.fusion",
+        "password_attack_detector.ml.stacking",
+        "password_attack_detector.ml.test_evaluation",
         "password_attack_detector.ml.explain",
+        "password_attack_detector.ml.reference",
         "password_attack_detector.ml.drift",
+        "password_attack_detector.ml.governance",
     ],
 )
 def test_a_named_ml_module_never_imports_a_label(name: str) -> None:
-    """Named explicitly as well as swept, including modules not yet written.
+    """Named explicitly as well as swept, so a rename cannot quietly drop one.
 
-    A module that does not exist yet passes vacuously; the moment a later
-    milestone creates it, this fails unless it takes its labels as arguments.
+    Every module named here exists as of Phase 5. The skip below is what let
+    the list be written ahead of the modules -- a module that does not exist yet
+    passes vacuously, and the moment a later milestone creates it, this fails
+    unless it takes its labels as arguments.
     """
     modules = _source_modules()
     if name not in modules:

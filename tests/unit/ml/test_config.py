@@ -708,9 +708,15 @@ def test_the_testing_configuration_is_ci_sized() -> None:
     config = load_ml_config(_config_path("model-testing.yaml"))
     assert ModelFamily.RANDOM_FOREST not in config.enabled_model_families
     assert config.hyperparameters_for(ModelFamily.LOGISTIC_REGRESSION)["max_iter"] == 50
-    assert config.explain.enabled is False
-    assert config.drift.enabled is False
     assert config.anomaly.enabled is False
+    # Attribution and drift *are* exercised in CI -- they are cheap, and a
+    # capability nothing runs is a capability nobody checks. What keeps them
+    # CI-sized is the work each does, not whether it happens at all.
+    assert config.explain.enabled is True
+    assert config.explain.top_k_features == 5
+    assert config.explain.permutation_repeats == 1
+    assert config.drift.enabled is True
+    assert config.drift.quantile_count == 4
 
 
 def test_the_testing_configuration_relaxes_no_discipline() -> None:

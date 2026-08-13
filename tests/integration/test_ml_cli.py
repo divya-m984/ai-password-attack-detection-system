@@ -32,15 +32,21 @@ _UUID_RE = re.compile(
     r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b"
 )
 
-#: Commands this milestone deliberately does not ship.  A placeholder that
-#: exists but does nothing is worse than an honest absence, because ``--help``
-#: would advertise a capability the code lacks.
-DEFERRED_COMMANDS = (
-    "explain",
-    "drift",
+#: Capabilities Phase 5 deliberately does not ship, named the way a command
+#: would be.  The layer is offline: it serves nothing, deploys nothing,
+#: retrains nothing on a monitoring finding, and promotes nothing without a
+#: validation selection.  A placeholder that exists but does nothing is worse
+#: than an honest absence, because ``--help`` would advertise a capability the
+#: code lacks.
+ABSENT_COMMANDS = (
+    "serve",
+    "deploy",
+    "retrain",
+    "promote",
+    "tune",
 )
 
-#: The complete set of commands this milestone registers.
+#: The complete, final Phase 5 command surface.
 SHIPPED_COMMANDS = (
     "catalog",
     "audit-features",
@@ -54,6 +60,8 @@ SHIPPED_COMMANDS = (
     "profile",
     "evaluate",
     "compare",
+    "explain",
+    "drift",
 )
 
 
@@ -94,20 +102,35 @@ def test_the_ml_group_shows_help_with_no_arguments() -> None:
 
 
 def test_the_ml_group_advertises_only_the_shipped_commands() -> None:
-    """Twelve commands, and the deferred ones must stay unregistered."""
+    """Fourteen commands, and the absent capabilities must stay unregistered."""
     result = _invoke("ml", "--help")
     assert result.exit_code == 0
     for command in SHIPPED_COMMANDS:
         assert command in result.stdout, command
     # Whole words: the group's own help text legitimately says "no champion is
-    # selected", and a substring search would read that as a deferred command.
-    for command in DEFERRED_COMMANDS:
+    # selected", and a substring search would read that as a command.
+    for command in ABSENT_COMMANDS:
         assert not re.search(rf"\b{re.escape(command)}\b", result.stdout), command
 
 
-@pytest.mark.parametrize("command", DEFERRED_COMMANDS)
-def test_a_deferred_command_is_not_callable(command: str) -> None:
-    """Invoking a later milestone's command must fail, not silently succeed."""
+def test_the_registered_command_surface_is_exactly_the_shipped_set() -> None:
+    """Pinned in both directions, so a convenience command cannot slip in.
+
+    The help text alone would only prove the shipped commands are *present*.
+    Reading the registry proves nothing else is.
+    """
+    from password_attack_detector.ml.cli import ml_app
+
+    registered = {
+        command.name or (command.callback.__name__ if command.callback else "")
+        for command in ml_app.registered_commands
+    }
+    assert registered == set(SHIPPED_COMMANDS)
+
+
+@pytest.mark.parametrize("command", ABSENT_COMMANDS)
+def test_an_absent_capability_is_not_callable(command: str) -> None:
+    """This layer is offline; a command that implied otherwise must not exist."""
     result = _invoke("ml", command)
     assert result.exit_code != 0
 
@@ -283,21 +306,25 @@ def test_every_phase_group_is_still_registered() -> None:
         assert group in result.stdout
 
 
-def test_the_package_version_is_unchanged_at_this_checkpoint() -> None:
-    """Milestone 1 does not bump the version; the phase release does.
+def test_the_package_version_is_the_phase_5_release() -> None:
+    """The phase release bumps the version, and every authority agrees on it.
 
-    The version moves to 0.5.0 in the final milestone, together with the
-    documentation and the changelog entry that make the bump meaningful.
+    Milestones 1 through 9 deliberately left it alone; Milestone 10 moves it to
+    0.5.0 together with the governance documentation that makes the bump
+    meaningful. The runtime constant and the packaging metadata are checked
+    against each other rather than each against a literal, because two literals
+    can agree with a test and disagree with each other.
     """
     from password_attack_detector import __version__
 
-    assert __version__ == "0.4.0"
+    assert __version__ == "0.5.0"
 
     project = tomllib.loads(
         (_repo_root() / "pyproject.toml").read_text(encoding="utf-8")
     )["project"]
     assert isinstance(project, dict)
-    assert project["version"] == "0.4.0"
+    assert project["version"] == "0.5.0"
+    assert project["version"] == __version__
 
 
 # ---------------------------------------------------------------------------
@@ -419,33 +446,46 @@ def test_the_unpublishable_and_experimental_families_stay_that_way() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_the_ml_package_declares_no_unbuilt_module() -> None:
-    """Milestone 9 evaluates the frozen champion against the TEST labels.
+def test_the_ml_package_declares_exactly_the_built_modules() -> None:
+    """The final Phase 5 module inventory, pinned in both directions.
 
     Model adapters and serialization arrived with Milestone 4; calibration and
     threshold selection with Milestone 5; training orchestration, the immutable
     experiment ledger, and run publication with Milestone 6; champion gates,
     validation-only selection, and the champion freeze with Milestone 7; batch
     inference, the prediction artifacts, their manifest, their validation, and
-    the aggregate profile with Milestone 8. Test *evaluation*, fusion,
-    explanation and drift belong to later milestones, and an empty placeholder for
-    either would make the package look further along than it is.
+    the aggregate profile with Milestone 8; the locked test evaluation, fusion,
+    stacking, alerts, and the system comparison with Milestone 9; attribution,
+    the reference profile, drift, and governance with Milestone 10.
+
+    Pinned as an equality rather than a subset so an empty placeholder for a
+    capability nobody built cannot make the package look further along than it
+    is -- and so a module quietly added outside the reviewed inventory fails
+    here rather than in review.
     """
     package = _repo_root() / "src" / "password_attack_detector" / "ml"
     present = {path.stem for path in package.glob("*.py")}
     assert present == {
         "__init__",
+        "alerts",
         "calibration",
         "catalog",
         "champion",
         "cli",
+        "comparison",
         "config",
         "dataset",
         "dependencies",
+        "drift",
         "eligibility",
         "enums",
         "experiments",
+        "explain",
         "features",
+        "fusion",
+        "governance",
+        "metrics",
+        "reference",
         "gates",
         "imbalance",
         "inference",
@@ -453,10 +493,6 @@ def test_the_ml_package_declares_no_unbuilt_module() -> None:
         "manifest",
         "npz",
         "ordering",
-        "alerts",
-        "comparison",
-        "fusion",
-        "metrics",
         "partition",
         "prediction_manifest",
         "prediction_publisher",

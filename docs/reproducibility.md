@@ -130,9 +130,48 @@ before the noisy-OR product fixes float multiplication order, and alerts are
 grouped in one ordered pass. Re-running with the same inputs and configuration
 produces byte-identical Parquet files.
 
+## Phase 5: machine-learning fingerprints
+
+| Fingerprint | Covers | Excludes |
+|---|---|---|
+| Eligible feature list | The reviewed allowlist restricted to the configured leakage classes and feature groups, in catalog order | Allowlist file layout, YAML key order |
+| Preprocessor | Every fitted imputation, encoding, vocabulary, and scaling statistic | Where and when it was fitted |
+| Model content | Hyperparameters, class order, transformed column order, and a digest over every fitted array | Estimator internals, library version, path |
+| Calibration state | The fitted calibrator's parameters and declared method | Its source file, its run directory |
+| Threshold selection | The chosen operating point, the objective, and the evidence it was chosen from | The directory the selection ran in |
+| ML configuration | Every semantic setting, hyperparameters at their *effective* values | `output_dir`, `models_dir`, `reports_dir`, `overwrite` |
+| Champion lock | Every fingerprint above, plus the serializer, adapter, and dependency contract | Any metric, any path, any host, any timestamp |
+| Prediction content and manifest | The scored rows, the frozen lineage, and the inference input | Physical Parquet layout, publication directory |
+| Test evaluation record | The frozen lineage, the population, the rule configuration, and the fusion selection | When it ran, where it ran |
+| Explanation manifest and report | The champion, the publication, the method, the explain configuration, and the digests of what was produced | Paths, the terminal it printed to |
+| Reference profile | The split, the population digest, every partition, the champion lineage, and the drift configuration | The root it was captured under |
+| Drift manifest and report | The reference profile, the incoming population, and the report | Both directories, the wall clock |
+
+Two properties hold across every entry. **Identity is semantic**: the same inputs
+rebuilt in two directories on two days produce the same value. And **no fitted
+quantity is derived from an evaluation split**: the whole lineage above is fixed
+before the TEST labels are opened, which is what makes a TEST prediction safe to
+publish and a TEST evaluation meaningful.
+
+The audit is executable. `tests/integration/test_phase5_reproducibility.py`
+rebuilds the entire pipeline — dataset, features, preprocessing, models,
+calibration, thresholds, the ledger, selection, the freeze, predictions, the
+locked evaluation, attribution, the reference profile, and drift — in two
+independent temporary roots and compares every identity above. Positive controls
+prove the lineage is live: changing one training event's value moves the
+preprocessor, the model, and the lock. Negative controls prove the boundaries
+hold: physical row order moves nothing, a pipeline that never scores TEST
+produces the identical champion, and neither attribution nor monitoring changes a
+byte of any frozen artifact.
+
 ## Known limitations
 
 - Reproducibility is bounded by the committed `uv.lock` environment. The
   `uv_lock_sha256` field in the manifest records the exact environment used.
-- Phase 2 does not implement DVC or MLflow for experiment tracking. Reproducibility
-  relies on the locked Python environment and committed YAML configurations.
+- The project does not implement DVC or MLflow for experiment tracking.
+  Reproducibility relies on the locked Python environment, the committed YAML
+  configurations, and the project's own append-only experiment ledger.
+- Estimator *fitting* uses scikit-learn, so a fitted model is reproducible only
+  within the reviewed dependency range the champion lock records. Everything
+  after fitting — scoring, calibration, thresholds, attribution — is project
+  code reading published arrays, and stays reproducible across that range.

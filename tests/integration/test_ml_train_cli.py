@@ -360,10 +360,12 @@ def test_both_commands_are_registered() -> None:
         "profile",
         "evaluate",
         "compare",
+        "explain",
+        "drift",
     ):
         assert command in result.stdout, command
-    # Whole words: the group's own help text explains that the test split is
-    # read once by 'evaluate', and a substring search would read that sentence
-    # as a command registration.
-    for absent in ("explain", "drift"):
+    # Whole words: the group's own help text describes what the layer does, and
+    # a substring search would read a sentence as a command registration. This
+    # layer is offline, so a command implying otherwise must not exist.
+    for absent in ("serve", "deploy", "retrain"):
         assert not re.search(rf"\b{re.escape(absent)}\b", result.stdout), absent

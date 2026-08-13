@@ -30,10 +30,14 @@ from enum import StrEnum
 from typing import Final
 
 __all__ = [
+    "DRIFT_REFERENCE_ELIGIBLE_SPLITS",
+    "EXACT_EXPLANATION_METHODS",
+    "EXPLANATION_ELIGIBLE_SPLITS",
     "FIT_ELIGIBLE_SPLITS",
     "PROBABILITY_SCORE_KINDS",
     "SUPERVISED_TASKS",
     "UNKNOWN_CATEGORY",
+    "AcceptanceStatus",
     "AnomalyThresholdMethod",
     "AuditCheckStatus",
     "AuditStatus",
@@ -42,7 +46,11 @@ __all__ = [
     "CalibrationStatus",
     "ChampionStatus",
     "ComparisonSystem",
+    "DriftMetric",
+    "DriftStatus",
     "ExperimentRecordType",
+    "ExplanationMethod",
+    "ExplanationStatus",
     "FeatureDecisionPoint",
     "FusionStrategy",
     "GateStatus",
@@ -52,6 +60,8 @@ __all__ = [
     "MetricStatus",
     "ModelEligibilityStatus",
     "ModelFamily",
+    "PredictionDriftQuantity",
+    "ReferenceFeatureKind",
     "ScoreKind",
     "SelectionStatus",
     "TestEvaluationStatus",
@@ -552,3 +562,172 @@ class ValidationPartitionStatus(StrEnum):
 #: does not have, and would quietly convert novel behaviour into a class
 #: somebody already wrote a rule for.
 UNKNOWN_CATEGORY: Final = "unknown"
+
+
+class ExplanationMethod(StrEnum):
+    """How one attribution number was produced.
+
+    Every member is deterministic and implemented in this project against the
+    published artifact alone: no estimator is reconstructed, no private
+    scikit-learn attribute is read, and no sampling is involved.  A method that
+    could only be described as "approximately additive" is not here, because a
+    per-feature number nobody can reconstruct is indistinguishable from one that
+    was made up.
+
+    The first three are *exact local* decompositions -- the contributions sum
+    back to the model's own decision quantity, and a test asserts it.  The
+    fourth is a *global* sensitivity measure and deliberately does not
+    decompose anything: it says how much the model's output moves when a column
+    is scrambled, which is a statement about the model, not about a row.
+    """
+
+    #: ``contribution_j = transformed_value_j * coefficient_j``, with the
+    #: intercept recorded separately.  Sums to the linear model's logit.
+    LINEAR_LOGIT_CONTRIBUTION = "linear_logit_contribution"
+    #: The decision-path decomposition of a tree ensemble: each split on the
+    #: root-to-leaf path is credited with the change it makes to the node's
+    #: stored class distribution, averaged over trees.  Sums to the forest's
+    #: own score minus the ensemble-mean root value.
+    TREE_PATH_CONTRIBUTION = "tree_path_contribution"
+    #: The single reviewed column a threshold baseline cuts on carries the whole
+    #: decision; every other column contributes exactly zero because the model
+    #: does not read it.
+    SINGLE_FEATURE_STEP_CONTRIBUTION = "single_feature_step_contribution"
+    #: Mean absolute change in the model's decision score when one transformed
+    #: column is replaced by a deterministically permuted copy of itself.
+    #: Label-free, model-agnostic, and seeded from the run configuration.
+    PERMUTATION_SCORE_SENSITIVITY = "permutation_score_sensitivity"
+
+
+#: The methods whose contributions reconstruct the model's decision quantity.
+#:
+#: Membership is what entitles a report to claim a reconstruction residual.  A
+#: method outside this set may still be published, but it may not describe
+#: itself as a decomposition of anything.
+EXACT_EXPLANATION_METHODS: Final[frozenset[ExplanationMethod]] = frozenset(
+    {
+        ExplanationMethod.LINEAR_LOGIT_CONTRIBUTION,
+        ExplanationMethod.TREE_PATH_CONTRIBUTION,
+        ExplanationMethod.SINGLE_FEATURE_STEP_CONTRIBUTION,
+    }
+)
+
+
+class ExplanationStatus(StrEnum):
+    """Whether an exact attribution could be produced for a model family.
+
+    Two members, and the absence of a third is deliberate.  There is no
+    ``APPROXIMATE``: a family whose local decomposition this build cannot
+    compute exactly reports :attr:`UNAVAILABLE` and a reason, because an
+    approximate per-feature number reads exactly like an exact one once it is
+    in a table.
+    """
+
+    EXACT = "exact"
+    UNAVAILABLE = "unavailable"
+
+
+#: Splits an explanation may be computed over.
+#:
+#: Test and the novel-anomaly holdout are absent, and the absence is the
+#: enforcement.  Attribution describes what a frozen model does to a row; doing
+#: it over the locked evaluation population would put a per-row artifact derived
+#: from test beside the one evaluation that was allowed to read it.
+EXPLANATION_ELIGIBLE_SPLITS: Final[frozenset[MLSplit]] = frozenset(
+    {MLSplit.TRAIN, MLSplit.VALIDATION}
+)
+
+
+class ReferenceFeatureKind(StrEnum):
+    """How a reference profile partitions one raw feature's values.
+
+    Mirrors the three encodings the frozen preprocessor already distinguishes,
+    so the profile cannot invent a fourth interpretation of a column the model
+    was fitted under.
+    """
+
+    NUMERIC = "numeric"
+    BOOLEAN = "boolean"
+    CATEGORICAL = "categorical"
+
+
+class DriftMetric(StrEnum):
+    """The measure a drift result reports.
+
+    One member, and a test asserts it stays that way.  The population stability
+    index over a partition frozen from the reference is the only measure the
+    reviewed configuration declares thresholds for, and a second thresholded
+    family would need warn and alert values nobody has chosen.  Null rates and
+    unknown-category rates are still reported -- as fields on the result, and as
+    dedicated bins inside the very partition this index is taken over, so a
+    shift in either moves this number rather than hiding beside it.
+    """
+
+    POPULATION_STABILITY_INDEX = "population_stability_index"
+
+
+class DriftStatus(StrEnum):
+    """What one drift result means.
+
+    ``INCONCLUSIVE`` and ``UNAVAILABLE`` are both refusals, and neither is
+    ``NO_DRIFT``.  A comparison over too few rows has not established stability,
+    and a quantity that does not exist has not been measured as zero -- reporting
+    either as "no drift" would make a monitor that never fires look like a system
+    that never moved.
+    """
+
+    #: Measured, with adequate support, below the configured warning threshold.
+    NO_DRIFT = "no_drift"
+    #: Measured at or above the warning threshold and below the alert threshold.
+    DRIFT_WARNING = "drift_warning"
+    #: Measured at or above the alert threshold.
+    DRIFT_DETECTED = "drift_detected"
+    #: Computable, but over too few reference or incoming rows to be evidence.
+    INCONCLUSIVE = "inconclusive"
+    #: Not computable at all: the quantity does not exist on one side.
+    UNAVAILABLE = "unavailable"
+
+
+class PredictionDriftQuantity(StrEnum):
+    """Which published prediction quantity a drift result describes.
+
+    Kept apart from feature drift throughout.  A feature distribution moving and
+    a model's output distribution moving are different findings with different
+    remedies, and a report that summed them would say neither.
+    """
+
+    FLAGGED_MALICIOUS_RATE = "flagged_malicious_rate"
+    DECISION_SCORE = "decision_score"
+    CALIBRATED_PROBABILITY = "calibrated_probability"
+    CATEGORY_PREDICTED_CLASS = "category_predicted_class"
+    CATEGORY_UNKNOWN_RATE = "category_unknown_rate"
+    #: The experimental anomaly track, reported under its own quantity so it can
+    #: never be read as part of the supervised result.
+    ANOMALY_SCORE = "anomaly_score"
+
+
+#: The splits a drift reference profile may be captured from.
+#:
+#: One member.  The reviewed configuration declares ``reference_source: train``
+#: and this is the same statement made where a split is a type rather than a
+#: string.  Test and the novel-anomaly holdout are absent for the reason they
+#: are absent everywhere else; validation is absent because it fitted the
+#: calibrator and chose the operating point, so a monitor baselined on it would
+#: be baselined on rows the frozen champion was tuned against.
+DRIFT_REFERENCE_ELIGIBLE_SPLITS: Final[frozenset[MLSplit]] = frozenset({MLSplit.TRAIN})
+
+
+class AcceptanceStatus(StrEnum):
+    """The standing of one Phase 5 requirement in the final acceptance report.
+
+    ``INCONCLUSIVE`` exists so that a requirement whose evidence the repository
+    cannot produce is not quietly recorded as met.  ``NOT_APPLICABLE`` exists so
+    that a requirement which genuinely does not apply is not recorded as a
+    failure.  Neither is a pass, and nothing in the report derives a pass from
+    the absence of a failure.
+    """
+
+    PASS = "pass"
+    FAIL = "fail"
+    INCONCLUSIVE = "inconclusive"
+    NOT_APPLICABLE = "not_applicable"

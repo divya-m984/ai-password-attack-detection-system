@@ -144,7 +144,7 @@ fusion:
   stacked_max_iter: 50
 
 explain:
-  enabled: false
+  enabled: true
   partition: validation_a
   top_k_features: 5
   permutation_repeats: 1
@@ -152,7 +152,7 @@ explain:
   include_feature_values: false
 
 drift:
-  enabled: false
+  enabled: true
   reference_source: train
   quantile_count: 4
   psi_warn_threshold: 0.10

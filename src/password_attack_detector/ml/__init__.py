@@ -39,12 +39,23 @@ inference under that frozen champion: a label-free inference input, binary and
 category prediction artifacts, an experimental anomaly artifact kept apart from
 them, deterministic Parquet, the ``PredictionManifest`` that identifies a
 publication, prediction validation, and the aggregate quality profile.
+Milestone 9 adds the once-only locked test evaluation, the exact PR-AUC
+convention, validation-only fusion selection over the whole declared candidate
+universe, the rule/model/hybrid comparison, and the experimental novel-anomaly
+holdout evaluation.  Milestone 10 closes the phase with deterministic model
+attribution, the frozen training reference profile, drift detection against it,
+the governance model card, and the final acceptance report.
 
 **Prediction is not evaluation.**  Milestone 8 may score the test split and
 never opens a test label: everything that could be tuned was frozen before it
 ran, so a prediction changes nothing and no outcome-dependent number is
-computable from what it publishes.  Test evaluation, fusion, explainability, and
-drift arrive in later milestones and are deliberately absent here.
+computable from what it publishes.
+
+**Attribution and drift are not evaluation either.**  Milestone 10 reads no
+label at all.  An explanation decomposes what the frozen champion did to a row;
+drift compares two populations.  Neither can say a model is right, neither can
+change one, and no code path leads from either back to a fitted quantity, a
+threshold, a fusion selection, or the locked evaluation record.
 
 ``dataset`` is re-exported deliberately sparingly.  It is the one module in this
 layer permitted to read ground truth, and keeping its label types out of the

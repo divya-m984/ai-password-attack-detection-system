@@ -1290,6 +1290,27 @@ class MLConfig(BaseModel):
         canonical = json.dumps(self.fingerprint_data(), sort_keys=True)
         return hashlib.sha256(canonical.encode()).hexdigest()
 
+    def explain_fingerprint(self) -> str:
+        """Return the digest of the explanation settings alone.
+
+        Bound onto an explanation manifest rather than the whole configuration
+        digest: an attribution run does not depend on the calibration method or
+        the gate values, so binding those would make an explanation's identity
+        move when something it never read changed.
+        """
+        canonical = json.dumps(self.explain.fingerprint_data(), sort_keys=True)
+        return hashlib.sha256(canonical.encode()).hexdigest()
+
+    def drift_fingerprint(self) -> str:
+        """Return the digest of the drift settings alone.
+
+        Bound onto a reference profile for the same reason: the bin count and
+        the thresholds decide what a comparison means, and nothing else in the
+        configuration does.
+        """
+        canonical = json.dumps(self.drift.fingerprint_data(), sort_keys=True)
+        return hashlib.sha256(canonical.encode()).hexdigest()
+
 
 def load_ml_config(path: Path) -> MLConfig:
     """Load and validate an :class:`MLConfig` from a YAML file.

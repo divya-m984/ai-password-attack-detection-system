@@ -14,20 +14,29 @@ Subcommands::
     password-attack-detector ml profile          -- the aggregate shape of that output
     password-attack-detector ml evaluate         -- the once-only locked test evaluation
     password-attack-detector ml compare          -- report a published comparison
+    password-attack-detector ml explain          -- deterministic model attribution
+    password-attack-detector ml drift            -- compare a population to the reference
 
-Twelve commands, and the absences are deliberate.  Explainability and drift
-arrive in later milestones, and no placeholder is registered for them: a command
-that exists but does nothing is worse than one that is honestly absent, because
-``--help`` would advertise a capability the code does not have.
+Fourteen commands, and the absences are still deliberate.  There is no serving
+command, no dashboard command, no retrain command, and no promote command: this
+layer is offline, and a command that exists but does nothing is worse than one
+that is honestly absent, because ``--help`` would advertise a capability the
+code does not have.
 
 **Exactly one command here reads a label.**  ``ml predict`` takes no ``--labels``
 option, ``ml validate`` computes no accuracy, ``ml profile`` reports the
-*distribution* of what a model said rather than whether it was right, and
-``ml compare`` reproduces figures another command already measured.  Only
-``ml evaluate`` opens the TEST ground truth, and it is allowed to because
-everything it could otherwise have tuned -- the model, the preprocessor, the
-calibrator, the operating point, the category head, the rule configuration, and
-the hybrid strategy -- was frozen before it ran.
+*distribution* of what a model said rather than whether it was right,
+``ml compare`` reproduces figures another command already measured,
+``ml explain`` decomposes a model's own output, and ``ml drift`` compares two
+populations.  Only ``ml evaluate`` opens the TEST ground truth, and it is
+allowed to because everything it could otherwise have tuned -- the model, the
+preprocessor, the calibrator, the operating point, the category head, the rule
+configuration, and the hybrid strategy -- was frozen before it ran.
+
+**Two commands write nothing a model can read back.**  ``ml explain`` and
+``ml drift`` are terminal: their artifacts are descriptions, no later command
+consumes one as input to a fit, and neither can change a champion, a threshold,
+a fusion selection, or an evaluation record.
 
 **No command prints an identifier.**  Not an event identifier, a campaign
 identifier, an entity pseudonym, a coordinate, a raw feature row, a secret, or
@@ -2853,5 +2862,729 @@ def _fusion_table(preparation: Any) -> Table:
                 else f": {selection.selected_strategy}"
             )
             + f" | out-of-fold folds: {preparation.out_of_fold.fold_count}"
+        )
+    return table
+
+
+# ---------------------------------------------------------------------------
+# explain
+# ---------------------------------------------------------------------------
+
+
+def _explanation_directory(root: Path, explanation_id: str) -> Path:
+    """Return the directory one explanation run publishes under."""
+    return root / "explanations" / explanation_id
+
+
+def _require_publication_matches(publication: Any, dataset: Any, split: Any) -> None:
+    """Refuse a publication that does not describe the rows just loaded.
+
+    The manifest's input digest covers the resolved feature contract, the scope,
+    and every cell that was scored. Comparing it against a freshly loaded frame
+    is what stops an explanation of one population being filed against another
+    population's predictions.
+    """
+    if publication.scope is not split:
+        _fail(
+            f"The publication scores {publication.scope!s} rows and "
+            f"{split!s} was requested; an attribution is only meaningful "
+            f"against the population it was computed over"
+        )
+    if publication.inference_input_fingerprint != dataset.inference_input_fingerprint:
+        _fail(
+            "The feature rows supplied are not the rows this publication was "
+            "produced from; explaining a different population would attribute "
+            "one set of decisions to another set of values"
+        )
+
+
+def _read_publication(directory: Path) -> Any:
+    """Validate a published prediction directory and return its parts.
+
+    Validation first, and nothing is read on trust: a publication whose
+    manifest, checksums, lineage, or rows do not verify is ``ml validate``'s
+    subject, not an input to a description of it.
+    """
+    from password_attack_detector.ml.prediction_manifest import (
+        ANOMALY_PREDICTION_FILE,
+        BINARY_PREDICTION_FILE,
+        CATEGORY_PREDICTION_FILE,
+        PREDICTION_MANIFEST_FILE,
+        PredictionManifest,
+    )
+    from password_attack_detector.ml.prediction_serialization import (
+        read_anomaly_scores,
+        read_binary_predictions,
+        read_category_predictions,
+    )
+    from password_attack_detector.ml.prediction_validation import validate_publication
+
+    outcome = _guard(
+        "Cannot validate the prediction publication",
+        lambda: validate_publication(directory),
+    )
+    if not outcome.passed:
+        _err.print(
+            f"[red]Refusing to read an invalid publication:[/red] "
+            f"{', '.join(outcome.failures)}"
+        )
+        raise typer.Exit(code=1)
+
+    def _load() -> Any:
+        manifest = PredictionManifest.from_json(
+            (directory / PREDICTION_MANIFEST_FILE).read_text(encoding="utf-8")
+        )
+        declared = {item.logical_name for item in manifest.files}
+        binary = read_binary_predictions(directory / BINARY_PREDICTION_FILE)
+        category = (
+            read_category_predictions(directory / CATEGORY_PREDICTION_FILE)
+            if CATEGORY_PREDICTION_FILE in declared
+            else None
+        )
+        anomaly = (
+            read_anomaly_scores(directory / ANOMALY_PREDICTION_FILE)
+            if ANOMALY_PREDICTION_FILE in declared
+            else None
+        )
+        return (manifest, binary, category, anomaly)
+
+    return _guard("Cannot read the prediction publication", _load)
+
+
+@ml_app.command()
+def explain(
+    features_path: Annotated[
+        Path, typer.Option("--features", help="Phase 3 feature snapshots Parquet file.")
+    ],
+    splits_path: Annotated[
+        Path, typer.Option("--splits", help="Phase 3 feature splits Parquet file.")
+    ],
+    feature_manifest: Annotated[
+        Path,
+        typer.Option(
+            "--feature-manifest",
+            help="Phase 3 feature manifest, for the fingerprint provenance check.",
+        ),
+    ],
+    allowlist_path: Annotated[
+        Path,
+        typer.Option("--allowlist", help="Reviewed ML feature allowlist YAML file."),
+    ],
+    split: Annotated[
+        str,
+        typer.Option(
+            "--split",
+            help=(
+                "Which split to attribute over. Training and validation rows "
+                "only: the locked evaluation population is never explained."
+            ),
+        ),
+    ] = "validation",
+    config_path: Annotated[
+        Path | None, typer.Option("--config", help="ML configuration YAML file.")
+    ] = None,
+    feature_config_path: Annotated[
+        Path | None,
+        typer.Option("--feature-config", help="Phase 3 feature configuration YAML."),
+    ] = None,
+    output_root: Annotated[
+        Path | None,
+        typer.Option("--output-root", "-o", help="Root holding the ML artifacts."),
+    ] = None,
+    prediction_id: Annotated[
+        str | None,
+        typer.Option("--prediction", help="Which published prediction to explain."),
+    ] = None,
+    scope_key: Annotated[
+        str | None,
+        typer.Option("--scope-key", help="Which frozen champion scope to load."),
+    ] = None,
+    output_format: Annotated[
+        str, typer.Option("--format", "-f", help="Output format: text or markdown.")
+    ] = "text",
+) -> None:
+    """Attribute a frozen champion's own decisions over an explainable split.
+
+    **Nothing is fitted and no label is read.** There is no ``--labels`` option,
+    the inference loader takes no label table, and the attribution is computed
+    from the frozen model's published arrays and the matrix its own frozen
+    preprocessor produced. Nothing written here can change the champion, the
+    thresholds, the fusion selection, or the locked evaluation.
+
+    **Test and the novel-anomaly holdout are refused**, by the command and again
+    by the library: a per-row artifact derived from the locked evaluation
+    population has no place beside the one evaluation permitted to read it.
+
+    **Exact or unavailable.** Logistic regression, the random forest, and the
+    single-feature threshold baseline each decompose exactly, and the sum is
+    checked against the model's own score before anything is published. A family
+    without an exact decomposition reports a typed unavailable and a reason; no
+    approximation is emitted in its place.
+
+    **Descriptive, not causal.** A contribution says how the fitted function
+    decomposes over the columns it was handed. It is not evidence that the
+    behaviour behind a column caused anything, and it is not evidence the model
+    is right.
+
+    Output is aggregate: column names, magnitudes, and identity. No anchor, no
+    feature vector, no coefficient, no pseudonym, and no absolute path.
+    """
+    import json
+
+    from password_attack_detector.ml.enums import MLSplit
+    from password_attack_detector.ml.explain import (
+        build_explanation_manifest,
+        explain_predictions,
+        explanation_report_to_markdown,
+    )
+    from password_attack_detector.ml.ledger import ExperimentLedger
+    from password_attack_detector.ml.predictions import (
+        FrozenChampion,
+        verify_inference_feature_contract,
+    )
+
+    if output_format not in {"text", "markdown"}:
+        _fail(f"Unknown format {output_format!r}; use 'text' or 'markdown'")
+
+    config, catalog, allowlist, eligible, manifest, dataset = _inference_inputs(
+        features_path=features_path,
+        splits_path=splits_path,
+        feature_manifest=feature_manifest,
+        allowlist_path=allowlist_path,
+        config_path=config_path,
+        feature_config_path=feature_config_path,
+        scope=split,
+    )
+    requested = MLSplit(split)
+    if not config.explain.enabled:
+        _fail(
+            "Explanation is disabled in this configuration. A capability the "
+            "reviewed configuration turns off is not run behind its own flag"
+        )
+
+    root = output_root or (_artifacts_root() / "ml")
+    ledger = ExperimentLedger(root / "ledger")
+    champion = _guard(
+        "Cannot load the frozen champion",
+        lambda: FrozenChampion.load(
+            root, ledger=ledger, scope_key=scope_key, config=config
+        ),
+    )
+    _guard(
+        "Feature contract",
+        lambda: verify_inference_feature_contract(
+            champion.lock,
+            feature_manifest=manifest,
+            catalog_fingerprint=catalog.fingerprint(),
+            allowlist_fingerprint=allowlist.fingerprint(),
+            eligible_feature_list_fingerprint=eligible.fingerprint(),
+            required_feature_schema_version=config.required_feature_schema_version,
+            compatible_catalog_fingerprints=(
+                allowlist.compatible_feature_catalog_fingerprints
+            ),
+        ),
+    )
+
+    directory = _publication_directory(root, prediction_id)
+    publication, _binary, _category, _anomaly = _read_publication(directory)
+    _require_publication_matches(publication, dataset, requested)
+
+    matrix = _guard(
+        "Cannot transform the rows under the frozen preprocessor",
+        lambda: champion.binary.preprocessor.transform(dataset.frame),
+    )
+    report, explanations = _guard(
+        "Cannot attribute the frozen champion's decisions",
+        lambda: explain_predictions(
+            model=champion.binary,
+            matrix=matrix.rows,
+            anchor_event_ids=tuple(
+                anchor.anchor_event_id for anchor in dataset.frame.anchors
+            ),
+            scope=requested,
+            score_kind=champion.score_kind,
+            top_k_features=config.explain.top_k_features,
+            permutation_repeats=config.explain.permutation_repeats,
+            permutation_seed=config.seed,
+            max_local_explanations=config.explain.max_local_explanations,
+            include_feature_values=config.explain.include_feature_values,
+        ),
+    )
+    explanation_manifest = _guard(
+        "Cannot identify the explanation",
+        lambda: build_explanation_manifest(
+            lock=champion.lock,
+            prediction_manifest=publication,
+            report=report,
+            explanations=explanations,
+            explain_config_fingerprint=config.explain_fingerprint(),
+            include_feature_values=config.explain.include_feature_values,
+        ),
+    )
+
+    target = _explanation_directory(root, explanation_manifest.explanation_id)
+    target.mkdir(parents=True, exist_ok=True)
+    rendered = explanation_report_to_markdown(report, explanation_manifest)
+    (target / "explanation_manifest.json").write_text(
+        explanation_manifest.to_json() + "\n", encoding="utf-8"
+    )
+    (target / "explanation_report.json").write_text(
+        report.to_json() + "\n", encoding="utf-8"
+    )
+    (target / "explanation_report.md").write_text(rendered, encoding="utf-8")
+    if explanations:
+        (target / "local_explanations.json").write_text(
+            json.dumps(
+                [item.model_dump(mode="json") for item in explanations],
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+    if output_format == "markdown":
+        _console.print(rendered)
+    else:
+        _console.print(_explanation_table(report, explanation_manifest))
+        _console.print(_contribution_table(report))
+    _console.print(f"Wrote {_display(target)}")
+    _console.print(
+        "[dim]Descriptive model attribution only. No label was read, nothing "
+        "was fitted, and no frozen artifact was modified.[/dim]"
+    )
+
+
+def _explanation_table(report: Any, manifest: Any) -> Table:
+    """Return the identity and method summary for one explanation run."""
+    table = Table(title="Explanation", show_header=False, box=None)
+    table.add_row("Explanation", manifest.explanation_id[:12])
+    table.add_row("Prediction", manifest.prediction_id[:12])
+    table.add_row("Model", manifest.catalog_model_id)
+    table.add_row("Family", str(report.model_family))
+    table.add_row("Scope", str(report.scope))
+    table.add_row("Status", str(report.status))
+    table.add_row("Local method", str(report.method or "unavailable"))
+    table.add_row("Reason", report.unavailable_reason or "not applicable")
+    table.add_row("Global method", str(report.global_method))
+    table.add_row("Score kind", str(report.score_kind))
+    table.add_row("Rows explained", f"{report.explained_row_count:,}")
+    table.add_row("Transformed columns", f"{report.transformed_feature_count:,}")
+    table.add_row("Row explanations", f"{manifest.local_explanation_count:,}")
+    table.add_row("Max residual", _unavailable(report.max_reconstruction_residual))
+    return table
+
+
+def _contribution_table(report: Any) -> Table:
+    """Return the aggregate per-column attribution summary."""
+    table = Table(title="Columns by sensitivity")
+    table.add_column("Transformed feature")
+    table.add_column("Mean |score change|", justify="right")
+    table.add_column("Mean |contribution|", justify="right")
+    for item in report.top_contributions:
+        table.add_row(
+            item.transformed_feature,
+            f"{item.mean_absolute_score_change:.6f}",
+            _unavailable(item.mean_absolute_contribution),
+        )
+    return table
+
+
+# ---------------------------------------------------------------------------
+# drift
+# ---------------------------------------------------------------------------
+
+
+def _reference_profile_path(root: Path) -> Path:
+    """Return the one location a captured reference profile lives at."""
+    return root / "reference" / "reference_profile.json"
+
+
+def _establish_reference_profile(path: Path, built: Any) -> Any:
+    """Return the frozen profile, creating it once and never rewriting it.
+
+    A reference profile is immutable: recapturing the same population is
+    idempotent, and recapturing a different one at the same identity is refused
+    rather than silently rebaselining the monitor onto whatever it was last
+    shown.
+    """
+    from password_attack_detector.ml.reference import MLReferenceProfile
+
+    if path.is_file():
+        stored = _guard(
+            "Cannot read the stored reference profile",
+            lambda: MLReferenceProfile.from_json(path.read_text(encoding="utf-8")),
+        )
+        if stored.reference_profile_fingerprint != built.reference_profile_fingerprint:
+            _fail(
+                "A reference profile is already frozen under this root and the "
+                "inputs supplied would capture a different one. A baseline is "
+                "immutable once created; rebaselining a monitor onto its own "
+                "newest input is how drift stops being detectable"
+            )
+        return stored
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(built.to_json() + "\n", encoding="utf-8")
+    return built
+
+
+@ml_app.command()
+def drift(
+    features_path: Annotated[
+        Path,
+        typer.Option(
+            "--features",
+            help="Feature snapshots holding the reference (training) population.",
+        ),
+    ],
+    splits_path: Annotated[
+        Path, typer.Option("--splits", help="Split assignments for those features.")
+    ],
+    feature_manifest: Annotated[
+        Path,
+        typer.Option("--feature-manifest", help="Phase 3 feature manifest."),
+    ],
+    allowlist_path: Annotated[
+        Path,
+        typer.Option("--allowlist", help="Reviewed ML feature allowlist YAML file."),
+    ],
+    incoming_features: Annotated[
+        Path | None,
+        typer.Option(
+            "--incoming-features",
+            help=(
+                "Feature snapshots holding the population being monitored. "
+                "Defaults to --features."
+            ),
+        ),
+    ] = None,
+    incoming_splits: Annotated[
+        Path | None,
+        typer.Option(
+            "--incoming-splits",
+            help="Split assignments for the monitored features. Defaults to --splits.",
+        ),
+    ] = None,
+    incoming_split: Annotated[
+        str,
+        typer.Option("--incoming-split", help="Which split to monitor."),
+    ] = "validation",
+    reference_prediction: Annotated[
+        str | None,
+        typer.Option(
+            "--reference-prediction",
+            help=(
+                "A published prediction over the reference split, for the "
+                "prediction-distribution baseline. Omit for feature drift only."
+            ),
+        ),
+    ] = None,
+    incoming_prediction: Annotated[
+        str | None,
+        typer.Option(
+            "--incoming-prediction",
+            help="The published prediction over the monitored split.",
+        ),
+    ] = None,
+    config_path: Annotated[
+        Path | None, typer.Option("--config", help="ML configuration YAML file.")
+    ] = None,
+    feature_config_path: Annotated[
+        Path | None,
+        typer.Option("--feature-config", help="Phase 3 feature configuration YAML."),
+    ] = None,
+    output_root: Annotated[
+        Path | None,
+        typer.Option("--output-root", "-o", help="Root holding the ML artifacts."),
+    ] = None,
+    scope_key: Annotated[
+        str | None,
+        typer.Option("--scope-key", help="Which frozen champion scope to load."),
+    ] = None,
+    reports_dir: Annotated[
+        Path | None,
+        typer.Option("--reports-dir", help="Directory for the drift reports."),
+    ] = None,
+    output_format: Annotated[
+        str, typer.Option("--format", "-f", help="Output format: text or markdown.")
+    ] = "text",
+) -> None:
+    """Compare a later population against the frozen training reference profile.
+
+    **No label is read and no accuracy is computed.** There is no ``--labels``
+    option and no metric here needs one: drift says a population moved, never
+    that a model became wrong. Those are different findings with different
+    remedies, and this command deliberately cannot express the second.
+
+    **The reference is the training population**, captured once and frozen. Bin
+    edges, categories, classes, and expected shares come from it and only from
+    it; incoming rows are assigned to those cells and never define one. A value
+    beyond anything training saw lands in an open-ended outer cell rather than
+    being discarded, an unseen category lands in the unknown cell, and a null
+    lands in the null cell.
+
+    **Nothing retrains.** There is no code path from a finding here to a model,
+    a threshold, a fusion strategy, a champion lock, or an evaluation record.
+    A warning is a reason for a human to look; it is never an action.
+
+    Insufficient support reports ``inconclusive`` and an absent quantity reports
+    ``unavailable``. Neither is ``no_drift``: a monitor that reports stability
+    when it measured nothing is worse than no monitor at all.
+
+    Exits non-zero when either aggregate status is a warning or an alert, so the
+    finding is visible to whatever ran the command.
+    """
+    import json
+
+    from password_attack_detector.ml.drift import (
+        DRIFT_SCHEMA_VERSION,
+        build_drift_manifest,
+        build_drift_report,
+        compare_feature_population,
+        compare_prediction_population,
+        drift_report_to_markdown,
+    )
+    from password_attack_detector.ml.enums import DriftStatus, MLSplit
+    from password_attack_detector.ml.ledger import ExperimentLedger
+    from password_attack_detector.ml.predictions import (
+        FrozenChampion,
+        verify_inference_feature_contract,
+    )
+    from password_attack_detector.ml.reference import (
+        build_reference_profile,
+        reference_profile_to_markdown,
+    )
+
+    if output_format not in {"text", "markdown"}:
+        _fail(f"Unknown format {output_format!r}; use 'text' or 'markdown'")
+
+    config, catalog, allowlist, eligible, manifest, reference_dataset = (
+        _inference_inputs(
+            features_path=features_path,
+            splits_path=splits_path,
+            feature_manifest=feature_manifest,
+            allowlist_path=allowlist_path,
+            config_path=config_path,
+            feature_config_path=feature_config_path,
+            scope=str(MLSplit.TRAIN),
+        )
+    )
+    if not config.drift.enabled:
+        _fail(
+            "Drift monitoring is disabled in this configuration. A capability "
+            "the reviewed configuration turns off is not run behind its own flag"
+        )
+    _, _, _, _, _, incoming_dataset = _inference_inputs(
+        features_path=incoming_features or features_path,
+        splits_path=incoming_splits or splits_path,
+        feature_manifest=feature_manifest,
+        allowlist_path=allowlist_path,
+        config_path=config_path,
+        feature_config_path=feature_config_path,
+        scope=incoming_split,
+    )
+
+    root = output_root or (_artifacts_root() / "ml")
+    ledger = ExperimentLedger(root / "ledger")
+    champion = _guard(
+        "Cannot load the frozen champion",
+        lambda: FrozenChampion.load(
+            root, ledger=ledger, scope_key=scope_key, config=config
+        ),
+    )
+    _guard(
+        "Feature contract",
+        lambda: verify_inference_feature_contract(
+            champion.lock,
+            feature_manifest=manifest,
+            catalog_fingerprint=catalog.fingerprint(),
+            allowlist_fingerprint=allowlist.fingerprint(),
+            eligible_feature_list_fingerprint=eligible.fingerprint(),
+            required_feature_schema_version=config.required_feature_schema_version,
+            compatible_catalog_fingerprints=(
+                allowlist.compatible_feature_catalog_fingerprints
+            ),
+        ),
+    )
+
+    if (reference_prediction is None) != (incoming_prediction is None):
+        _fail(
+            "Prediction drift needs both a reference publication and an "
+            "incoming one. Comparing an output distribution against no "
+            "baseline, or a baseline against nothing, measures neither"
+        )
+
+    reference_parts = (
+        None
+        if reference_prediction is None
+        else _read_publication(_publication_directory(root, reference_prediction))
+    )
+    incoming_parts = (
+        None
+        if incoming_prediction is None
+        else _read_publication(_publication_directory(root, incoming_prediction))
+    )
+
+    built = _guard(
+        "Cannot capture the reference profile",
+        lambda: build_reference_profile(
+            lock=champion.lock,
+            preprocessor=champion.binary.preprocessor,
+            reference=reference_dataset,
+            reference_split=MLSplit.TRAIN,
+            required_feature_schema_version=config.required_feature_schema_version,
+            drift_config=config.drift,
+            drift_config_fingerprint=config.drift_fingerprint(),
+            prediction_manifest=None if reference_parts is None else reference_parts[0],
+            binary=() if reference_parts is None else reference_parts[1],
+            category=None if reference_parts is None else reference_parts[2],
+            anomaly=None if reference_parts is None else reference_parts[3],
+        ),
+    )
+    profile = _establish_reference_profile(_reference_profile_path(root), built)
+
+    features = _guard(
+        "Cannot compare the incoming feature population",
+        lambda: compare_feature_population(
+            profile=profile,
+            frame=incoming_dataset.frame,
+            warn_threshold=config.drift.psi_warn_threshold,
+            alert_threshold=config.drift.psi_alert_threshold,
+            min_support=config.drift.min_reference_rows,
+        ),
+    )
+    predictions = (
+        ()
+        if incoming_parts is None
+        else _guard(
+            "Cannot compare the incoming prediction population",
+            lambda: compare_prediction_population(
+                profile=profile,
+                manifest=incoming_parts[0],
+                binary=incoming_parts[1],
+                category=incoming_parts[2],
+                anomaly=incoming_parts[3],
+                warn_threshold=config.drift.psi_warn_threshold,
+                alert_threshold=config.drift.psi_alert_threshold,
+                min_support=config.drift.min_reference_rows,
+            ),
+        )
+    )
+    report = _guard(
+        "Cannot assemble the drift report",
+        lambda: build_drift_report(
+            profile=profile,
+            incoming=incoming_dataset,
+            features=features,
+            predictions=predictions,
+            incoming_manifest=None if incoming_parts is None else incoming_parts[0],
+            warn_threshold=config.drift.psi_warn_threshold,
+            alert_threshold=config.drift.psi_alert_threshold,
+            min_support=config.drift.min_reference_rows,
+        ),
+    )
+    drift_manifest = build_drift_manifest(profile=profile, report=report)
+
+    target = reports_dir or Path("reports")
+    target.mkdir(parents=True, exist_ok=True)
+    rendered = drift_report_to_markdown(report, drift_manifest)
+    (target / "ml_drift_report.json").write_text(
+        json.dumps(
+            {
+                "drift_manifest": drift_manifest.to_dict(),
+                "drift_report": report.to_dict(),
+                "drift_schema_version": DRIFT_SCHEMA_VERSION,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (target / "ml_drift_report.md").write_text(rendered, encoding="utf-8")
+    (target / "ml_reference_profile.md").write_text(
+        reference_profile_to_markdown(profile), encoding="utf-8"
+    )
+
+    if output_format == "markdown":
+        _console.print(rendered)
+    else:
+        _console.print(_drift_table(report, drift_manifest))
+        _console.print(_drift_feature_table(report))
+        if report.predictions:
+            _console.print(_drift_prediction_table(report))
+    _console.print(f"Wrote {_display(target / 'ml_drift_report.json')}")
+    _console.print(f"Wrote {_display(target / 'ml_drift_report.md')}")
+    _console.print(
+        "[dim]Monitoring evidence only. No label was read, no accuracy was "
+        "computed, nothing was retrained, and no frozen artifact was "
+        "modified.[/dim]"
+    )
+
+    moved = {DriftStatus.DRIFT_WARNING, DriftStatus.DRIFT_DETECTED}
+    if report.feature_status in moved or report.prediction_status in moved:
+        _err.print(
+            f"[yellow]Drift reported:[/yellow] features "
+            f"{report.feature_status}, predictions {report.prediction_status}. "
+            f"This is a finding to investigate, not an instruction to retrain."
+        )
+        raise typer.Exit(code=1)
+
+
+def _drift_table(report: Any, manifest: Any) -> Table:
+    """Return the identity and aggregate status of one drift run."""
+    table = Table(title="Drift", show_header=False, box=None)
+    table.add_row("Drift run", manifest.drift_run_id[:12])
+    table.add_row("Reference profile", report.reference_profile_id[:12])
+    table.add_row("Incoming scope", str(report.incoming_scope))
+    table.add_row("Incoming rows", f"{report.incoming_row_count:,}")
+    table.add_row("Feature drift", str(report.feature_status))
+    table.add_row("Prediction drift", str(report.prediction_status))
+    table.add_row("Features compared", f"{len(report.features):,}")
+    table.add_row("Features moved", f"{report.drifted_feature_count:,}")
+    table.add_row(
+        "Thresholds",
+        f"warn {report.warn_threshold:.3f} / alert {report.alert_threshold:.3f}",
+    )
+    table.add_row("Minimum support", f"{report.min_support:,}")
+    return table
+
+
+def _drift_feature_table(report: Any) -> Table:
+    """Return the per-feature drift results."""
+    table = Table(title="Feature drift")
+    table.add_column("Feature")
+    table.add_column("Kind")
+    table.add_column("PSI", justify="right")
+    table.add_column("Null Δ", justify="right")
+    table.add_column("Status")
+    table.add_column("Reason")
+    for item in report.features:
+        table.add_row(
+            item.feature,
+            str(item.kind),
+            _unavailable(item.observed_value),
+            _unavailable(item.null_rate_delta),
+            str(item.status),
+            item.reason_code,
+        )
+    return table
+
+
+def _drift_prediction_table(report: Any) -> Table:
+    """Return the per-quantity prediction drift results, kept apart from features."""
+    table = Table(title="Prediction drift")
+    table.add_column("Quantity")
+    table.add_column("PSI", justify="right")
+    table.add_column("Rate Δ", justify="right")
+    table.add_column("Status")
+    table.add_column("Reason")
+    for item in report.predictions:
+        table.add_row(
+            str(item.quantity),
+            _unavailable(item.observed_value),
+            _unavailable(item.rate_delta),
+            str(item.status),
+            item.reason_code,
         )
     return table

@@ -172,14 +172,19 @@ def build_workspace(
     *,
     config: dict[str, object] | None = None,
     with_holdout: bool = False,
+    stream: Sequence[AuthEvent] | None = None,
 ) -> Path:
     """Publish a feature dataset and a drafted allowlist under *root*.
 
     *config* overrides the feature configuration. The comparison suites need a
     catalog wide enough for the Phase 4 rules as well as for the model, and
     widening the default would silently retrain every other suite.
+
+    *stream* overrides the event stream itself, for the reproducibility audit's
+    positive control: proving a lineage is live needs a genuinely different
+    training population, not a differently configured view of the same one.
     """
-    stream = events()
+    stream = list(stream) if stream is not None else events()
     write_events_parquet(stream, root / "events.parquet")
     ground_truth = labels_with_holdout(stream) if with_holdout else labels(stream)
     write_labels_parquet(ground_truth, root / "labels.parquet")
@@ -299,6 +304,7 @@ def predict(
 
 def write_rule_config(path: Path) -> Path:
     """Write the Phase 4 configuration these suites run under."""
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(yaml.safe_dump(rule_config()), encoding="utf-8")
     return path
 
@@ -403,3 +409,81 @@ def rule_config() -> dict[str, object]:
             for rule_id, parameters in windows.items()
         }
     }
+
+
+def explain(
+    workspace: Path,
+    output_root: Path,
+    *,
+    prediction_id: str,
+    split: str = "validation",
+    **replace: str,
+) -> Result:
+    """Run ``ml explain`` over a frozen champion and a published prediction.
+
+    Notice what is absent from the argument map, again: there is no
+    ``--labels``. Attribution decomposes what a model said, and the fixture
+    cannot hand it an answer even by mistake.
+    """
+    arguments = {
+        "--features": str(workspace / "processed" / "feature_snapshots.parquet"),
+        "--splits": str(workspace / "processed" / "feature_splits.parquet"),
+        "--feature-manifest": str(workspace / "processed" / "feature_manifest.json"),
+        "--allowlist": str(workspace / "allowlist.yaml"),
+        "--feature-config": str(workspace / "features.yaml"),
+        "--config": ML_CONFIG,
+        "--output-root": str(output_root),
+        "--split": split,
+        "--prediction": prediction_id,
+    }
+    arguments.update(replace)
+    flat: list[str] = []
+    for option, value in arguments.items():
+        flat += [option, value]
+    return invoke("ml", "explain", *flat)
+
+
+def drift(
+    workspace: Path,
+    output_root: Path,
+    reports: Path,
+    *,
+    incoming_split: str = "validation",
+    reference_prediction: str | None = None,
+    incoming_prediction: str | None = None,
+    **replace: str,
+) -> Result:
+    """Run ``ml drift`` against the frozen training reference profile.
+
+    The prediction options come as a pair or not at all, matching the command:
+    comparing an output distribution against no baseline measures nothing.
+    """
+    arguments = {
+        "--features": str(workspace / "processed" / "feature_snapshots.parquet"),
+        "--splits": str(workspace / "processed" / "feature_splits.parquet"),
+        "--feature-manifest": str(workspace / "processed" / "feature_manifest.json"),
+        "--allowlist": str(workspace / "allowlist.yaml"),
+        "--feature-config": str(workspace / "features.yaml"),
+        "--config": ML_CONFIG,
+        "--output-root": str(output_root),
+        "--incoming-split": incoming_split,
+        "--reports-dir": str(reports),
+    }
+    if reference_prediction is not None:
+        arguments["--reference-prediction"] = reference_prediction
+    if incoming_prediction is not None:
+        arguments["--incoming-prediction"] = incoming_prediction
+    arguments.update(replace)
+    flat: list[str] = []
+    for option, value in arguments.items():
+        flat += [option, value]
+    return invoke("ml", "drift", *flat)
+
+
+def explanation_directory(output_root: Path) -> Path:
+    """Return the single published explanation directory under *output_root*."""
+    published = sorted(
+        item for item in (output_root / "explanations").iterdir() if item.is_dir()
+    )
+    assert len(published) == 1, [item.name for item in published]
+    return published[0]

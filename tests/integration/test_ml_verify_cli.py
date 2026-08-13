@@ -239,18 +239,20 @@ def test_the_command_appears_in_help() -> None:
     assert "audit-features" in result.output
 
 
-def test_no_evaluation_command_is_registered() -> None:
-    """Milestone 8 predicts under the frozen champion; it evaluates nothing.
+def test_the_offline_command_surface_is_complete() -> None:
+    """Everything the layer does is registered; nothing it must not do is.
 
-    ``predict`` publishes what the model said without opening a label, and
-    ``evaluate`` scores it once against a lineage frozen beforehand. What stays
-    absent is explanation and drift, which no milestone has built.
+    ``predict`` publishes what the model said without opening a label,
+    ``evaluate`` scores it once against a lineage frozen beforehand, and
+    ``explain`` and ``drift`` describe a model and a population without reading
+    a label at all. What stays absent is anything that would make this layer
+    online or self-modifying.
     """
     result = invoke("ml", "--help")
     commands = result.output.split("Commands")[-1]
-    for absent in ("explain", "drift"):
+    for absent in ("serve", "deploy", "retrain", "promote"):
         assert absent not in commands, absent
-    for present in ("predict", "evaluate", "compare"):
+    for present in ("predict", "evaluate", "compare", "explain", "drift"):
         assert present in commands, present
 
 
