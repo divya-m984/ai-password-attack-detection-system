@@ -8,6 +8,7 @@ Available commands:
     password-attack-detector data ...
     password-attack-detector features ...
     password-attack-detector detection ...
+    password-attack-detector ml ...
 """
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ from password_attack_detector import __version__
 from password_attack_detector.data.cli import data_app
 from password_attack_detector.detection.cli import detection_app
 from password_attack_detector.features.cli import features_app
+from password_attack_detector.ml.cli import ml_app
 
 app = typer.Typer(
     name="password-attack-detector",
@@ -35,6 +37,7 @@ app = typer.Typer(
 app.add_typer(data_app, name="data")
 app.add_typer(features_app, name="features")
 app.add_typer(detection_app, name="detection")
+app.add_typer(ml_app, name="ml")
 
 console = Console()
 err_console = Console(stderr=True)

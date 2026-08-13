@@ -15,6 +15,7 @@ import json
 import re
 from dataclasses import dataclass, replace
 from datetime import timedelta
+from pathlib import Path
 from types import ModuleType
 from typing import Any
 
@@ -538,8 +539,257 @@ def _imported_modules(module: ModuleType) -> set[str]:
     return names
 
 
+#: **The complete set of modules permitted to read ground truth, split
+#: assignments, or campaign metadata.**  Two, and extending it is a reviewed
+#: edit to this constant, never a side effect of adding a module.
+#:
+#: * ``detection.evaluation`` scores the rule engine against known labels.  The
+#:   engine, the scorer, and the alert builder take no label argument and import
+#:   nothing from it, so rule detection cannot see an answer it is meant to
+#:   derive.
+#: * ``ml.dataset`` is the machine-learning layer's single reader.  Phase 5
+#:   genuinely needs labels -- it fits supervised models -- and the question is
+#:   only *where*.  Concentrating it in the module that performs the join keeps
+#:   the boundary auditable: one module that reads labels and returns a
+#:   structure with them in named fields can be reviewed in an afternoon, while
+#:   a layer where the preprocessor reads "just the split column" and the
+#:   partitioner reads "just the campaign id" cannot.  Every other ML module --
+#:   ``features``, ``ordering``, ``eligibility``, ``partition``, and the
+#:   ``preprocessing``, ``models``, ``inference``, ``fusion``, ``stacking``,
+#:   ``test_evaluation``, ``explain``, ``reference``, and ``drift`` modules --
+#:   receives what it needs as typed arguments and is covered by the package
+#:   sweep below.  Milestone 9 deliberately did **not** widen this set:
+#:   ``ml.test_evaluation`` takes typed outcome values rather than opening a
+#:   table, and Milestone 10 reads no label at all.
+LABEL_READER_ALLOWLIST = frozenset(
+    {
+        "password_attack_detector.detection.evaluation",
+        "password_attack_detector.ml.dataset",
+    }
+)
+
+#: Phase 2 and Phase 3 modules where ground truth, split assignments, and the
+#: canonical event stream actually live.  Importing one of these *is* reading
+#: ground truth.
+LABEL_SOURCE_MODULES = frozenset(
+    {
+        "password_attack_detector.data.serialization",
+        "password_attack_detector.features.splitting",
+        "password_attack_detector.features.serialization",
+    }
+)
+
+#: Symbols that carry ground truth, a split assignment, or campaign identity --
+#: or that read one from disk -- wherever they are imported from.
+#:
+#: Note what is deliberately **absent**: ``SplitDataset``, ``AnchorMetadata``,
+#: and ``MLDataset``.  Those are the *output* of the one permitted reader, and
+#: consuming them is the whole point of concentrating the read in one place.
+#: A partitioner that takes a ``SplitDataset`` argument is not reading a label;
+#: one that imports ``LabelRow`` and joins its own is.  Conflating the two would
+#: make the boundary unsatisfiable and, worse, would push downstream modules
+#: toward re-reading Parquet themselves to avoid the dependency.
+LABEL_BEARING_SYMBOLS = frozenset(
+    {
+        "GroundTruthLabel",
+        "SplitLabel",
+        "SplitAssignment",
+        "SplitResult",
+        "LabelRecord",
+        "SplitRecord",
+        "CampaignRecord",
+        "LabelRow",
+        "SplitRow",
+        "CampaignRow",
+        "read_ground_truth_labels",
+        "labels_for_events",
+        "label_fingerprint",
+        "split_dataset",
+        "assemble_ml_dataset",
+        "load_ml_dataset",
+        "evaluate_detection_run",
+    }
+)
+
+#: Modules exempt from the sweep for a reason other than reading labels.
+#:
+#: Exactly three, and each is verified to be load-bearing: removing any one of
+#: them makes the sweep fail, so this is not a blanket weakening.
+#:
+#: A CLI is a composition root -- it wires an allowlisted reader to a command,
+#: and forbidding it would only push the wiring somewhere less visible.  No
+#: command joins a label itself.  ``detection/__init__`` re-exports the
+#: evaluation entry point, which is the same situation.
+_COMPOSITION_ROOTS = frozenset(
+    {
+        "password_attack_detector.detection",
+        "password_attack_detector.detection.cli",
+        "password_attack_detector.ml.cli",
+    }
+)
+
+#: The layers swept.  ``data`` and ``features`` are excluded because they
+#: *produce* labels and splits and necessarily handle them; the boundary this
+#: test defends is on the consuming side.
+_SWEPT_PREFIXES = ("password_attack_detector.detection", "password_attack_detector.ml")
+
+
+def _source_modules() -> dict[str, Path]:
+    """Return every module under ``src/password_attack_detector`` by dotted name.
+
+    Discovered by walking the package rather than listed, so a module added in a
+    later milestone is swept the moment it exists instead of when somebody
+    remembers to add it here.
+    """
+    package = Path(__file__).resolve().parents[3] / "src" / "password_attack_detector"
+    modules: dict[str, Path] = {}
+    for path in sorted(package.rglob("*.py")):
+        parts = path.relative_to(package.parent).with_suffix("").parts
+        if parts[-1] == "__init__":
+            parts = parts[:-1]
+        modules[".".join(parts)] = path
+    return modules
+
+
+def _imported_names(path: Path) -> set[str]:
+    """Return every module path and imported symbol name in the file at *path*."""
+    import ast
+
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            names.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            names.add(node.module)
+            names.update(f"{node.module}.{alias.name}" for alias in node.names)
+            names.update(alias.name for alias in node.names)
+    return names
+
+
+def _defined_names(path: Path) -> set[str]:
+    """Return every class and function the file at *path* declares."""
+    import ast
+
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    return {
+        node.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ClassDef | ast.FunctionDef)
+    }
+
+
+def _label_contact(path: Path) -> set[str]:
+    """Return the label-bearing modules and symbols the file at *path* touches."""
+    imported = _imported_names(path)
+    return (imported & LABEL_SOURCE_MODULES) | (
+        (imported | _defined_names(path)) & LABEL_BEARING_SYMBOLS
+    )
+
+
+def test_the_label_reader_allowlist_is_exactly_two_modules() -> None:
+    """Acceptance test: the allowlist is a closed, named pair.
+
+    Asserted directly so emptying the constant to make a sweep pass is itself a
+    failure. The sweep below and this assertion are the two directions: one
+    stops a third reader being admitted quietly, the other stops the allowlist
+    being edited away.
+    """
+    assert {
+        "password_attack_detector.detection.evaluation",
+        "password_attack_detector.ml.dataset",
+    } == LABEL_READER_ALLOWLIST
+    assert len(LABEL_READER_ALLOWLIST) == 2
+
+
+@pytest.mark.parametrize("name", sorted(LABEL_READER_ALLOWLIST))
+def test_every_allowlisted_reader_exists_and_does_read_labels(name: str) -> None:
+    """The converse direction: removing an approved reader must also fail.
+
+    An allowlist naming a module that does not exist, or one that no longer
+    reads a label, is an allowlist that has drifted from what it authorises.
+    """
+    modules = _source_modules()
+    assert name in modules, f"{name} is allowlisted but does not exist"
+    assert _label_contact(modules[name]), (
+        f"{name} is allowlisted as a label reader but neither imports nor "
+        f"declares a label type"
+    )
+
+
+def test_no_module_outside_the_allowlist_reads_a_label() -> None:
+    """Stated as an import-graph fact over the whole package, not per module.
+
+    Parsed rather than text-matched: these modules' prose names the things they
+    refuse to read, so a substring scan would flag the very docstring that
+    documents the guarantee.
+    """
+    offenders: dict[str, list[str]] = {}
+    swept = 0
+    for name, path in _source_modules().items():
+        if not name.startswith(_SWEPT_PREFIXES):
+            continue
+        if name in LABEL_READER_ALLOWLIST or name in _COMPOSITION_ROOTS:
+            continue
+        swept += 1
+        found = sorted(_label_contact(path))
+        if found:
+            offenders[name] = found
+    assert not offenders, offenders
+    assert swept > 10, "the sweep covered suspiciously few modules"
+
+
+@pytest.mark.parametrize("exemption", sorted(_COMPOSITION_ROOTS))
+def test_every_composition_root_exemption_is_load_bearing(exemption: str) -> None:
+    """An exemption nothing needs is a hole, not a convenience.
+
+    Each entry is asserted to be a module that genuinely touches a label type,
+    so an exemption added speculatively -- or left behind after a refactor moved
+    the read elsewhere -- fails here instead of quietly widening the boundary.
+    """
+    modules = _source_modules()
+    assert exemption in modules
+    assert _label_contact(modules[exemption]), (
+        f"{exemption} is exempted but touches no label type; remove the exemption"
+    )
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "password_attack_detector.ml.features",
+        "password_attack_detector.ml.eligibility",
+        "password_attack_detector.ml.ordering",
+        "password_attack_detector.ml.partition",
+        "password_attack_detector.ml.preprocessing",
+        "password_attack_detector.ml.models",
+        "password_attack_detector.ml.inference",
+        "password_attack_detector.ml.fusion",
+        "password_attack_detector.ml.stacking",
+        "password_attack_detector.ml.test_evaluation",
+        "password_attack_detector.ml.explain",
+        "password_attack_detector.ml.reference",
+        "password_attack_detector.ml.drift",
+        "password_attack_detector.ml.governance",
+    ],
+)
+def test_a_named_ml_module_never_imports_a_label(name: str) -> None:
+    """Named explicitly as well as swept, so a rename cannot quietly drop one.
+
+    Every module named here exists as of Phase 5. The skip below is what let
+    the list be written ahead of the modules -- a module that does not exist yet
+    passes vacuously, and the moment a later milestone creates it, this fails
+    unless it takes its labels as arguments.
+    """
+    modules = _source_modules()
+    if name not in modules:
+        pytest.skip(f"{name} belongs to a later milestone")
+    found = sorted(_label_contact(modules[name]))
+    assert not found, f"{name} touches {found}"
+
+
 def test_evaluation_is_the_only_label_reader() -> None:
-    """Stated as an import-graph fact, not left to convention."""
+    """The detection layer's own half of the boundary, stated per module."""
     from password_attack_detector.detection import quality as quality_module
     from password_attack_detector.detection import validation as validation_module
 

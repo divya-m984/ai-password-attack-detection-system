@@ -77,6 +77,31 @@ AMBIGUOUS_FEATURE_NAMES: frozenset[str] = frozenset(
 
 #: Columns that must never appear in the feature matrix: ground truth, campaign
 #: metadata, split assignment, and model output.
+#:
+#: **This is an INPUT boundary, and only an input boundary.**  It governs what
+#: may be *accepted into* a Phase 3 feature snapshot or a Phase 5 model design
+#: matrix.  It says nothing about what a name may be used for elsewhere.
+#:
+#: A name listed here -- ``malicious_probability``, ``decision_threshold``,
+#: ``anomaly_score``, and the rest of the Phase 5 block -- remains a perfectly
+#: legitimate field of a Phase 5 prediction table, evaluation report, model
+#: artifact, or champion lock.  Those are *outputs*.  The prohibition is on the
+#: direction of travel: a model's own output must never be read back in as a
+#: model's input, because that is how a pipeline learns to predict its previous
+#: answer -- and it is invisible in the metrics, since the feature genuinely is
+#: predictive.  Nothing here is a reason to rename an output field.
+#:
+#: A **prevention boundary**, not a description.  Every name here is refused at
+#: catalog build time, so a feature column with one of these names cannot come
+#: into existence rather than being detected after it has.  Entries are only
+#: ever added; removing one would reopen a hole.
+#:
+#: The Phase 5 block carries the *exact* field names of the prediction
+#: artifacts, not paraphrases: a stale alias would protect a column nobody
+#: writes while leaving the real one open.
+#:
+#: This constant is deliberately **not** part of ``_FINGERPRINT_FIELDS``, so
+#: extending it invalidates no published artifact.
 PROHIBITED_FEATURE_COLUMNS: frozenset[str] = PROHIBITED_GT_COLUMNS | frozenset(
     {
         "split",
@@ -85,6 +110,25 @@ PROHIBITED_FEATURE_COLUMNS: frozenset[str] = PROHIBITED_GT_COLUMNS | frozenset(
         "scenario_variant",
         "attack_class",
         "model_probability",
+        # Phase 5 model outputs.
+        #: Calibrated malicious probability.
+        "malicious_probability",
+        #: Uncalibrated malicious decision score.
+        "malicious_decision_score",
+        #: The binary decision itself.
+        "flagged_malicious",
+        #: The category head's assigned scenario, which may be "unknown".
+        "predicted_scenario",
+        #: The per-class score payload behind that assignment.
+        "category_scores_json",
+        #: The unsupervised outlier magnitude.
+        "anomaly_score",
+        #: The hybrid rule-plus-model decision.
+        "fused_flagged",
+        #: The binary operating point selected on validation-B.
+        "decision_threshold",
+        #: The category abstention threshold selected on validation-B.
+        "min_category_score",
     }
 )
 

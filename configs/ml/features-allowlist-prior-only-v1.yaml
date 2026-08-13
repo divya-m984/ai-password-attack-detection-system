@@ -1,0 +1,1039 @@
+# Reviewed machine-learning feature allowlist -- prior-only ablation.
+#
+# A named experiment, not a replacement for the champion contract. It
+# admits only features computed strictly from events before the anchor, so
+# a run against it answers 'how much of the signal is in the history alone'
+# without the anchor event's own fields or a fitted baseline.
+#
+# It carries a different allowlist_id and therefore a different
+# fingerprint. A champion lock records the eligible-feature fingerprint it
+# was frozen under, so an ablation can never quietly become the champion's
+# feature contract: the mismatched digest is rejected.
+
+allowlist_schema_version: "1.0.0"
+allowlist_id: prior_only_ablation
+allowlist_version: "1.0.0"
+required_feature_schema_version: "1.0.0"
+
+compatible_feature_catalog_fingerprints:
+  - 81d037758c87c86b11dd27d23542281b1e193deedf8ef8c326524d7f5b40653a
+  - 3c6ec28a0e71f43f8dd1e2896c454e6ffa77161c87ef6e73271a0e69a3dffa8f
+
+governed_leakage_classes:
+  - prior_only
+
+entries:
+  - name: user_attempt_count__1m
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: user_history
+    rationale: "Prior authentication history for the target account, computed strictly from events before the anchor. The primary evidence for repeated-failure and account-takeover patterns (window 1m)."
+  - name: user_attempt_count__5m
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: user_history
+    rationale: "Prior authentication history for the target account, computed strictly from events before the anchor. The primary evidence for repeated-failure and account-takeover patterns (window 5m)."
+  - name: user_attempt_count__15m
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: user_history
+    rationale: "Prior authentication history for the target account, computed strictly from events before the anchor. The primary evidence for repeated-failure and account-takeover patterns (window 15m)."
+  - name: user_attempt_count__1h
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: user_history
+    rationale: "Prior authentication history for the target account, computed strictly from events before the anchor. The primary evidence for repeated-failure and account-takeover patterns (window 1h)."
+  - name: user_attempt_count__24h
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: user_history
+    rationale: "Prior authentication history for the target account, computed strictly from events before the anchor. The primary evidence for repeated-failure and account-takeover patterns (window 24h)."
+  - name: user_success_count__1m
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: user_history
+    rationale: "Prior authentication history for the target account, computed strictly from events before the anchor. The primary evidence for repeated-failure and account-takeover patterns (window 1m)."
+  - name: user_success_count__5m
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: user_history
+    rationale: "Prior authentication history for the target account, computed strictly from events before the anchor. The primary evidence for repeated-failure and account-takeover patterns (window 5m)."
+  - name: user_success_count__15m
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: user_history
+    rationale: "Prior authentication history for the target account, computed strictly from events before the anchor. The primary evidence for repeated-failure and account-takeover patterns (window 15m)."
+  - name: user_success_count__1h
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: user_history
+    rationale: "Prior authentication history for the target account, computed strictly from events before the anchor. The primary evidence for repeated-failure and account-takeover patterns (window 1h)."
+  - name: user_success_count__24h
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: user_history
+    rationale: "Prior authentication history for the target account, computed strictly from events before the anchor. The primary evidence for repeated-failure and account-takeover patterns (window 24h)."
+  - name: user_failure_count__1m
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: user_history
+    rationale: "Prior authentication history for the target account, computed strictly from events before the anchor. The primary evidence for repeated-failure and account-takeover patterns (window 1m)."
+  - name: user_failure_count__5m
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: user_history
+    rationale: "Prior authentication history for the target account, computed strictly from events before the anchor. The primary evidence for repeated-failure and account-takeover patterns (window 5m)."
+  - name: user_failure_count__15m
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: user_history
+    rationale: "Prior authentication history for the target account, computed strictly from events before the anchor. The primary evidence for repeated-failure and account-takeover patterns (window 15m)."
+  - name: user_failure_count__1h
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: user_history
+    rationale: "Prior authentication history for the target account, computed strictly from events before the anchor. The primary evidence for repeated-failure and account-takeover patterns (window 1h)."
+  - name: user_failure_count__24h
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: user_history
+    rationale: "Prior authentication history for the target account, computed strictly from events before the anchor. The primary evidence for repeated-failure and account-takeover patterns (window 24h)."
+  - name: user_challenge_count__1m
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: user_history
+    rationale: "Prior authentication history for the target account, computed strictly from events before the anchor. The primary evidence for repeated-failure and account-takeover patterns (window 1m)."
+  - name: user_challenge_count__5m
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: user_history
+    rationale: "Prior authentication history for the target account, computed strictly from events before the anchor. The primary evidence for repeated-failure and account-takeover patterns (window 5m)."
+  - name: user_challenge_count__15m
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: user_history
+    rationale: "Prior authentication history for the target account, computed strictly from events before the anchor. The primary evidence for repeated-failure and account-takeover patterns (window 15m)."
+  - name: user_challenge_count__1h
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: user_history
+    rationale: "Prior authentication history for the target account, computed strictly from events before the anchor. The primary evidence for repeated-failure and account-takeover patterns (window 1h)."
+  - name: user_challenge_count__24h
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: user_history
+    rationale: "Prior authentication history for the target account, computed strictly from events before the anchor. The primary evidence for repeated-failure and account-takeover patterns (window 24h)."
+  - name: user_blocked_count__1m
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: user_history
+    rationale: "Prior authentication history for the target account, computed strictly from events before the anchor. The primary evidence for repeated-failure and account-takeover patterns (window 1m)."
+  - name: user_blocked_count__5m
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: user_history
+    rationale: "Prior authentication history for the target account, computed strictly from events before the anchor. The primary evidence for repeated-failure and account-takeover patterns (window 5m)."
+  - name: user_blocked_count__15m
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: user_history
+    rationale: "Prior authentication history for the target account, computed strictly from events before the anchor. The primary evidence for repeated-failure and account-takeover patterns (window 15m)."
+  - name: user_blocked_count__1h
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: user_history
+    rationale: "Prior authentication history for the target account, computed strictly from events before the anchor. The primary evidence for repeated-failure and account-takeover patterns (window 1h)."
+  - name: user_blocked_count__24h
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: user_history
+    rationale: "Prior authentication history for the target account, computed strictly from events before the anchor. The primary evidence for repeated-failure and account-takeover patterns (window 24h)."
+  - name: user_mfa_failure_count__1m
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: user_history
+    rationale: "Prior authentication history for the target account, computed strictly from events before the anchor. The primary evidence for repeated-failure and account-takeover patterns (window 1m)."
+  - name: user_mfa_failure_count__5m
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: user_history
+    rationale: "Prior authentication history for the target account, computed strictly from events before the anchor. The primary evidence for repeated-failure and account-takeover patterns (window 5m)."
+  - name: user_mfa_failure_count__15m
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: user_history
+    rationale: "Prior authentication history for the target account, computed strictly from events before the anchor. The primary evidence for repeated-failure and account-takeover patterns (window 15m)."
+  - name: user_mfa_failure_count__1h
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: user_history
+    rationale: "Prior authentication history for the target account, computed strictly from events before the anchor. The primary evidence for repeated-failure and account-takeover patterns (window 1h)."
+  - name: user_mfa_failure_count__24h
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: user_history
+    rationale: "Prior authentication history for the target account, computed strictly from events before the anchor. The primary evidence for repeated-failure and account-takeover patterns (window 24h)."
+  - name: user_failure_rate__1m
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: user_history
+    rationale: "Prior authentication history for the target account, computed strictly from events before the anchor. The primary evidence for repeated-failure and account-takeover patterns (window 1m)."
+  - name: user_failure_rate__5m
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: user_history
+    rationale: "Prior authentication history for the target account, computed strictly from events before the anchor. The primary evidence for repeated-failure and account-takeover patterns (window 5m)."
+  - name: user_failure_rate__15m
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: user_history
+    rationale: "Prior authentication history for the target account, computed strictly from events before the anchor. The primary evidence for repeated-failure and account-takeover patterns (window 15m)."
+  - name: user_failure_rate__1h
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: user_history
+    rationale: "Prior authentication history for the target account, computed strictly from events before the anchor. The primary evidence for repeated-failure and account-takeover patterns (window 1h)."
+  - name: user_failure_rate__24h
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: user_history
+    rationale: "Prior authentication history for the target account, computed strictly from events before the anchor. The primary evidence for repeated-failure and account-takeover patterns (window 24h)."
+  - name: user_success_rate__1m
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: user_history
+    rationale: "Prior authentication history for the target account, computed strictly from events before the anchor. The primary evidence for repeated-failure and account-takeover patterns (window 1m)."
+  - name: user_success_rate__5m
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: user_history
+    rationale: "Prior authentication history for the target account, computed strictly from events before the anchor. The primary evidence for repeated-failure and account-takeover patterns (window 5m)."
+  - name: user_success_rate__15m
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: user_history
+    rationale: "Prior authentication history for the target account, computed strictly from events before the anchor. The primary evidence for repeated-failure and account-takeover patterns (window 15m)."
+  - name: user_success_rate__1h
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: user_history
+    rationale: "Prior authentication history for the target account, computed strictly from events before the anchor. The primary evidence for repeated-failure and account-takeover patterns (window 1h)."
+  - name: user_success_rate__24h
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: user_history
+    rationale: "Prior authentication history for the target account, computed strictly from events before the anchor. The primary evidence for repeated-failure and account-takeover patterns (window 24h)."
+  - name: user_unique_source_count__5m
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: user_history
+    rationale: "Prior authentication history for the target account, computed strictly from events before the anchor. The primary evidence for repeated-failure and account-takeover patterns (window 5m)."
+  - name: user_unique_source_count__1h
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: user_history
+    rationale: "Prior authentication history for the target account, computed strictly from events before the anchor. The primary evidence for repeated-failure and account-takeover patterns (window 1h)."
+  - name: user_unique_source_count__24h
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: user_history
+    rationale: "Prior authentication history for the target account, computed strictly from events before the anchor. The primary evidence for repeated-failure and account-takeover patterns (window 24h)."
+  - name: user_unique_device_count__5m
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: user_history
+    rationale: "Prior authentication history for the target account, computed strictly from events before the anchor. The primary evidence for repeated-failure and account-takeover patterns (window 5m)."
+  - name: user_unique_device_count__1h
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: user_history
+    rationale: "Prior authentication history for the target account, computed strictly from events before the anchor. The primary evidence for repeated-failure and account-takeover patterns (window 1h)."
+  - name: user_unique_device_count__24h
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: user_history
+    rationale: "Prior authentication history for the target account, computed strictly from events before the anchor. The primary evidence for repeated-failure and account-takeover patterns (window 24h)."
+  - name: user_unique_country_count__5m
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: user_history
+    rationale: "Prior authentication history for the target account, computed strictly from events before the anchor. The primary evidence for repeated-failure and account-takeover patterns (window 5m)."
+  - name: user_unique_country_count__1h
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: user_history
+    rationale: "Prior authentication history for the target account, computed strictly from events before the anchor. The primary evidence for repeated-failure and account-takeover patterns (window 1h)."
+  - name: user_unique_country_count__24h
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: user_history
+    rationale: "Prior authentication history for the target account, computed strictly from events before the anchor. The primary evidence for repeated-failure and account-takeover patterns (window 24h)."
+  - name: user_unique_application_count__5m
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: user_history
+    rationale: "Prior authentication history for the target account, computed strictly from events before the anchor. The primary evidence for repeated-failure and account-takeover patterns (window 5m)."
+  - name: user_unique_application_count__1h
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: user_history
+    rationale: "Prior authentication history for the target account, computed strictly from events before the anchor. The primary evidence for repeated-failure and account-takeover patterns (window 1h)."
+  - name: user_unique_application_count__24h
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: user_history
+    rationale: "Prior authentication history for the target account, computed strictly from events before the anchor. The primary evidence for repeated-failure and account-takeover patterns (window 24h)."
+  - name: user_unique_auth_method_count__5m
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: user_history
+    rationale: "Prior authentication history for the target account, computed strictly from events before the anchor. The primary evidence for repeated-failure and account-takeover patterns (window 5m)."
+  - name: user_unique_auth_method_count__1h
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: user_history
+    rationale: "Prior authentication history for the target account, computed strictly from events before the anchor. The primary evidence for repeated-failure and account-takeover patterns (window 1h)."
+  - name: user_unique_auth_method_count__24h
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: user_history
+    rationale: "Prior authentication history for the target account, computed strictly from events before the anchor. The primary evidence for repeated-failure and account-takeover patterns (window 24h)."
+  - name: user_mean_response_time_ms__1m
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: user_history
+    rationale: "Prior authentication history for the target account, computed strictly from events before the anchor. The primary evidence for repeated-failure and account-takeover patterns (window 1m)."
+  - name: user_mean_response_time_ms__5m
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: user_history
+    rationale: "Prior authentication history for the target account, computed strictly from events before the anchor. The primary evidence for repeated-failure and account-takeover patterns (window 5m)."
+  - name: user_mean_response_time_ms__15m
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: user_history
+    rationale: "Prior authentication history for the target account, computed strictly from events before the anchor. The primary evidence for repeated-failure and account-takeover patterns (window 15m)."
+  - name: user_mean_response_time_ms__1h
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: user_history
+    rationale: "Prior authentication history for the target account, computed strictly from events before the anchor. The primary evidence for repeated-failure and account-takeover patterns (window 1h)."
+  - name: user_mean_response_time_ms__24h
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: user_history
+    rationale: "Prior authentication history for the target account, computed strictly from events before the anchor. The primary evidence for repeated-failure and account-takeover patterns (window 24h)."
+  - name: user_response_time_std_ms__5m
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: user_history
+    rationale: "Prior authentication history for the target account, computed strictly from events before the anchor. The primary evidence for repeated-failure and account-takeover patterns (window 5m)."
+  - name: user_response_time_std_ms__15m
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: user_history
+    rationale: "Prior authentication history for the target account, computed strictly from events before the anchor. The primary evidence for repeated-failure and account-takeover patterns (window 15m)."
+  - name: user_response_time_std_ms__1h
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: user_history
+    rationale: "Prior authentication history for the target account, computed strictly from events before the anchor. The primary evidence for repeated-failure and account-takeover patterns (window 1h)."
+  - name: user_response_time_std_ms__24h
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: user_history
+    rationale: "Prior authentication history for the target account, computed strictly from events before the anchor. The primary evidence for repeated-failure and account-takeover patterns (window 24h)."
+  - name: user_mean_interarrival_seconds__1m
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: user_history
+    rationale: "Prior authentication history for the target account, computed strictly from events before the anchor. The primary evidence for repeated-failure and account-takeover patterns (window 1m)."
+  - name: user_mean_interarrival_seconds__5m
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: user_history
+    rationale: "Prior authentication history for the target account, computed strictly from events before the anchor. The primary evidence for repeated-failure and account-takeover patterns (window 5m)."
+  - name: user_mean_interarrival_seconds__15m
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: user_history
+    rationale: "Prior authentication history for the target account, computed strictly from events before the anchor. The primary evidence for repeated-failure and account-takeover patterns (window 15m)."
+  - name: user_mean_interarrival_seconds__1h
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: user_history
+    rationale: "Prior authentication history for the target account, computed strictly from events before the anchor. The primary evidence for repeated-failure and account-takeover patterns (window 1h)."
+  - name: user_mean_interarrival_seconds__24h
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: user_history
+    rationale: "Prior authentication history for the target account, computed strictly from events before the anchor. The primary evidence for repeated-failure and account-takeover patterns (window 24h)."
+  - name: user_interarrival_std_seconds__5m
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: user_history
+    rationale: "Prior authentication history for the target account, computed strictly from events before the anchor. The primary evidence for repeated-failure and account-takeover patterns (window 5m)."
+  - name: user_interarrival_std_seconds__15m
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: user_history
+    rationale: "Prior authentication history for the target account, computed strictly from events before the anchor. The primary evidence for repeated-failure and account-takeover patterns (window 15m)."
+  - name: user_interarrival_std_seconds__1h
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: user_history
+    rationale: "Prior authentication history for the target account, computed strictly from events before the anchor. The primary evidence for repeated-failure and account-takeover patterns (window 1h)."
+  - name: user_interarrival_std_seconds__24h
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: user_history
+    rationale: "Prior authentication history for the target account, computed strictly from events before the anchor. The primary evidence for repeated-failure and account-takeover patterns (window 24h)."
+  - name: source_attempt_count__1m
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: source_history
+    rationale: "Prior authentication history for the source address, computed strictly from events before the anchor. The primary evidence for spraying and distributed patterns (window 1m)."
+  - name: source_attempt_count__5m
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: source_history
+    rationale: "Prior authentication history for the source address, computed strictly from events before the anchor. The primary evidence for spraying and distributed patterns (window 5m)."
+  - name: source_attempt_count__15m
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: source_history
+    rationale: "Prior authentication history for the source address, computed strictly from events before the anchor. The primary evidence for spraying and distributed patterns (window 15m)."
+  - name: source_attempt_count__1h
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: source_history
+    rationale: "Prior authentication history for the source address, computed strictly from events before the anchor. The primary evidence for spraying and distributed patterns (window 1h)."
+  - name: source_attempt_count__24h
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: source_history
+    rationale: "Prior authentication history for the source address, computed strictly from events before the anchor. The primary evidence for spraying and distributed patterns (window 24h)."
+  - name: source_success_count__1m
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: source_history
+    rationale: "Prior authentication history for the source address, computed strictly from events before the anchor. The primary evidence for spraying and distributed patterns (window 1m)."
+  - name: source_success_count__5m
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: source_history
+    rationale: "Prior authentication history for the source address, computed strictly from events before the anchor. The primary evidence for spraying and distributed patterns (window 5m)."
+  - name: source_success_count__15m
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: source_history
+    rationale: "Prior authentication history for the source address, computed strictly from events before the anchor. The primary evidence for spraying and distributed patterns (window 15m)."
+  - name: source_success_count__1h
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: source_history
+    rationale: "Prior authentication history for the source address, computed strictly from events before the anchor. The primary evidence for spraying and distributed patterns (window 1h)."
+  - name: source_success_count__24h
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: source_history
+    rationale: "Prior authentication history for the source address, computed strictly from events before the anchor. The primary evidence for spraying and distributed patterns (window 24h)."
+  - name: source_failure_count__1m
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: source_history
+    rationale: "Prior authentication history for the source address, computed strictly from events before the anchor. The primary evidence for spraying and distributed patterns (window 1m)."
+  - name: source_failure_count__5m
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: source_history
+    rationale: "Prior authentication history for the source address, computed strictly from events before the anchor. The primary evidence for spraying and distributed patterns (window 5m)."
+  - name: source_failure_count__15m
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: source_history
+    rationale: "Prior authentication history for the source address, computed strictly from events before the anchor. The primary evidence for spraying and distributed patterns (window 15m)."
+  - name: source_failure_count__1h
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: source_history
+    rationale: "Prior authentication history for the source address, computed strictly from events before the anchor. The primary evidence for spraying and distributed patterns (window 1h)."
+  - name: source_failure_count__24h
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: source_history
+    rationale: "Prior authentication history for the source address, computed strictly from events before the anchor. The primary evidence for spraying and distributed patterns (window 24h)."
+  - name: source_failure_rate__1m
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: source_history
+    rationale: "Prior authentication history for the source address, computed strictly from events before the anchor. The primary evidence for spraying and distributed patterns (window 1m)."
+  - name: source_failure_rate__5m
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: source_history
+    rationale: "Prior authentication history for the source address, computed strictly from events before the anchor. The primary evidence for spraying and distributed patterns (window 5m)."
+  - name: source_failure_rate__15m
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: source_history
+    rationale: "Prior authentication history for the source address, computed strictly from events before the anchor. The primary evidence for spraying and distributed patterns (window 15m)."
+  - name: source_failure_rate__1h
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: source_history
+    rationale: "Prior authentication history for the source address, computed strictly from events before the anchor. The primary evidence for spraying and distributed patterns (window 1h)."
+  - name: source_failure_rate__24h
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: source_history
+    rationale: "Prior authentication history for the source address, computed strictly from events before the anchor. The primary evidence for spraying and distributed patterns (window 24h)."
+  - name: source_unique_user_count__5m
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: source_history
+    rationale: "Prior authentication history for the source address, computed strictly from events before the anchor. The primary evidence for spraying and distributed patterns (window 5m)."
+  - name: source_unique_user_count__1h
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: source_history
+    rationale: "Prior authentication history for the source address, computed strictly from events before the anchor. The primary evidence for spraying and distributed patterns (window 1h)."
+  - name: source_unique_user_count__24h
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: source_history
+    rationale: "Prior authentication history for the source address, computed strictly from events before the anchor. The primary evidence for spraying and distributed patterns (window 24h)."
+  - name: source_unique_device_count__5m
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: source_history
+    rationale: "Prior authentication history for the source address, computed strictly from events before the anchor. The primary evidence for spraying and distributed patterns (window 5m)."
+  - name: source_unique_device_count__1h
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: source_history
+    rationale: "Prior authentication history for the source address, computed strictly from events before the anchor. The primary evidence for spraying and distributed patterns (window 1h)."
+  - name: source_unique_device_count__24h
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: source_history
+    rationale: "Prior authentication history for the source address, computed strictly from events before the anchor. The primary evidence for spraying and distributed patterns (window 24h)."
+  - name: source_unique_country_count__5m
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: source_history
+    rationale: "Prior authentication history for the source address, computed strictly from events before the anchor. The primary evidence for spraying and distributed patterns (window 5m)."
+  - name: source_unique_country_count__1h
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: source_history
+    rationale: "Prior authentication history for the source address, computed strictly from events before the anchor. The primary evidence for spraying and distributed patterns (window 1h)."
+  - name: source_unique_country_count__24h
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: source_history
+    rationale: "Prior authentication history for the source address, computed strictly from events before the anchor. The primary evidence for spraying and distributed patterns (window 24h)."
+  - name: source_unique_application_count__5m
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: source_history
+    rationale: "Prior authentication history for the source address, computed strictly from events before the anchor. The primary evidence for spraying and distributed patterns (window 5m)."
+  - name: source_unique_application_count__1h
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: source_history
+    rationale: "Prior authentication history for the source address, computed strictly from events before the anchor. The primary evidence for spraying and distributed patterns (window 1h)."
+  - name: source_unique_application_count__24h
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: source_history
+    rationale: "Prior authentication history for the source address, computed strictly from events before the anchor. The primary evidence for spraying and distributed patterns (window 24h)."
+  - name: source_unique_user_agent_count__5m
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: source_history
+    rationale: "Prior authentication history for the source address, computed strictly from events before the anchor. The primary evidence for spraying and distributed patterns (window 5m)."
+  - name: source_unique_user_agent_count__1h
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: source_history
+    rationale: "Prior authentication history for the source address, computed strictly from events before the anchor. The primary evidence for spraying and distributed patterns (window 1h)."
+  - name: source_unique_user_agent_count__24h
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: source_history
+    rationale: "Prior authentication history for the source address, computed strictly from events before the anchor. The primary evidence for spraying and distributed patterns (window 24h)."
+  - name: source_mean_response_time_ms__1m
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: source_history
+    rationale: "Prior authentication history for the source address, computed strictly from events before the anchor. The primary evidence for spraying and distributed patterns (window 1m)."
+  - name: source_mean_response_time_ms__5m
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: source_history
+    rationale: "Prior authentication history for the source address, computed strictly from events before the anchor. The primary evidence for spraying and distributed patterns (window 5m)."
+  - name: source_mean_response_time_ms__15m
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: source_history
+    rationale: "Prior authentication history for the source address, computed strictly from events before the anchor. The primary evidence for spraying and distributed patterns (window 15m)."
+  - name: source_mean_response_time_ms__1h
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: source_history
+    rationale: "Prior authentication history for the source address, computed strictly from events before the anchor. The primary evidence for spraying and distributed patterns (window 1h)."
+  - name: source_mean_response_time_ms__24h
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: source_history
+    rationale: "Prior authentication history for the source address, computed strictly from events before the anchor. The primary evidence for spraying and distributed patterns (window 24h)."
+  - name: source_mean_interarrival_seconds__1m
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: source_history
+    rationale: "Prior authentication history for the source address, computed strictly from events before the anchor. The primary evidence for spraying and distributed patterns (window 1m)."
+  - name: source_mean_interarrival_seconds__5m
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: source_history
+    rationale: "Prior authentication history for the source address, computed strictly from events before the anchor. The primary evidence for spraying and distributed patterns (window 5m)."
+  - name: source_mean_interarrival_seconds__15m
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: source_history
+    rationale: "Prior authentication history for the source address, computed strictly from events before the anchor. The primary evidence for spraying and distributed patterns (window 15m)."
+  - name: source_mean_interarrival_seconds__1h
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: source_history
+    rationale: "Prior authentication history for the source address, computed strictly from events before the anchor. The primary evidence for spraying and distributed patterns (window 1h)."
+  - name: source_mean_interarrival_seconds__24h
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: source_history
+    rationale: "Prior authentication history for the source address, computed strictly from events before the anchor. The primary evidence for spraying and distributed patterns (window 24h)."
+  - name: source_interarrival_std_seconds__5m
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: source_history
+    rationale: "Prior authentication history for the source address, computed strictly from events before the anchor. The primary evidence for spraying and distributed patterns (window 5m)."
+  - name: source_interarrival_std_seconds__15m
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: source_history
+    rationale: "Prior authentication history for the source address, computed strictly from events before the anchor. The primary evidence for spraying and distributed patterns (window 15m)."
+  - name: source_interarrival_std_seconds__1h
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: source_history
+    rationale: "Prior authentication history for the source address, computed strictly from events before the anchor. The primary evidence for spraying and distributed patterns (window 1h)."
+  - name: source_interarrival_std_seconds__24h
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: source_history
+    rationale: "Prior authentication history for the source address, computed strictly from events before the anchor. The primary evidence for spraying and distributed patterns (window 24h)."
+  - name: source_interarrival_coefficient_of_variation__5m
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: source_history
+    rationale: "Prior authentication history for the source address, computed strictly from events before the anchor. The primary evidence for spraying and distributed patterns (window 5m)."
+  - name: source_interarrival_coefficient_of_variation__15m
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: source_history
+    rationale: "Prior authentication history for the source address, computed strictly from events before the anchor. The primary evidence for spraying and distributed patterns (window 15m)."
+  - name: source_interarrival_coefficient_of_variation__1h
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: source_history
+    rationale: "Prior authentication history for the source address, computed strictly from events before the anchor. The primary evidence for spraying and distributed patterns (window 1h)."
+  - name: source_interarrival_coefficient_of_variation__24h
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: source_history
+    rationale: "Prior authentication history for the source address, computed strictly from events before the anchor. The primary evidence for spraying and distributed patterns (window 24h)."
+  - name: pair_attempt_count__5m
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: pair_history
+    rationale: "Prior history for this account and this source together, computed strictly from events before the anchor. Separates a familiar source failing from an unfamiliar one succeeding (window 5m)."
+  - name: pair_attempt_count__1h
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: pair_history
+    rationale: "Prior history for this account and this source together, computed strictly from events before the anchor. Separates a familiar source failing from an unfamiliar one succeeding (window 1h)."
+  - name: pair_attempt_count__24h
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: pair_history
+    rationale: "Prior history for this account and this source together, computed strictly from events before the anchor. Separates a familiar source failing from an unfamiliar one succeeding (window 24h)."
+  - name: pair_success_count__5m
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: pair_history
+    rationale: "Prior history for this account and this source together, computed strictly from events before the anchor. Separates a familiar source failing from an unfamiliar one succeeding (window 5m)."
+  - name: pair_success_count__1h
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: pair_history
+    rationale: "Prior history for this account and this source together, computed strictly from events before the anchor. Separates a familiar source failing from an unfamiliar one succeeding (window 1h)."
+  - name: pair_success_count__24h
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: pair_history
+    rationale: "Prior history for this account and this source together, computed strictly from events before the anchor. Separates a familiar source failing from an unfamiliar one succeeding (window 24h)."
+  - name: pair_failure_count__5m
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: pair_history
+    rationale: "Prior history for this account and this source together, computed strictly from events before the anchor. Separates a familiar source failing from an unfamiliar one succeeding (window 5m)."
+  - name: pair_failure_count__1h
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: pair_history
+    rationale: "Prior history for this account and this source together, computed strictly from events before the anchor. Separates a familiar source failing from an unfamiliar one succeeding (window 1h)."
+  - name: pair_failure_count__24h
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: pair_history
+    rationale: "Prior history for this account and this source together, computed strictly from events before the anchor. Separates a familiar source failing from an unfamiliar one succeeding (window 24h)."
+  - name: pair_failure_rate__5m
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: pair_history
+    rationale: "Prior history for this account and this source together, computed strictly from events before the anchor. Separates a familiar source failing from an unfamiliar one succeeding (window 5m)."
+  - name: pair_failure_rate__1h
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: pair_history
+    rationale: "Prior history for this account and this source together, computed strictly from events before the anchor. Separates a familiar source failing from an unfamiliar one succeeding (window 1h)."
+  - name: pair_failure_rate__24h
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: pair_history
+    rationale: "Prior history for this account and this source together, computed strictly from events before the anchor. Separates a familiar source failing from an unfamiliar one succeeding (window 24h)."
+  - name: pair_mean_interarrival_seconds__5m
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: pair_history
+    rationale: "Prior history for this account and this source together, computed strictly from events before the anchor. Separates a familiar source failing from an unfamiliar one succeeding (window 5m)."
+  - name: pair_mean_interarrival_seconds__1h
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: pair_history
+    rationale: "Prior history for this account and this source together, computed strictly from events before the anchor. Separates a familiar source failing from an unfamiliar one succeeding (window 1h)."
+  - name: pair_mean_interarrival_seconds__24h
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: pair_history
+    rationale: "Prior history for this account and this source together, computed strictly from events before the anchor. Separates a familiar source failing from an unfamiliar one succeeding (window 24h)."
+  - name: user_device_attempt_count__5m
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: device_session
+    rationale: "Prior device and session history preceding the anchor. Automated traffic reuses or rotates client identity in ways ordinary traffic does not (window 5m)."
+  - name: user_device_attempt_count__1h
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: device_session
+    rationale: "Prior device and session history preceding the anchor. Automated traffic reuses or rotates client identity in ways ordinary traffic does not (window 1h)."
+  - name: session_event_count__5m
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: device_session
+    rationale: "Prior device and session history preceding the anchor. Automated traffic reuses or rotates client identity in ways ordinary traffic does not (window 5m)."
+  - name: session_event_count__1h
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: device_session
+    rationale: "Prior device and session history preceding the anchor. Automated traffic reuses or rotates client identity in ways ordinary traffic does not (window 1h)."
+  - name: session_failure_count__5m
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: device_session
+    rationale: "Prior device and session history preceding the anchor. Automated traffic reuses or rotates client identity in ways ordinary traffic does not (window 5m)."
+  - name: session_failure_count__1h
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: device_session
+    rationale: "Prior device and session history preceding the anchor. Automated traffic reuses or rotates client identity in ways ordinary traffic does not (window 1h)."
+  - name: session_success_count__5m
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: device_session
+    rationale: "Prior device and session history preceding the anchor. Automated traffic reuses or rotates client identity in ways ordinary traffic does not (window 5m)."
+  - name: session_success_count__1h
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: device_session
+    rationale: "Prior device and session history preceding the anchor. Automated traffic reuses or rotates client identity in ways ordinary traffic does not (window 1h)."
+  - name: device_user_count__5m
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: device_session
+    rationale: "Prior device and session history preceding the anchor. Automated traffic reuses or rotates client identity in ways ordinary traffic does not (window 5m)."
+  - name: device_user_count__1h
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: device_session
+    rationale: "Prior device and session history preceding the anchor. Automated traffic reuses or rotates client identity in ways ordinary traffic does not (window 1h)."
+  - name: prior_consecutive_user_failures
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: sequence
+    rationale: "Inter-arrival and ordering statistics over events preceding the anchor. Timing regularity distinguishes scripted attempts from human ones without asserting an attack."
+  - name: prior_consecutive_source_failures
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: sequence
+    rationale: "Inter-arrival and ordering statistics over events preceding the anchor. Timing regularity distinguishes scripted attempts from human ones without asserting an attack."
+  - name: prior_failures_since_user_success
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: sequence
+    rationale: "Inter-arrival and ordering statistics over events preceding the anchor. Timing regularity distinguishes scripted attempts from human ones without asserting an attack."
+  - name: prior_failures_since_pair_success
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: sequence
+    rationale: "Inter-arrival and ordering statistics over events preceding the anchor. Timing regularity distinguishes scripted attempts from human ones without asserting an attack."
+  - name: seconds_since_user_previous_event
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: sequence
+    rationale: "Inter-arrival and ordering statistics over events preceding the anchor. Timing regularity distinguishes scripted attempts from human ones without asserting an attack."
+  - name: seconds_since_source_previous_event
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: sequence
+    rationale: "Inter-arrival and ordering statistics over events preceding the anchor. Timing regularity distinguishes scripted attempts from human ones without asserting an attack."
+  - name: seconds_since_user_previous_success
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: sequence
+    rationale: "Inter-arrival and ordering statistics over events preceding the anchor. Timing regularity distinguishes scripted attempts from human ones without asserting an attack."
+  - name: seconds_since_user_previous_failure
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: sequence
+    rationale: "Inter-arrival and ordering statistics over events preceding the anchor. Timing regularity distinguishes scripted attempts from human ones without asserting an attack."
+  - name: seconds_since_pair_previous_event
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: sequence
+    rationale: "Inter-arrival and ordering statistics over events preceding the anchor. Timing regularity distinguishes scripted attempts from human ones without asserting an attack."
+  - name: previous_user_outcome
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: sequence
+    rationale: "Inter-arrival and ordering statistics over events preceding the anchor. Timing regularity distinguishes scripted attempts from human ones without asserting an attack."
+  - name: previous_pair_outcome
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: sequence
+    rationale: "Inter-arrival and ordering statistics over events preceding the anchor. Timing regularity distinguishes scripted attempts from human ones without asserting an attack."
+  - name: distance_km_from_user_previous_success
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: geospatial
+    rationale: "Derived movement statistics over prior events. Supports travel-plausibility reasoning and carries a distance or a rate, never a coordinate."
+  - name: seconds_since_user_previous_success_with_location
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: geospatial
+    rationale: "Derived movement statistics over prior events. Supports travel-plausibility reasoning and carries a distance or a rate, never a coordinate."
+  - name: implied_velocity_kmh_from_previous_success
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: geospatial
+    rationale: "Derived movement statistics over prior events. Supports travel-plausibility reasoning and carries a distance or a rate, never a coordinate."
+  - name: country_changed_since_previous_success
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: geospatial
+    rationale: "Derived movement statistics over prior events. Supports travel-plausibility reasoning and carries a distance or a rate, never a coordinate."
+  - name: region_changed_since_previous_success
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: geospatial
+    rationale: "Derived movement statistics over prior events. Supports travel-plausibility reasoning and carries a distance or a rate, never a coordinate."
+  - name: user_previous_success_geo__status
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: geospatial
+    rationale: "Derived movement statistics over prior events. Supports travel-plausibility reasoning and carries a distance or a rate, never a coordinate."
+  - name: implied_velocity__status
+    decision_point: post_event
+    admitted_in: "phase-5-m2"
+    leakage_class: prior_only
+    feature_group: geospatial
+    rationale: "Derived movement statistics over prior events. Supports travel-plausibility reasoning and carries a distance or a rate, never a coordinate."

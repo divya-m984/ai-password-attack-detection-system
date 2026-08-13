@@ -1,0 +1,107 @@
+# Synthetic dataset configuration for machine-learning development.
+#
+# Thirty days (720 hours) rather than the seven of
+# configs/data/synthetic-development.yaml. The reason is temporal, not
+# volumetric.
+#
+# Strict split isolation costs a fixed amount of wall-clock time at each split
+# boundary, and that cost is independent of the fractions:
+#
+#     excluded fraction  ~=  2 * purge / dataset duration
+#
+# At 168 hours with a 24h purge that is roughly 28.6%, which under the shipped
+# 50/25/25 development split leaves about 18 usable hours in each evaluation
+# window. That is enough to exercise the feature and rule pipelines. It is not
+# enough for a per-scenario model metric to mean anything: several attack
+# categories would land in an evaluation window with single-digit support, and
+# a precision computed over four rows is not a measurement.
+#
+# At 720 hours the same 24h purge costs about 6.7%, and a 60/20/20 split leaves
+# roughly 120 usable hours in each of validation and test.
+#
+# Event *density* is deliberately not scaled with the span. What the ML layer
+# needs from this configuration is time -- enough of it for each evaluation
+# window to comfortably exceed the purge interval, and for enough distinct
+# campaigns to fall on each side of a boundary. Holding the hourly rate below
+# the 7-day configuration's keeps the dataset around twice its size rather than
+# four times, which keeps a full build tractable on a development machine.
+#
+# NOTHING GENERATED FROM THIS FILE IS COMMITTED. The configuration is tracked;
+# its output is not. Every workflow that consumes it is marked slow and is
+# never executed in CI.
+#
+# This generates synthetic traffic only. No real authentication data, no real
+# credential, and no traffic against any real service is involved at any point.
+
+generator_version: "1.0.0"
+
+# Distinct from the 7-day development seed (1337) on purpose: the two datasets
+# should not share entity draws, so a result that only holds for one particular
+# population is visible as such.
+seed: 4242
+
+start_time: "2024-01-01T00:00:00+00:00"
+duration_hours: 720
+
+# Scaled up from the 7-day configuration so a 30-day span does not simply
+# replay the same 200 users for four times as long. A wider entity population
+# gives the baseline features something to be novel against.
+num_users: 500
+num_sources: 120
+num_devices: 1000
+num_applications: 8
+
+# Below the 7-day configuration's 500. See the density note above: the span is
+# what this dataset exists for, and a lower rate keeps a full feature build to
+# roughly 180,000 benign events rather than 360,000.
+events_per_hour: 250
+
+enabled_scenarios:
+  normal: true
+  brute_force: true
+  password_spraying: true
+  credential_stuffing: true
+  distributed_brute_force: true
+  account_takeover_indicator: true
+  impossible_travel: true
+  bot_activity: true
+  novel_anomaly_holdout: true
+
+# Campaign counts are raised roughly in proportion to the span, then rounded
+# up. The aim is that each attack category places several whole campaigns in
+# each supervised split rather than one campaign straddling a boundary and
+# being excluded entirely.
+#
+# This is a support-oriented *intention*, not a guarantee. Campaign placement
+# is a function of the seed, and the split's boundary policy excludes any
+# campaign that crosses a boundary. Whether the realised support clears the
+# floors in configs/ml/model-development.yaml is something a build reports; it
+# is not something this file can promise, and no number here should be read as
+# one.
+campaign_parameters:
+  brute_force:
+    attempts_per_campaign: 50
+    num_campaigns: 16
+  password_spraying:
+    passwords_per_round: 5
+    num_campaigns: 12
+  credential_stuffing:
+    credentials_per_batch: 30
+    num_campaigns: 12
+  distributed_brute_force:
+    attempts_per_source: 10
+    num_sources: 10
+    num_campaigns: 8
+  account_takeover_indicator:
+    num_campaigns: 12
+  impossible_travel:
+    num_campaigns: 12
+  bot_activity:
+    events_per_campaign: 100
+    num_campaigns: 10
+  # The novel-anomaly holdout is an evaluation-only pool: it is routed out
+  # before grouping, never becomes a supervised class, and is reported apart
+  # from every supervised metric. It is raised too, so the generalisation probe
+  # has more than a single campaign to say anything about.
+  novel_anomaly_holdout:
+    num_campaigns: 6
