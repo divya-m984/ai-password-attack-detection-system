@@ -353,6 +353,119 @@ promotes, or rethresholds on any finding.
 
 ---
 
+## Phase 6 status — FastAPI serving foundation (Milestone 1)
+
+Phase 6 turns the finished engine into something runnable. Milestone 1 adds the
+HTTP serving layer and nothing else: no dashboard, no container, no deployment.
+
+The API is an **adapter**. It computes no feature, re-derives no threshold,
+re-weights no rule, and contains no second scoring implementation — every
+quantity comes from the frozen Phase 3–5 code that owns it.
+
+- **Application factory** (`create_app`) with a lifespan that resolves the
+  runtime once; nothing loads at import
+- **Fail-closed startup** — `build_runtime` never raises. A component that
+  cannot be initialised is recorded with a stable reason code, readiness is
+  false, and detection is refused. No silent fallback to a different model.
+- **`GET /health`** — process liveness; reads nothing
+- **`GET /ready`** — per-component readiness (feature contract, rule engine,
+  model artifacts, ML champion, fusion) with sanitized reason codes, `503` when
+  a required component is missing. The hybrid is required exactly when Phase 5
+  froze one: a selected strategy that cannot be verified is `503`, while "nothing
+  qualified on validation" stays `200` and is reported as a scientific outcome.
+- **Serving bundle** (`deploy materialize`) — an offline, deterministic contract
+  that makes a frozen `stacked` selection deployable. It reconstructs the fitted
+  `StackedFusionState` from pre-TEST lineage only, recomputes its semantic
+  fingerprint, refuses publication unless it equals the fingerprint Phase 5
+  sealed, and publishes it with the complete model / preprocessor / calibrator /
+  threshold / fusion lineage. Startup loads and verifies it; nothing fits at
+  serving time.
+- **Live inference is not a dataset split** — a scored request is
+  `ServingScope.LIVE` (`live_serving`), never `MLSplit.TEST`. The frozen feature
+  order, preprocessor, adapter, calibrator, and threshold are reused; the
+  requirement to *be* a scientific split is not. One binary-decision
+  implementation serves both paths.
+- **`GET /version`** — package and every contract version; nothing host-specific
+- **`POST /api/v1/detect`** and **`POST /api/v1/detect/batch`** — score a
+  bounded, ordered **window** of authentication events for one anchor or many
+- **`GET /api/v1/system/status`**, **`/api/v1/model/info`**, **`/api/v1/rules`**
+  — public-safe layer, champion, and rule information
+- **Three layers kept apart** — the rule verdict, the model verdict, and the
+  frozen fusion verdict are separate typed objects. The rule layer's ordinal
+  0–100 `risk_score` is never blended with the model's probability.
+- **Stable error contract** — one envelope, sixteen codes, no traceback and no
+  filesystem path in any response
+- **Serving security** — strict schemas with `extra="forbid"`, a request-body
+  ceiling enforced by the service itself, bounded event counts, no artifact
+  path, model id, threshold, or fusion override reachable from a request, and no
+  CORS policy until a concrete dashboard origin exists
+- **Privacy** — credential material is refused under every spelling before any
+  other validation; a supplied `source_ip` is pseudonymized on arrival and never
+  returned; no entity pseudonym appears in any response
+- **OpenAPI** — Swagger at `/docs`, tagged Health / Detection / System
+
+### Serving package
+
+```
+src/password_attack_detector/api/
+├── app.py            create_app(), lifespan, error handlers, body-size middleware
+├── config.py         APISettings — locations and ceilings, never scientific identity
+├── dependencies.py   how a route reaches the runtime; the readiness gate
+├── errors.py         stable error codes and the single failure envelope
+├── schemas.py        request and response contracts
+├── services.py       the composition: events → features → rules → model → fusion
+└── routes/
+    ├── health.py     /health, /ready, /version
+    ├── detection.py  /api/v1/detect, /api/v1/detect/batch
+    └── system.py     /api/v1/system/status, /model/info, /rules
+
+src/password_attack_detector/deployment/
+├── bundle.py         the sealed serving-bundle manifest; write and verify
+├── materialize.py    reconstruct the frozen stacked state and check its digest
+└── cli.py            deploy materialize, deploy inspect
+```
+
+### Why detection takes a window
+
+Nearly every signal the rules and the model read is a windowed or sequence
+quantity over an event's strictly-prior history. A single stateless event would
+produce a snapshot whose history is empty — not "unknown", but *wrong*. So a
+request carries an ordered batch of events plus the anchors it wants a verdict
+for, and this service fabricates no history for a caller who supplies none.
+
+### Running it locally
+
+```bash
+export PAD_API_ARTIFACT_ROOT=/absolute/path/to/artifacts
+export PAD_API_ALLOWLIST_PATH=/absolute/path/to/allowlist.yaml
+export PAD_API_FEATURE_CONFIG_PATH=/absolute/path/to/features.yaml
+export PAD_API_ML_CONFIG_PATH=/absolute/path/to/configs/ml/model-development.yaml
+export PAD_API_DETECTION_CONFIG_PATH=/absolute/path/to/rules.yaml
+
+uv run uvicorn password_attack_detector.api.app:app --host 127.0.0.1 --port 8000
+```
+
+Before a champion has been frozen, the rule layer can be served alone with
+`PAD_API_REQUIRE_ML_CHAMPION=false`. Then visit `/health`, `/ready`, and `/docs`.
+
+If the frozen selection was `stacked`, publish the serving bundle once first —
+`deploy materialize` against the pre-TEST artifacts, then `deploy inspect` to see
+what is published. Details in [docs/api.md](docs/api.md) §2.
+
+Full reference: **[docs/api.md](docs/api.md)**.
+
+### What Phase 6 Milestone 1 does not claim
+
+The service runs locally. It is not deployed, not containerised, not
+authenticated, not rate-limited, and not hardened for an untrusted network. It
+stores nothing. A `stacked` deployment additionally requires the offline
+`deploy materialize` step to have been run against the frozen lineage; until it
+has, the hybrid is reported unavailable and readiness is `503` rather than a
+strategy nobody selected being substituted. See
+[docs/api.md](docs/api.md) §12.
+
+---
+
 ## Feature-layer architecture
 
 ```
@@ -898,6 +1011,7 @@ See [docs/privacy-model.md](docs/privacy-model.md) and
 | [docs/drift-monitoring.md](docs/drift-monitoring.md) | The frozen reference profile and drift semantics |
 | [docs/model-card.md](docs/model-card.md) | Generated: purpose, scope, prohibited use, limitations |
 | [docs/phase5-acceptance.md](docs/phase5-acceptance.md) | Generated: the final Phase 5 acceptance report |
+| [docs/api.md](docs/api.md) | The HTTP serving layer: endpoints, constraints, privacy, limits |
 
 ---
 
@@ -910,7 +1024,7 @@ See [docs/privacy-model.md](docs/privacy-model.md) and
 | 3 | Feature engineering and behavioral baselines ✓ |
 | 4 | Rule-based detection (brute-force, spraying, stuffing) ✓ |
 | 5 | Machine-learning detection models ✓ |
-| 6 | FastAPI detection service |
+| 6 | FastAPI detection service — Milestone 1 (serving foundation) ✓ |
 | 7 | SOC dashboard |
 | 8 | Persistence and event storage |
 | 9 | Monitoring and alerting |

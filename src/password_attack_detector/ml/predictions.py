@@ -105,7 +105,11 @@ from password_attack_detector.ml.champion import (
     ChampionLock,
 )
 from password_attack_detector.ml.config import MLConfig
-from password_attack_detector.ml.dataset import InferenceDataset, InferenceFrame
+from password_attack_detector.ml.dataset import (
+    InferenceDataset,
+    InferenceFrame,
+    ServingBatch,
+)
 from password_attack_detector.ml.dependencies import (
     dependency_contract_fingerprint,
     installed_version,
@@ -130,6 +134,7 @@ from password_attack_detector.ml.experiments import (
 from password_attack_detector.ml.imbalance import BINARY_CLASS_ORDER
 from password_attack_detector.ml.inference import InferenceModel, ModelCompatibility
 from password_attack_detector.ml.ledger import ExperimentLedger, TrainingRunRecord
+from password_attack_detector.ml.preprocessing import TransformableFrame
 from password_attack_detector.ml.thresholds import (
     AnomalyThresholdSelection,
     CategoryAbstentionSelection,
@@ -151,11 +156,13 @@ __all__ = [
     "ExperimentalAnomalyRun",
     "FrozenCategoryModel",
     "FrozenChampion",
+    "apply_frozen_binary_decision",
     "category_applicable_anchors",
     "category_scores_payload",
     "predict_anomaly",
     "predict_binary",
     "predict_category",
+    "predict_serving_binary",
     "verify_inference_feature_contract",
 ]
 
@@ -1171,15 +1178,66 @@ def predict_binary(
 ) -> tuple[BinaryPrediction, ...]:
     """Score *dataset* under the frozen champion and apply its operating point.
 
+    The published-split predictor: it checks that the dataset names a split
+    predictions may be published for, and then applies
+    :func:`apply_frozen_binary_decision`.  Every scientific step lives there, so
+    this function and the live serving adapter cannot drift apart in what a
+    decision *means* -- they differ only in what they are allowed to score.
+    """
+    _require_scope(dataset)
+    return apply_frozen_binary_decision(champion, dataset.frame)
+
+
+def predict_serving_binary(
+    champion: FrozenChampion, batch: ServingBatch
+) -> tuple[BinaryPrediction, ...]:
+    """Score one live request under the frozen champion, for serving only.
+
+    The same frozen decision as :func:`predict_binary`, over rows that belong to
+    no experimental population: a :class:`~password_attack_detector.ml.dataset.\
+ServingBatch` carries no split, so nothing here can file live traffic as TRAIN,
+    validation, TEST, or holdout, and there is no scope argument through which a
+    caller could choose one.
+
+    Nothing is published, no receipt is written, and no label is read or
+    readable.  What comes back are the same
+    :class:`BinaryPrediction` rows the split predictor emits, because the
+    decision is the same decision -- identical feature state gives identical
+    scores, and a test asserts exactly that against the split path.
+
+    Raises:
+        ModelNotReadyError: when the batch carries no rows to score.
+    """
+    if batch.row_count == 0:
+        raise ModelNotReadyError("there are no rows in this request to score")
+    return apply_frozen_binary_decision(champion, batch.frame)
+
+
+def apply_frozen_binary_decision(
+    champion: FrozenChampion, frame: TransformableFrame
+) -> tuple[BinaryPrediction, ...]:
+    """Apply the frozen binary champion to *frame*.
+
+    **The one implementation of the binary decision**, shared by the
+    published-split predictor and the live serving adapter.  Factored out rather
+    than copied precisely because a second copy is how a serving path acquires
+    its own operating point: there is one place the threshold is compared, one
+    place the calibrator is applied, and one place the score kind is decided.
+
     The Milestone 8 order, and every step of it is frozen state rather than a
     choice made here: the reviewed raw feature order, the frozen preprocessor,
     the project-owned inference adapter, the raw decision score preserved as
     published, the frozen calibrator applied only when the lineage has one, and
     the frozen threshold applied to whichever score it was selected against.
+
+    *frame* is a :class:`~password_attack_detector.ml.preprocessing.\
+TransformableFrame`, which is the narrowest type this needs: the reviewed
+    feature order, the canonically ordered anchors, and the cells.  It carries
+    no split, no label, and no campaign, so neither this function nor the frozen
+    preprocessor it calls can read one.
     """
-    _require_scope(dataset)
     index = _malicious_column(champion.binary)
-    scored = champion.binary.transform_and_score(dataset.frame)
+    scored = champion.binary.transform_and_score(frame)
     # Stored exactly, never rounded. A frozen threshold is an *observed score*
     # kept at full precision for the reason Milestone 5 states: rounding moves
     # the boundary of a step function. Rounding the score moves the row instead,
@@ -1206,7 +1264,7 @@ def predict_binary(
 
     threshold = champion.decision_threshold
     rows: list[BinaryPrediction] = []
-    for position, anchor in enumerate(dataset.frame.anchors):
+    for position, anchor in enumerate(frame.anchors):
         probability = None if probabilities is None else probabilities[position]
         decided = raw[position] if probability is None else probability
         rows.append(

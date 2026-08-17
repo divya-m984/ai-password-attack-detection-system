@@ -9,6 +9,7 @@ Available commands:
     password-attack-detector features ...
     password-attack-detector detection ...
     password-attack-detector ml ...
+    password-attack-detector deploy ...
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ from rich.table import Table
 
 from password_attack_detector import __version__
 from password_attack_detector.data.cli import data_app
+from password_attack_detector.deployment.cli import deployment_app
 from password_attack_detector.detection.cli import detection_app
 from password_attack_detector.features.cli import features_app
 from password_attack_detector.ml.cli import ml_app
@@ -38,6 +40,7 @@ app.add_typer(data_app, name="data")
 app.add_typer(features_app, name="features")
 app.add_typer(detection_app, name="detection")
 app.add_typer(ml_app, name="ml")
+app.add_typer(deployment_app, name="deploy")
 
 console = Console()
 err_console = Console(stderr=True)

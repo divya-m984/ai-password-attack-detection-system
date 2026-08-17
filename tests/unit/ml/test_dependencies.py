@@ -53,6 +53,13 @@ PHASE_FOUR_DEPENDENCIES = {
     "typer",
 }
 
+#: Runtime dependencies Phase 6 added for the HTTP serving layer.  Listed
+#: separately rather than folded into the set above so this file keeps saying
+#: what it was written to say: the *ML layer* added exactly one dependency, and
+#: a later phase adding a web server does not quietly become licence for the ML
+#: layer to add a second.
+PHASE_SIX_SERVING_DEPENDENCIES = {"fastapi", "uvicorn"}
+
 
 def _repo_root() -> Path:
     """Return the repository root, located from this test file."""
@@ -88,9 +95,24 @@ def _declared_dependencies() -> dict[str, str]:
 
 
 def test_scikit_learn_is_the_only_new_direct_dependency() -> None:
-    """Phase 5 adds exactly one runtime dependency, and this is it."""
+    """Phase 5 adds exactly one runtime dependency, and this is it.
+
+    The Phase 6 serving dependencies are subtracted rather than absorbed: they
+    belong to the API layer, are declared in one place, and must not become
+    cover for an unreviewed modelling dependency arriving beside them.
+    """
     declared = set(_declared_dependencies())
-    assert declared - PHASE_FOUR_DEPENDENCIES == {"scikit-learn"}
+    added = declared - PHASE_FOUR_DEPENDENCIES - PHASE_SIX_SERVING_DEPENDENCIES
+    assert added == {"scikit-learn"}
+
+
+def test_the_serving_layer_added_exactly_two_dependencies() -> None:
+    """Phase 6 adds a web framework and a server, and nothing else."""
+    declared = set(_declared_dependencies())
+    assert declared & PHASE_SIX_SERVING_DEPENDENCIES == PHASE_SIX_SERVING_DEPENDENCIES
+    assert declared - PHASE_FOUR_DEPENDENCIES - {"scikit-learn"} == (
+        PHASE_SIX_SERVING_DEPENDENCIES
+    )
 
 
 def test_the_declared_range_is_bounded_on_both_sides() -> None:

@@ -64,6 +64,7 @@ __all__ = [
     "ReferenceFeatureKind",
     "ScoreKind",
     "SelectionStatus",
+    "ServingScope",
     "TestEvaluationStatus",
     "ThresholdObjective",
     "TrainingRunStatus",
@@ -499,6 +500,45 @@ class MLSplit(StrEnum):
 #: calibrators and choose operating points; test and holdout rows are read once,
 #: after everything is frozen; excluded rows are read never.
 FIT_ELIGIBLE_SPLITS: Final[frozenset[MLSplit]] = frozenset({MLSplit.TRAIN})
+
+
+class ServingScope(StrEnum):
+    """What a live row scored by the deployed service *is*.
+
+    Deliberately **not** a member of :class:`MLSplit`, and deliberately not the
+    same type.  A split is an experimental assignment: it says which population
+    a row belongs to, and every scientific artifact in this layer -- a
+    threshold, a calibrator, an evaluation receipt, a prediction manifest -- is
+    scoped by one.  A request arriving at the serving API belongs to no such
+    population.  It was not partitioned, it carries no outcome, nothing will be
+    measured on it, and no receipt will name it.
+
+    Filing live traffic under ``MLSplit.TEST`` because the scoring path
+    happened to want a split would state something false in the one field a
+    reader trusts to be true, and it would put live rows in the same scope as
+    the locked evaluation population.  So live inference gets its own scope
+    with its own vocabulary, and the two types cannot be substituted for one
+    another even by mistake.
+
+    One member, and it stays that way: serving rows are all in one scope,
+    always, so a caller cannot select a different scoring population.
+    """
+
+    LIVE = "live_serving"
+
+
+def _assert_serving_is_not_a_split() -> None:
+    """Fail at import if the serving scope ever collides with a split label."""
+    shared = {item.value for item in ServingScope} & {item.value for item in MLSplit}
+    if shared:
+        raise ValueError(
+            f"the serving scope shares value(s) {sorted(shared)} with a split "
+            f"label; live traffic is not an experimental population and must "
+            f"not be able to name itself as one"
+        )
+
+
+_assert_serving_is_not_a_split()
 
 
 class FeatureDecisionPoint(StrEnum):

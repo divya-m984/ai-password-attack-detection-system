@@ -63,7 +63,7 @@ from password_attack_detector.features.serialization import (
     FEATURE_SPLIT_COLUMNS,
 )
 from password_attack_detector.features.splitting import SplitLabel
-from password_attack_detector.ml.enums import MLSplit
+from password_attack_detector.ml.enums import MLSplit, ServingScope
 from password_attack_detector.ml.features import (
     ML_OUTPUT_COLUMNS,
     RESERVED_MATRIX_COLUMNS,
@@ -83,10 +83,13 @@ __all__ = [
     "InferenceFrame",
     "LabelRow",
     "MLDataset",
+    "ServingBatch",
+    "ServingFrame",
     "SplitDataset",
     "SplitRow",
     "assemble_inference_dataset",
     "assemble_ml_dataset",
+    "assemble_serving_batch",
     "campaign_association",
     "declared_campaign_ids",
     "load_inference_dataset",
@@ -1204,3 +1207,226 @@ def load_inference_dataset(
         scope=scope,
         feature_catalog_fingerprint=feature_catalog_fingerprint,
     )
+
+
+# ---------------------------------------------------------------------------
+# Live serving: rows that belong to no experimental population
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class ServingAnchor:
+    """A live row's join identity, and the only identity serving carries.
+
+    Satisfies :class:`~password_attack_detector.ml.ordering.AnchoredRow`, which
+    is all the ordering guard and the frozen preprocessor need.  No label, no
+    campaign, no supervised-eligibility flag, and no split.
+    """
+
+    anchor_event_id: str
+    anchor_event_time: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class _ServingRow:
+    """One validated live row, before it becomes a frame."""
+
+    anchor_event_id: str
+    anchor_event_time: datetime
+    values: tuple[Any, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ServingFrame:
+    """The live rows a frozen model may be scored over.
+
+    Structurally satisfies
+    :class:`~password_attack_detector.ml.preprocessing.TransformableFrame` and
+    nothing wider.  **It has no ``split`` attribute**, which is the whole point:
+    a frozen preprocessor accepts it exactly as it accepts a published split,
+    and there is nowhere on it for a request to claim membership of TRAIN,
+    validation, TEST, or the novel-anomaly holdout.
+    """
+
+    feature_names: tuple[str, ...]
+    anchors: tuple[ServingAnchor, ...]
+    feature_matrix: tuple[tuple[Any, ...], ...]
+
+    @property
+    def row_count(self) -> int:
+        """Return the number of rows to be scored."""
+        return len(self.anchors)
+
+
+@dataclass(frozen=True)
+class ServingBatch:
+    """One live request's scoring input, canonically ordered and fingerprinted.
+
+    The serving counterpart of :class:`InferenceDataset`: same feature contract,
+    same canonical ordering, same cell validation, same fingerprint discipline
+    -- and **no split membership at all**.  There is no ``scope: MLSplit``
+    field, no split table, and no parameter through which either could arrive,
+    because a live request was never partitioned into an experimental
+    population and saying that it was would be false.
+
+    :attr:`scope` names what the rows actually are:
+    :attr:`~password_attack_detector.ml.enums.ServingScope.LIVE`.  It is a
+    different type from :class:`~password_attack_detector.ml.enums.MLSplit`, so
+    the two cannot be substituted for one another, and it is a constant rather
+    than an argument, so a caller cannot select a different scoring population.
+
+    ``serving_input_fingerprint`` covers the resolved feature contract and every
+    anchor and cell that will be scored.  It is computed for the same reason its
+    inference counterpart is -- so that identical feature state is provably
+    identical input -- and it is never published, never joined, and never
+    recorded in a scientific artifact.
+    """
+
+    scope: ServingScope
+    frame: ServingFrame
+    feature_names: tuple[str, ...]
+    eligible_feature_list_fingerprint: str
+    allowlist_id: str
+    allowlist_version: str
+    feature_catalog_fingerprint: str | None
+    serving_input_fingerprint: str
+    row_count: int
+
+
+def assemble_serving_batch(
+    *,
+    feature_rows: Sequence[Mapping[str, Any]],
+    eligible: EligibleFeatureList,
+    feature_catalog_fingerprint: str | None = None,
+) -> ServingBatch:
+    """Prepare live feature rows for scoring, reading no split and no label.
+
+    Two parameters and a provenance digest.  Compare
+    :func:`assemble_inference_dataset`, which additionally takes a split table
+    and a scope: scoring "the test rows" requires knowing which rows those are,
+    and scoring *this request* does not.  Requiring a split here would have
+    forced every live batch to name an experimental population, and the only
+    way to satisfy that requirement is to state something untrue.
+
+    Every check the inference assembler performs is performed here, by the same
+    code: prohibited columns are refused, the reviewed feature order is
+    required in full, anchors must be unique, timestamps must be
+    timezone-aware, cells must be finite, and the rows are canonically ordered
+    before anything reads them.  Nothing is relaxed because the caller is a
+    request rather than a file.
+
+    Args:
+        feature_rows: point-in-time feature snapshot rows, in any order.
+        eligible: the resolved, reviewed feature contract the frozen model was
+            fitted under.
+        feature_catalog_fingerprint: recorded for provenance when supplied.
+
+    Raises:
+        DataValidationError: on a duplicate anchor, a prohibited column, a
+            missing admitted feature, a naive timestamp, a non-finite value, or
+            an empty batch.
+    """
+    _reject_matrix_contamination(eligible.feature_names)
+    if not feature_rows:
+        raise DataValidationError("No feature rows were supplied")
+    _reject_prohibited_columns(sorted({key for row in feature_rows for key in row}))
+    _unique_or_raise([str(row[ANCHOR_EVENT_ID]) for row in feature_rows], "The batch")
+
+    rows: list[_ServingRow] = []
+    for row in feature_rows:
+        missing = [name for name in eligible.feature_names if name not in row]
+        if missing:
+            raise DataValidationError(
+                f"The feature table is missing {len(missing)} admitted feature "
+                f"column(s), including {sorted(missing)[:5]}"
+            )
+        rows.append(
+            _ServingRow(
+                anchor_event_id=str(row[ANCHOR_EVENT_ID]),
+                anchor_event_time=_validated_anchor_time(row[ANCHOR_EVENT_TIME]),
+                values=tuple(
+                    _validated_cell(row[name], name) for name in eligible.feature_names
+                ),
+            )
+        )
+
+    ordered = canonicalize_rows(rows)
+    frame = ServingFrame(
+        feature_names=eligible.feature_names,
+        anchors=tuple(
+            ServingAnchor(
+                anchor_event_id=row.anchor_event_id,
+                anchor_event_time=row.anchor_event_time,
+            )
+            for row in ordered
+        ),
+        feature_matrix=tuple(row.values for row in ordered),
+    )
+    return ServingBatch(
+        scope=ServingScope.LIVE,
+        frame=frame,
+        feature_names=eligible.feature_names,
+        eligible_feature_list_fingerprint=eligible.fingerprint(),
+        allowlist_id=eligible.allowlist_id,
+        allowlist_version=eligible.allowlist_version,
+        feature_catalog_fingerprint=feature_catalog_fingerprint,
+        serving_input_fingerprint=_serving_input_fingerprint(
+            ordered, eligible=eligible
+        ),
+        row_count=len(ordered),
+    )
+
+
+def _serving_input_fingerprint(
+    rows: Sequence[_ServingRow], *, eligible: EligibleFeatureList
+) -> str:
+    """Return a digest of exactly what will be scored.
+
+    The feature contract, the canonical row order, and every cell -- and no
+    scope string, because the scope is a constant and a digest of a constant
+    adds nothing.  Two requests carrying identical feature state therefore
+    derive an identical digest, which is what makes "the same window scores the
+    same way" a checkable claim rather than an expectation.
+    """
+    return _digest(
+        {
+            "eligible_feature_list_fingerprint": eligible.fingerprint(),
+            "feature_names": list(eligible.feature_names),
+            "rows": [
+                {
+                    "anchor_event_id": row.anchor_event_id,
+                    "anchor_event_time": row.anchor_event_time.isoformat(),
+                    "values": [_scalar(value) for value in row.values],
+                }
+                for row in rows
+            ],
+        }
+    )
+
+
+def _assert_serving_carries_no_split() -> None:
+    """Fail at import if the live serving types grow a split-shaped field.
+
+    The property this milestone bought is that a live row cannot claim to be a
+    TEST row.  The way that stops being true is one convenient attribute at a
+    time, so the attribute names are refused rather than reviewed for.
+    """
+    forbidden = {"split", "splits", "scope_split", "ml_split", "partition"}
+    for holder in (ServingFrame, ServingBatch, ServingAnchor, _ServingRow):
+        offending = sorted(forbidden & set(getattr(holder, "__annotations__", {})))
+        if offending:
+            raise ValueError(
+                f"{holder.__name__} declares field(s) {offending}; live serving "
+                f"rows belong to no experimental population and must not be "
+                f"able to name one"
+            )
+    # Annotations are strings under ``from __future__ import annotations``, so
+    # the declared type is compared by name rather than by identity.
+    if ServingBatch.__annotations__["scope"] != ServingScope.__name__:
+        raise ValueError(
+            "a serving batch's scope must be a ServingScope; typing it as a "
+            "split would let live traffic be filed as an evaluation population"
+        )
+
+
+_assert_serving_carries_no_split()
