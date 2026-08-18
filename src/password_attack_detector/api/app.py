@@ -46,6 +46,7 @@ from password_attack_detector.api.errors import (
 )
 from password_attack_detector.api.routes import (
     detection_router,
+    explain_router,
     health_router,
     system_router,
 )
@@ -318,6 +319,7 @@ def create_app(
 
     application.include_router(health_router)
     application.include_router(detection_router)
+    application.include_router(explain_router)
     application.include_router(system_router)
     if runtime is not None:
         # A test-injected runtime is available immediately, so the application

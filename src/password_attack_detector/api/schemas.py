@@ -62,10 +62,15 @@ from password_attack_detector.detection.enums import (
     Severity,
 )
 from password_attack_detector.detection.schemas import EvidenceItem
-from password_attack_detector.ml.enums import FusionStrategy, ScoreKind
+from password_attack_detector.ml.enums import (
+    ExplanationMethod,
+    FusionStrategy,
+    ScoreKind,
+)
 
 __all__ = [
     "API_SCHEMA_VERSION",
+    "MAX_REPORTED_CONTRIBUTIONS",
     "MAX_WINDOW_EVENTS",
     "AnchorDetection",
     "AnchorSelection",
@@ -76,6 +81,8 @@ __all__ = [
     "DetectionBatchRequest",
     "DetectionResponse",
     "DetectionWindowRequest",
+    "ExplanationContribution",
+    "ExplanationResponse",
     "HealthResponse",
     "HybridLayerResult",
     "MLLayerResult",
@@ -109,6 +116,16 @@ SERVICE_NAME: Final[str] = "password-attack-detector"
 #: and is never larger than this; this one exists so a body that slipped past the
 #: byte ceiling still cannot make the parser build an unbounded list.
 MAX_WINDOW_EVENTS: Final[int] = MAX_MAX_BATCH_EVENTS
+
+#: The hard ceiling on how many per-column contributions one explanation
+#: reports, whatever the reviewed configuration asks for.
+#:
+#: An explanation is a *summary of what moved this decision*, and a response
+#: listing every transformed column would be a row-by-row export of the fitted
+#: function's shape.  The bound is applied after ranking by magnitude, so what
+#: is dropped is always the part that moved the decision least, and the response
+#: says how many were dropped rather than presenting the remainder as the whole.
+MAX_REPORTED_CONTRIBUTIONS: Final[int] = 25
 
 #: Domain prefix required of each pseudonymous identifier field.
 _PSEUDONYM_PREFIX: Final[dict[str, str]] = {
@@ -591,6 +608,147 @@ class BatchDetectionResponse(BaseModel):
     api_schema_version: str = API_SCHEMA_VERSION
     window: WindowSummary
     anchors: tuple[AnchorDetection, ...]
+
+
+# ---------------------------------------------------------------------------
+# Explanation
+# ---------------------------------------------------------------------------
+
+
+class ExplanationContribution(BaseModel):
+    """One transformed column's signed contribution to one anchor's decision.
+
+    ``transformed_feature`` is an engineered column name the reviewed allowlist
+    admitted.  There is no ``transformed_value`` field and there will not be one:
+    Phase 5 gates value disclosure behind a reviewed configuration flag because a
+    transformed value can be a country code, and a live wire surface is not the
+    place that flag gets turned on.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    transformed_feature: str
+    contribution: float = Field(
+        description=(
+            "Signed contribution to decision_value, on the decision function's "
+            "own scale. Not a probability and not a percentage."
+        )
+    )
+
+
+class ExplanationResponse(BaseModel):
+    """Which transformed columns moved the frozen model's decision for one anchor.
+
+    The same decomposition Phase 5 publishes, computed by the same function, over
+    a live row.  Three things it deliberately is **not**:
+
+    * **Not a decomposition of the probability.**  :attr:`decision_value` is the
+      decision function's own quantity -- the logit for a linear head, the mean
+      leaf score for the forest, the step for the threshold baseline.  The
+      calibrated probability and the frozen operating point are reported by
+      ``/api/v1/detect``, and no contribution here sums toward either.
+    * **Not causal.**  A contribution says how the fitted function decomposes
+      over the columns it was handed.  It does not say the behaviour caused the
+      outcome, and the vocabulary stays flat: ``contribution``, never
+      ``importance``, ``driver``, or ``because``.
+    * **Not complete.**  The contributions are ranked by magnitude and bounded;
+      :attr:`omitted_contribution_count` says how many were left out, so a reader
+      never mistakes the reported set for the whole decomposition.
+
+    :attr:`reconstruction_residual` is the check, reported rather than asserted
+    away: the full decomposition -- not the truncated one below -- reconstructs
+    the model's own decision value to within the declared tolerance, or this
+    response reports the explanation unavailable instead.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    api_schema_version: str = API_SCHEMA_VERSION
+    anchor_event_id: str
+    anchor_event_time: datetime
+    available: bool
+    unavailable_reason: ReasonCode | None = Field(
+        default=None,
+        description="Stable reason code when no exact decomposition was produced.",
+    )
+    method: ExplanationMethod | None = Field(
+        default=None,
+        description=(
+            "The exact decomposition used. A family without one reports "
+            "unavailable rather than an approximation."
+        ),
+    )
+    model_family: str | None = None
+    score_kind: ScoreKind | None = Field(
+        default=None,
+        description=(
+            "What the frozen operating point was applied to. Context only; "
+            "never summed with a contribution."
+        ),
+    )
+    decision_value: float | None = Field(
+        default=None,
+        description="The decision-function quantity the contributions sum to.",
+    )
+    baseline_value: float | None = Field(
+        default=None,
+        description=(
+            "The additive constant contributions are measured against: a linear "
+            "intercept, the forest's ensemble-mean root value, or zero."
+        ),
+    )
+    contributions: tuple[ExplanationContribution, ...] = ()
+    transformed_feature_count: int = Field(
+        default=0, ge=0, description="Columns the full decomposition covered."
+    )
+    omitted_contribution_count: int = Field(
+        default=0, ge=0, description="Columns ranked below the reported bound."
+    )
+    reconstruction_residual: float | None = Field(
+        default=None,
+        description=(
+            "decision_value - (baseline_value + sum of the FULL decomposition). "
+            "Checked against the declared tolerance before this response is built."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def check_availability(self) -> Self:
+        """An available explanation decomposes something; an absent one names why."""
+        if self.available:
+            if self.unavailable_reason is not None:
+                raise ValueError("an available explanation names no unavailable reason")
+            if (
+                self.method is None
+                or self.decision_value is None
+                or self.baseline_value is None
+                or self.reconstruction_residual is None
+            ):
+                raise ValueError(
+                    "an available explanation reports a method, a decision value, "
+                    "a baseline, and the residual that checked them"
+                )
+        else:
+            if self.unavailable_reason is None:
+                raise ValueError("an unavailable explanation must name why")
+            if self.method is not None or self.contributions:
+                raise ValueError("an unavailable explanation decomposes nothing")
+        if len(self.contributions) > MAX_REPORTED_CONTRIBUTIONS:
+            raise ValueError(
+                f"an explanation reports at most {MAX_REPORTED_CONTRIBUTIONS} "
+                f"contributions"
+            )
+        names = [item.transformed_feature for item in self.contributions]
+        if len(set(names)) != len(names):
+            raise ValueError("an explanation credits each column at most once")
+        if len(self.contributions) + self.omitted_contribution_count != (
+            self.transformed_feature_count
+        ):
+            raise ValueError(
+                "the reported and omitted contributions must account for every "
+                "column the decomposition covered"
+            )
+        return self
 
 
 # ---------------------------------------------------------------------------

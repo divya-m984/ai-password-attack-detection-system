@@ -1,0 +1,39 @@
+# Streamlit configuration for the SOC analyst console.
+#
+# Repository-safe: this file carries layout and theme only. There is no
+# `.streamlit/secrets.toml` in this project and there must not be one -- the
+# dashboard holds no credential, the API it talks to accepts none, and a secrets
+# file would be a place for one to accumulate. `.gitignore` refuses it.
+
+[theme]
+base = "dark"
+primaryColor = "#58a6ff"
+backgroundColor = "#0b0f19"
+secondaryBackgroundColor = "#131a29"
+textColor = "#e6edf3"
+font = "sans serif"
+
+[server]
+# Loopback by default. A demonstration console binding every interface would be
+# a decision nobody made; an operator who wants otherwise passes
+# --server.address explicitly.
+address = "127.0.0.1"
+port = 8501
+headless = true
+# Nothing on this console uploads a file, so the ceiling is small rather than
+# the 200 MB default.
+maxUploadSize = 1
+
+[browser]
+# No usage statistics are collected from this project's demonstrations.
+gatherUsageStats = false
+
+[client]
+# An uncaught exception must not be rendered into the browser: the project's
+# error contract exists to keep tracebacks off a page, and this is the setting
+# that would otherwise undo it for the dashboard's own errors.
+showErrorDetails = "none"
+toolbarMode = "minimal"
+
+[runner]
+magicEnabled = false

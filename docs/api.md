@@ -34,6 +34,11 @@ fused verdict
 HTTP response
 ```
 
+`POST /api/v1/explain` branches off the same path after the serving batch is
+assembled: the model's *own* frozen preprocessor produces the matrix, and
+`ml/explain.py`'s `local_contributions` decomposes it. No step is duplicated and
+no step is skipped.
+
 The serving package contains **no** feature computation, **no** threshold
 arithmetic, **no** rule weighting, and **no** second scoring implementation.
 Where a quantity is needed, the frozen implementation that owns it is called;
@@ -64,6 +69,12 @@ That guard names `materialize_serving_bundle`, `write_serving_bundle`,
 `reconstruct_stacked_state` and `prepare_fusion_selection` alongside the training
 entry points: the offline materializer of §2 is as unwelcome inside a request
 as a trainer is.
+
+A second guard refuses `MLSplit`, `predict_binary`, `assemble_inference_dataset`,
+and `explain_predictions`. The last is not a writer — it is Phase 5's
+population-level attribution entry point, and it takes a `scope: MLSplit`. Having
+it reachable from a request handler is how a serving path acquires a split label
+it has no business claiming.
 
 ### Live inference is not a dataset split
 
@@ -361,6 +372,7 @@ merely must not be.
 | `GET` | `/version` | Health | Package and contract versions |
 | `POST` | `/api/v1/detect` | Detection | Score one anchor within a window |
 | `POST` | `/api/v1/detect/batch` | Detection | Score many anchors within one window |
+| `POST` | `/api/v1/explain` | Detection | Attribute one anchor's model decision |
 | `GET` | `/api/v1/system/status` | System | Which layers this deployment runs |
 | `GET` | `/api/v1/model/info` | System | Frozen champion identity and operating point |
 | `GET` | `/api/v1/rules` | System | The public rule catalog |
@@ -507,6 +519,99 @@ deployment enabled it. No thresholds and no feature names.
 ### `POST /api/v1/detect` and `POST /api/v1/detect/batch`
 
 See §5 and §6.
+
+### `POST /api/v1/explain`
+
+Takes the **same window schema** `/api/v1/detect` takes, and answers a narrower
+question about it: which transformed columns moved the frozen model's decision
+for the selected anchor, and by how much.
+
+Separate from `/api/v1/detect` rather than folded into its response, for two
+reasons. A detection verdict is what an alert is raised on and is wanted on every
+call; an attribution is what an analyst opens afterwards for one row, and
+attaching it to every verdict would put a per-column table behind every alert.
+And the two can legitimately disagree about availability: a champion family with
+no exact decomposition still produces a perfectly good verdict, so the
+explanation reports itself unavailable while detection carries on.
+
+```json
+{
+  "api_schema_version": "1.0.0",
+  "anchor_event_id": "6b1d7a4e-9c02-5f31-88ad-4e7f0b3c9d15",
+  "anchor_event_time": "2026-03-04T12:04:50Z",
+  "available": true,
+  "unavailable_reason": null,
+  "method": "linear_logit_contribution",
+  "model_family": "logistic_regression",
+  "score_kind": "calibrated_probability",
+  "decision_value": -1.482391,
+  "baseline_value": -2.104772,
+  "contributions": [
+    { "transformed_feature": "failed_attempts_5m", "contribution": 0.914233 },
+    { "transformed_feature": "seconds_since_prior_failure", "contribution": -0.291845 }
+  ],
+  "transformed_feature_count": 61,
+  "omitted_contribution_count": 59,
+  "reconstruction_residual": 0.0
+}
+```
+
+#### Why this needs no scope
+
+The decomposition is Phase 5's own
+`ml.explain.local_contributions`, called unchanged. It takes a verified model and
+a transformed matrix and **no split argument** — which is precisely what makes
+attributing a live row possible without claiming the row belongs to an
+experimental population.
+
+Phase 5's population-level entry point, `explain_predictions`, *does* take a
+`scope: MLSplit` and refuses TEST. It is neither called nor importable here: the
+import-time guard in `api/services.py` refuses the name alongside `MLSplit`
+itself.
+
+#### What it decomposes, and what it does not
+
+`decision_value` is the **decision function's own quantity** — the logit for a
+linear head, the mean leaf score for the forest, the step for the threshold
+baseline. It is not the calibrated probability, and no contribution sums toward
+one. The probability and the frozen operating point are reported by
+`/api/v1/detect`; this endpoint reports **no threshold and no verdict**, because
+the contributions sum to a logit and the threshold sits on a probability.
+
+`reconstruction_residual` is `decision_value − (baseline_value + sum of the FULL
+decomposition)`. It is checked against Phase 5's declared tolerance *before* the
+response is built, over every column — never over the truncated list below, which
+would check nothing. A decomposition that does not add up reports
+`explanation_not_reconstructible` rather than being published with a caveat.
+
+The contributions are **ranked by magnitude and bounded** by
+`min(explain.top_k_features, 25)`. `omitted_contribution_count` says how many
+were left out, so the reported set is never mistaken for the whole decomposition,
+and `transformed_feature_count` says how many the decomposition covered.
+
+There is **no `transformed_value` field**, and there will not be one. Phase 5
+gates value disclosure behind a reviewed configuration flag because a transformed
+value can be a country code; a live wire surface is not where that flag gets
+turned on.
+
+#### Refusals
+
+| Condition | Code |
+|---|---|
+| The request selects other than exactly one anchor | `API011` |
+| The runtime is not ready | `API010` |
+| No frozen champion is loaded | `API008` |
+| Window, ordering, identity, credential, and size rules | as `/api/v1/detect` |
+
+An explanation that cannot be produced for a *scientific* reason is not a
+refusal: it is a `200` with `available: false` and one of
+`explanation_disabled`, `explanation_method_unavailable`, or
+`explanation_not_reconstructible`. The detection verdict is unaffected and
+remains available.
+
+Nothing here fits, calibrates, re-thresholds, or writes. An integration test
+hashes every artifact byte under the deployment before and after a run of
+explanations and asserts they are identical.
 
 ---
 
@@ -832,6 +937,9 @@ open http://127.0.0.1:8000/docs
 skips artifact resolution entirely, which is how the test suite drives the whole
 HTTP surface — including deliberately broken runtimes — without a filesystem.
 
+To drive the same service from the analyst console instead of `curl`, start it in
+a second terminal — see [dashboard.md](dashboard.md) §10.
+
 ---
 
 ## 11. Swagger
@@ -871,12 +979,20 @@ detail. Set `PAD_API_DOCS_ENABLED=false` to serve none of the three.
 * **No category head or anomaly probe.** `/api/v1/model/info` reports whether a
   category head was frozen, but no endpoint returns a category assignment or an
   experimental anomaly score.
-* **No explainability endpoint.** Phase 5 attribution is available through
-  `ml explain`, not over HTTP.
+* **Per-anchor attribution only.** `/api/v1/explain` decomposes one anchor's
+  model decision. There is no population-level attribution over live traffic, and
+  there should not be: Phase 5's aggregate report — permutation sensitivity,
+  unused-column counts, the sealed quality manifest — is computed over a
+  *partition*, and live requests are not one. The aggregate report stays with
+  `ml explain`.
+* **No drift endpoint.** Drift is computed offline by `ml drift` against a
+  reference profile captured at training time; nothing in the serving layer
+  publishes a drift report.
 * **No authentication, authorisation, rate limiting, or CORS.** The service
   binds to `127.0.0.1` by default and is not hardened for exposure to an
-  untrusted network. No cross-origin policy is installed: no dashboard origin
-  exists yet, and a permissive default would be a decision nobody made.
+  untrusted network. No cross-origin policy is installed: the Milestone 2 console
+  calls this service from Python rather than from a browser, so no origin needs
+  allowing yet, and a permissive default would be a decision nobody made.
 * **Synthetic evaluation only.** Every published figure about this system
   describes generated authentication traffic. It is not evidence of real-world
   detection effectiveness.
@@ -896,4 +1012,6 @@ detail. Set `PAD_API_DOCS_ENABLED=false` to serve none of the three.
 | [risk-scoring.md](risk-scoring.md) | What `risk_score` is, and is not |
 | [model-contract.md](model-contract.md) | What a model artifact must carry and guarantee |
 | [test-evaluation.md](test-evaluation.md) | The locked TEST protocol and fusion selection |
+| [explainability.md](explainability.md) | The attribution contract `/api/v1/explain` reuses |
+| [dashboard.md](dashboard.md) | The analyst console that consumes this API |
 | [detection-limitations.md](detection-limitations.md) | What the detection layer does not do |

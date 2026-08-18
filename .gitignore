@@ -29,6 +29,12 @@ htmlcov/
 .env.local
 .env.*.local
 
+# Streamlit secrets. The dashboard holds no credential and the API it talks to
+# accepts none, so this file has no legitimate content in this project; it is
+# refused here so one cannot arrive by habit. `.streamlit/config.toml` is
+# tracked and carries theme and layout only.
+.streamlit/secrets.toml
+
 # IDE state
 .vscode/settings.json
 .idea/

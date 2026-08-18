@@ -353,10 +353,11 @@ promotes, or rethresholds on any finding.
 
 ---
 
-## Phase 6 status — FastAPI serving foundation (Milestone 1)
+## Phase 6 status — Serving layer and analyst console (Milestones 1–2)
 
-Phase 6 turns the finished engine into something runnable. Milestone 1 adds the
-HTTP serving layer and nothing else: no dashboard, no container, no deployment.
+Phase 6 turns the finished engine into something runnable. Milestone 1 added the
+HTTP serving layer; Milestone 2 adds the SOC analyst console on top of it. No
+container and no deployment yet.
 
 The API is an **adapter**. It computes no feature, re-derives no threshold,
 re-weights no rule, and contains no second scoring implementation — every
@@ -388,6 +389,13 @@ quantity comes from the frozen Phase 3–5 code that owns it.
 - **`GET /version`** — package and every contract version; nothing host-specific
 - **`POST /api/v1/detect`** and **`POST /api/v1/detect/batch`** — score a
   bounded, ordered **window** of authentication events for one anchor or many
+- **`POST /api/v1/explain`** *(Milestone 2)* — decomposes the frozen model's
+  decision for one anchor over the transformed columns it read. Uses Phase 5's
+  own `local_contributions`, the scope-free primitive that takes no `MLSplit`, so
+  a live row is attributed without claiming membership of any experimental
+  population. Nothing is fitted, no operating point moves, and a family with no
+  exact decomposition reports the attribution unavailable rather than an
+  approximation.
 - **`GET /api/v1/system/status`**, **`/api/v1/model/info`**, **`/api/v1/rules`**
   — public-safe layer, champion, and rule information
 - **Three layers kept apart** — the rule verdict, the model verdict, and the
@@ -454,15 +462,114 @@ what is published. Details in [docs/api.md](docs/api.md) §2.
 
 Full reference: **[docs/api.md](docs/api.md)**.
 
-### What Phase 6 Milestone 1 does not claim
+### Milestone 2 — the SOC analyst console
 
-The service runs locally. It is not deployed, not containerised, not
-authenticated, not rate-limited, and not hardened for an untrusted network. It
-stores nothing. A `stacked` deployment additionally requires the offline
-`deploy materialize` step to have been run against the frozen lineage; until it
-has, the hybrid is reported unavailable and readiness is `503` rather than a
-strategy nobody selected being substituted. See
-[docs/api.md](docs/api.md) §12.
+A dark, wide, analyst-oriented Streamlit console, and structurally **a client of
+the serving API and nothing else**.
+
+```
+Browser → Streamlit console → DashboardAPIClient → FastAPI → Phase 3–5 engine
+```
+
+- **No detection capability is importable from it.** No dashboard module imports
+  `ml`, `detection`, `features`, `deployment`, or `data`. There is no rule
+  engine, preprocessor, model adapter, calibrator, threshold, fusion function, or
+  serving-bundle reader in that process. A test walks every module's syntax tree
+  and enforces it; the only project module shared is `exceptions`.
+- **One door to the backend.** `api_client.py` is the only module importing
+  `httpx`, with a bounded timeout, typed responses, no automatic retry on a
+  detection, no redirect following, and no URL or traceback in any error it
+  surfaces.
+- **The wire contract is re-declared, not imported.** Importing `api.schemas`
+  would have pulled the whole detection stack in transitively; a test asserts the
+  client declares no field the service does not send.
+- **No scientific setting exists.** `PROHIBITED_SETTING_NAMES` refuses a model
+  id, threshold, fusion strategy, artifact root, or API key at import.
+- **Nine views** — Overview, Detection Console, Authentication Events, Security
+  Alerts, Attack Analytics, Rule vs ML vs Hybrid, Explainability, Drift
+  Monitoring, System & Model.
+- **Three safe synthetic templates** — normal activity, a brute-force-like
+  failure burst, a spraying-like fan-out. Synthetic identities, RFC 5737
+  documentation addresses, no credential material anywhere. Loading one fills the
+  form; the analyst still presses submit, and the request still goes through the
+  API.
+- **Layers kept apart on screen** — rule, model, and hybrid get one column each.
+  Nothing on the console blends the ordinal 0–100 `risk_score` with the model's
+  probability, renames a decision score a probability, or re-derives a threshold.
+- **Session-only history** — no alert store, no event database, no fabricated
+  totals. With nothing submitted the pages say *"No detection activity in this
+  dashboard session."* rather than showing a plausible number.
+- **Offline is a designed state** — Streamlit still loads, the header shows API
+  offline, pages show a fixed error state, submission is disabled, no traceback
+  reaches the browser, no metadata is invented, and a retry control recovers when
+  the service returns.
+- **Credentials are refused before storage** — the session refuses a
+  credential-shaped field name under the project's own normalisation, so one can
+  never reach browser session state or the JSON preview, let alone the wire.
+
+### Dashboard package
+
+```
+src/password_attack_detector/dashboard/
+├── app.py            entrypoint: config, session, dispatch
+├── config.py         DashboardSettings — location and presentation only
+├── contracts.py      the wire shapes the console is prepared to read
+├── api_client.py     the one door to the backend
+├── state.py          what one browser session remembers
+├── formatting.py     how values are rendered, and what they may be called
+├── scenarios.py      safe synthetic templates and the console's vocabularies
+├── theme.py          the stylesheet and the escaping HTML helpers
+├── components/       header, status, metrics, alerts, charts
+└── views/            the nine views
+```
+
+`views/` rather than `pages/`: Streamlit treats a `pages/` directory beside the
+entrypoint as an automatic multipage app, which would produce a second navigation
+beside the real one.
+
+### Local demo — two terminals
+
+**Terminal 1 — the API:**
+
+```bash
+uv run uvicorn password_attack_detector.api.app:app \
+  --host 127.0.0.1 \
+  --port 8000
+```
+
+**Terminal 2 — the console:**
+
+```bash
+uv run streamlit run \
+  src/password_attack_detector/dashboard/app.py \
+  --server.address 127.0.0.1 \
+  --server.port 8501
+```
+
+| | |
+| --- | --- |
+| API | <http://127.0.0.1:8000> |
+| Swagger | <http://127.0.0.1:8000/docs> |
+| Dashboard | <http://127.0.0.1:8501> |
+
+Configuration is four optional variables — `PAD_DASHBOARD_API_URL`,
+`PAD_DASHBOARD_REQUEST_TIMEOUT_SECONDS`, `PAD_DASHBOARD_REFRESH_SECONDS`,
+`PAD_DASHBOARD_PAGE_TITLE` — none of which can name a model, a threshold, or a
+strategy.
+
+Full reference: **[docs/dashboard.md](docs/dashboard.md)**.
+
+### What Phase 6 does not claim yet
+
+The service and the console run locally. Neither is deployed, containerised,
+authenticated, rate-limited, or hardened for an untrusted network. Nothing is
+stored: the console's history is one browser session, and there is no alert store,
+no event database, no live or replay pipeline, and no serving drift report. A
+`stacked` deployment additionally requires the offline `deploy materialize` step
+to have been run against the frozen lineage; until it has, the hybrid is reported
+unavailable and readiness is `503` rather than a strategy nobody selected being
+substituted. See [docs/api.md](docs/api.md) §12 and
+[docs/dashboard.md](docs/dashboard.md) §11.
 
 ---
 
@@ -1012,6 +1119,7 @@ See [docs/privacy-model.md](docs/privacy-model.md) and
 | [docs/model-card.md](docs/model-card.md) | Generated: purpose, scope, prohibited use, limitations |
 | [docs/phase5-acceptance.md](docs/phase5-acceptance.md) | Generated: the final Phase 5 acceptance report |
 | [docs/api.md](docs/api.md) | The HTTP serving layer: endpoints, constraints, privacy, limits |
+| [docs/dashboard.md](docs/dashboard.md) | The analyst console: API boundary, views, session limits, offline behaviour |
 
 ---
 

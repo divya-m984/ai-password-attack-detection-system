@@ -60,6 +60,13 @@ PHASE_FOUR_DEPENDENCIES = {
 #: layer to add a second.
 PHASE_SIX_SERVING_DEPENDENCIES = {"fastapi", "uvicorn"}
 
+#: Runtime dependencies Phase 6 Milestone 2 added for the analyst dashboard.
+#: ``httpx`` moves here from the dev group rather than being declared twice: the
+#: dashboard's API client needs it at runtime, and a dependency that is both a
+#: runtime import and a dev-only declaration is a deployment that works only on
+#: the machine the tests ran on.
+PHASE_SIX_DASHBOARD_DEPENDENCIES = {"streamlit", "httpx"}
+
 
 def _repo_root() -> Path:
     """Return the repository root, located from this test file."""
@@ -97,12 +104,17 @@ def _declared_dependencies() -> dict[str, str]:
 def test_scikit_learn_is_the_only_new_direct_dependency() -> None:
     """Phase 5 adds exactly one runtime dependency, and this is it.
 
-    The Phase 6 serving dependencies are subtracted rather than absorbed: they
-    belong to the API layer, are declared in one place, and must not become
-    cover for an unreviewed modelling dependency arriving beside them.
+    The Phase 6 dependencies are subtracted rather than absorbed: they belong to
+    the serving and presentation layers, are declared in one place, and must not
+    become cover for an unreviewed modelling dependency arriving beside them.
     """
     declared = set(_declared_dependencies())
-    added = declared - PHASE_FOUR_DEPENDENCIES - PHASE_SIX_SERVING_DEPENDENCIES
+    added = (
+        declared
+        - PHASE_FOUR_DEPENDENCIES
+        - PHASE_SIX_SERVING_DEPENDENCIES
+        - PHASE_SIX_DASHBOARD_DEPENDENCIES
+    )
     assert added == {"scikit-learn"}
 
 
@@ -111,8 +123,37 @@ def test_the_serving_layer_added_exactly_two_dependencies() -> None:
     declared = set(_declared_dependencies())
     assert declared & PHASE_SIX_SERVING_DEPENDENCIES == PHASE_SIX_SERVING_DEPENDENCIES
     assert declared - PHASE_FOUR_DEPENDENCIES - {"scikit-learn"} == (
-        PHASE_SIX_SERVING_DEPENDENCIES
+        PHASE_SIX_SERVING_DEPENDENCIES | PHASE_SIX_DASHBOARD_DEPENDENCIES
     )
+
+
+def test_the_dashboard_added_exactly_two_dependencies() -> None:
+    """One presentation framework and one HTTP client. No charting stack.
+
+    Streamlit's own charts cover what the analyst pages plot, so no separate
+    plotting library is declared -- and ``matplotlib`` and ``seaborn`` remain in
+    :data:`PROHIBITED_ML_DISTRIBUTIONS`, which the lockfile check enforces.
+    """
+    declared = set(_declared_dependencies())
+    assert (
+        declared & PHASE_SIX_DASHBOARD_DEPENDENCIES == PHASE_SIX_DASHBOARD_DEPENDENCIES
+    )
+
+
+def test_httpx_is_declared_once_and_at_runtime() -> None:
+    """A runtime import declared only in the dev group is a broken deployment.
+
+    The dashboard's API client imports ``httpx`` in ordinary operation, so it is
+    a runtime dependency. Leaving the dev-group entry beside it would mean two
+    specifiers for one distribution, free to disagree at the next resolve.
+    """
+    project = _pyproject()["project"]
+    assert isinstance(project, dict)
+    groups = _pyproject()["dependency-groups"]
+    assert isinstance(groups, dict)
+    dev = [str(entry).lower() for entry in groups["dev"]]
+    assert "httpx" in _declared_dependencies()
+    assert not [entry for entry in dev if entry.startswith("httpx")]
 
 
 def test_the_declared_range_is_bounded_on_both_sides() -> None:

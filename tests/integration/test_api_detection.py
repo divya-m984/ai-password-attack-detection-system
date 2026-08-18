@@ -1,9 +1,10 @@
 """Detection over HTTP, against a genuinely frozen champion.
 
-The fixture runs the real pipeline once: publish a feature dataset, train,
-select, freeze, predict, detect, and evaluate.  Nothing is hand-assembled --
-a serving test that passed against a hand-built artifact would be testing a
-shape the commands never produce.
+The ``served`` and ``client`` fixtures live in ``conftest.py``, where the real
+pipeline is run once for the whole session: publish a feature dataset, train,
+select, freeze, predict, detect, evaluate, materialize.  Nothing is
+hand-assembled -- a serving test that passed against a hand-built artifact would
+be testing a shape the commands never produce.
 
 What the assertions are actually about:
 
@@ -22,81 +23,11 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-import pytest
 from fastapi.testclient import TestClient
 
 from password_attack_detector.api.app import create_app
 from password_attack_detector.api.config import APISettings
 from tests.api.factories import brute_force_window, normal_window, spraying_window
-from tests.integration.ml_workspace import (
-    ML_CONFIG,
-    build_workspace,
-    detect,
-    evaluate,
-    freeze,
-    materialize,
-    predict,
-    prediction_ids,
-)
-
-
-@pytest.fixture(scope="module")
-def served(tmp_path_factory: pytest.TempPathFactory) -> APISettings:
-    """Run the whole Phase 5 pipeline once, then materialize its hybrid.
-
-    The pipeline's own selection on this fixture is ``stacked``, which is the
-    interesting case: it is the strategy that needs a fitted artifact, and the
-    one a serving layer cannot execute from a receipt alone. So the fixture ends
-    with ``deploy materialize``, and every assertion below runs against a
-    deployment whose hybrid is the reconstructed meta-learner Phase 5 fitted.
-    """
-    base = tmp_path_factory.mktemp("api-detection")
-    (base / "workspace").mkdir(parents=True, exist_ok=True)
-    workspace = build_workspace(base / "workspace")
-    root = base / "artifacts"
-    reports = base / "reports"
-    freeze(workspace, root, reports)
-
-    for split in ("train", "validation", "test"):
-        scored = predict(workspace, root, split=split)
-        assert scored.exit_code == 0, scored.output
-
-    detection = base / "detection"
-    assessed = detect(workspace, detection)
-    assert assessed.exit_code == 0, assessed.output
-
-    ids = prediction_ids(root)
-    evaluated = evaluate(
-        workspace,
-        root,
-        detection,
-        reports,
-        **{
-            "--prediction": ids["test"],
-            "--validation-prediction": ids["validation"],
-        },
-    )
-    assert evaluated.exit_code == 0, evaluated.output
-
-    published = materialize(
-        workspace, root, detection, validation_prediction=ids["validation"]
-    )
-    assert published.exit_code == 0, published.output
-
-    return APISettings(
-        artifact_root=root,
-        allowlist_path=workspace / "allowlist.yaml",
-        feature_config_path=workspace / "features.yaml",
-        ml_config_path=Path(ML_CONFIG),
-        detection_config_path=detection / "rules.yaml",
-    )
-
-
-@pytest.fixture()
-def client(served: APISettings) -> Any:
-    """A client bound to the frozen champion the fixture produced."""
-    with TestClient(create_app(settings=served)) as connected:
-        yield connected
 
 
 def _anchor(client: Any, events: list[dict[str, Any]]) -> dict[str, Any]:
@@ -448,6 +379,9 @@ def test_the_service_exposes_no_retraining_promotion_or_upload_route(
         "/version",
         "/api/v1/detect",
         "/api/v1/detect/batch",
+        # Reads the frozen model to decompose one decision; writes nothing, and
+        # takes no scope, threshold, or model argument through which it could.
+        "/api/v1/explain",
         "/api/v1/system/status",
         "/api/v1/model/info",
         "/api/v1/rules",
@@ -497,8 +431,13 @@ def test_a_detection_response_from_a_loaded_runtime_leaks_nothing(
         assert term not in text.lower()
 
 
-def test_only_detection_routes_accept_a_body(client: Any) -> None:
-    """Every other route is a read; a read has nothing to accept."""
+def test_only_window_routes_accept_a_body(client: Any) -> None:
+    """Every other route is a read; a read has nothing to accept.
+
+    The three that do accept one all take the *same* window schema, which is the
+    property worth holding: a second request shape is a second place a field
+    nobody reviewed could be admitted.
+    """
     schema = client.get("/openapi.json").json()
     with_bodies = {
         path
@@ -506,4 +445,8 @@ def test_only_detection_routes_accept_a_body(client: Any) -> None:
         for operation in operations.values()
         if "requestBody" in operation
     }
-    assert with_bodies == {"/api/v1/detect", "/api/v1/detect/batch"}
+    assert with_bodies == {
+        "/api/v1/detect",
+        "/api/v1/detect/batch",
+        "/api/v1/explain",
+    }

@@ -24,6 +24,7 @@ detection refused; it never leaves a silently substituted alternative in place.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -33,11 +34,14 @@ from password_attack_detector import __version__
 from password_attack_detector.api.config import APISettings
 from password_attack_detector.api.errors import APIError, ErrorCode, sanitize
 from password_attack_detector.api.schemas import (
+    MAX_REPORTED_CONTRIBUTIONS,
     AnchorDetection,
     BatchDetectionResponse,
     ComponentReport,
     ComponentState,
     DetectionResponse,
+    ExplanationContribution,
+    ExplanationResponse,
     HybridLayerResult,
     MLLayerResult,
     ModelInfoResponse,
@@ -71,6 +75,7 @@ from password_attack_detector.detection.schemas import (
 from password_attack_detector.detection.scoring import SCORING_VERSION, RiskScorer
 from password_attack_detector.exceptions import (
     ArtifactNotFoundError,
+    ModelNotReadyError,
     PasswordAttackDetectorError,
     PseudonymizationError,
 )
@@ -87,12 +92,20 @@ from password_attack_detector.features.config import (
 )
 from password_attack_detector.features.engine import FeatureEngine
 from password_attack_detector.logging_config import get_logger
+from password_attack_detector.ml.calibration import quantize
 from password_attack_detector.ml.config import MLConfig, load_ml_config
-from password_attack_detector.ml.dataset import assemble_serving_batch
+from password_attack_detector.ml.dataset import ServingBatch, assemble_serving_batch
 from password_attack_detector.ml.enums import (
     FusionStrategy,
     ServingScope,
     is_probability,
+)
+from password_attack_detector.ml.explain import (
+    RECONSTRUCTION_TOLERANCE,
+    FeatureContribution,
+    PredictionExplanation,
+    local_contributions,
+    method_for_family,
 )
 from password_attack_detector.ml.features import (
     EligibleFeatureList,
@@ -133,6 +146,7 @@ __all__ = [
     "build_runtime",
     "detect_batch",
     "detect_single",
+    "explain_document",
     "hybrid_layer",
     "model_info_document",
     "readiness_document",
@@ -1017,17 +1031,31 @@ def _ml_predictions(
     ml = runtime.ml
     if ml is None:
         return {}
+    batch = _serving_batch(ml, rows)
     try:
-        batch = assemble_serving_batch(
-            feature_rows=list(rows),
-            eligible=ml.eligible,
-            feature_catalog_fingerprint=ml.feature_catalog_fingerprint,
-        )
         predictions = predict_serving_binary(ml.champion, batch)
     except PasswordAttackDetectorError as exc:
         _log.warning("model scoring failed", **sanitize(exc))
         raise APIError(ErrorCode.ML_CHAMPION_UNAVAILABLE) from None
     return {item.anchor_event_id: item for item in predictions}
+
+
+def _serving_batch(ml: MLRuntime, rows: Sequence[Mapping[str, Any]]) -> ServingBatch:
+    """Assemble one live request's scoring input under the reviewed contract.
+
+    Shared by scoring and by attribution so the two cannot see different rows:
+    an explanation of a matrix the model never scored would be an explanation of
+    nothing.
+    """
+    try:
+        return assemble_serving_batch(
+            feature_rows=list(rows),
+            eligible=ml.eligible,
+            feature_catalog_fingerprint=ml.feature_catalog_fingerprint,
+        )
+    except PasswordAttackDetectorError as exc:
+        _log.warning("serving batch assembly failed", **sanitize(exc))
+        raise APIError(ErrorCode.ML_CHAMPION_UNAVAILABLE) from None
 
 
 def _anchor_detection(
@@ -1136,6 +1164,180 @@ def hybrid_layer(
     )
 
 
+# ---------------------------------------------------------------------------
+# Attribution
+# ---------------------------------------------------------------------------
+
+#: Stable reason codes an explanation reports when it produces no decomposition.
+_EXPLANATION_DISABLED: Final[str] = "explanation_disabled"
+_EXPLANATION_METHOD_UNAVAILABLE: Final[str] = "explanation_method_unavailable"
+_EXPLANATION_NOT_RECONSTRUCTIBLE: Final[str] = "explanation_not_reconstructible"
+
+
+def explain_document(
+    runtime: RuntimeState, request: WindowRequestBase
+) -> ExplanationResponse:
+    """Return which transformed columns moved the frozen model's decision.
+
+    The window is processed exactly as ``/api/v1/detect`` processes it -- the
+    same canonical events, the same point-in-time feature engine, the same
+    serving batch under the same reviewed contract -- and then the model's *own*
+    frozen preprocessor produces the matrix that
+    :func:`~password_attack_detector.ml.explain.local_contributions` decomposes.
+
+    That function is the Phase 5 implementation, called unchanged.  It is the
+    reason this endpoint exists at all rather than the dashboard reaching into
+    the ML layer: the decomposition takes a verified model and a transformed
+    matrix and **no split argument**, so attributing a live row needs no claim
+    about which experimental population it came from.  Phase 5's
+    :func:`~password_attack_detector.ml.explain.explain_predictions` -- which
+    does take a scope, and refuses TEST -- is not called and not imported.
+
+    Nothing is fitted, no threshold is read or moved, no calibrator is applied,
+    and no artifact is written.  A family with no exact decomposition reports
+    unavailable with a reason rather than an approximation, which is the same
+    refusal Phase 5 makes.
+
+    Raises:
+        APIError: with :attr:`ErrorCode.ANCHOR_SELECTION_ERROR` unless the
+            request selects exactly one anchor, and with whichever code the
+            shared window stages refused under.
+    """
+    anchors = request.resolved_anchor_ids()
+    if len(anchors) != 1:
+        raise APIError(
+            ErrorCode.ANCHOR_SELECTION_ERROR,
+            detail={"selected_anchor_count": len(anchors), "expected": 1},
+        )
+    if not runtime.ready or runtime.rule is None or runtime.feature_config is None:
+        raise APIError(ErrorCode.RUNTIME_NOT_READY)
+    if len(request.events) > runtime.settings.max_batch_events:
+        raise APIError(
+            ErrorCode.BATCH_LIMIT_EXCEEDED,
+            detail={
+                "event_count": len(request.events),
+                "max_batch_events": runtime.settings.max_batch_events,
+            },
+        )
+    ml = runtime.ml
+    if ml is None:
+        raise APIError(ErrorCode.ML_CHAMPION_UNAVAILABLE)
+
+    events = _canonical_events(runtime, request)
+    rows = _feature_rows(runtime, events)
+    anchor = anchors[0]
+    # The rule layer is deliberately not run. Attribution is a statement about
+    # the model, the rule verdict would be computed only to be discarded, and
+    # ``/api/v1/detect`` is where a caller asks for one.
+    batch = _serving_batch(ml, rows)
+
+    position = next(
+        (
+            index
+            for index, item in enumerate(batch.frame.anchors)
+            if item.anchor_event_id == anchor
+        ),
+        None,
+    )
+    if position is None:  # pragma: no cover - the assembler keeps every anchor
+        raise APIError(ErrorCode.ANCHOR_SELECTION_ERROR)
+
+    anchor_time = batch.frame.anchors[position].anchor_event_time
+    if not ml.ml_config.explain.enabled:
+        return _unexplained(anchor, anchor_time, _EXPLANATION_DISABLED)
+    if method_for_family(ml.champion.binary.fitted.family) is None:
+        # The same refusal Phase 5 makes, for the same reason: an approximate
+        # per-feature number reads exactly like an exact one once it is in a
+        # table, so no approximation is published in place of a decomposition.
+        return _unexplained(anchor, anchor_time, _EXPLANATION_METHOD_UNAVAILABLE)
+
+    try:
+        matrix = ml.champion.binary.preprocessor.transform(batch.frame)
+        method, contributions, baselines, decisions = local_contributions(
+            ml.champion.binary, matrix.rows
+        )
+    except (PasswordAttackDetectorError, ValueError) as exc:
+        _log.warning("attribution refused a row", **sanitize(exc))
+        return _unexplained(anchor, anchor_time, _EXPLANATION_METHOD_UNAVAILABLE)
+
+    row = contributions[position]
+    baseline = baselines[position]
+    decision = decisions[position]
+    residual = decision - (baseline + math.fsum(row))
+    if not math.isfinite(residual) or abs(residual) > RECONSTRUCTION_TOLERANCE:
+        # Phase 5 raises here rather than publishing an attribution with a
+        # caveat. A serving response reports the refusal instead of failing the
+        # request: the detection verdict is unaffected and remains available.
+        _log.warning(
+            "the decomposition disagrees with the model's own score",
+            method=str(method),
+        )
+        return _unexplained(anchor, anchor_time, _EXPLANATION_NOT_RECONSTRUCTIBLE)
+
+    columns = matrix.output_feature_names
+    try:
+        # Built in full, and validated, before anything is truncated: the
+        # invariant that makes this a decomposition is that *every* column adds
+        # up, and checking it on the reported subset would check nothing.
+        explanation = PredictionExplanation(
+            anchor_event_id=anchor,
+            method=method,
+            decision_value=quantize(decision),
+            baseline_value=quantize(baseline),
+            contributions=tuple(
+                FeatureContribution(
+                    transformed_feature=name,
+                    contribution=quantize(float(row[index])),
+                    transformed_value=None,
+                )
+                for index, name in enumerate(columns)
+            ),
+            reconstruction_residual=quantize(residual),
+        )
+    except (ValueError, ModelNotReadyError) as exc:
+        _log.warning("attribution failed its own reconstruction", **sanitize(exc))
+        return _unexplained(anchor, anchor_time, _EXPLANATION_NOT_RECONSTRUCTIBLE)
+
+    limit = min(ml.ml_config.explain.top_k_features, MAX_REPORTED_CONTRIBUTIONS)
+    ranked = sorted(
+        explanation.contributions,
+        key=lambda item: (-abs(item.contribution), item.transformed_feature),
+    )
+    reported = ranked[:limit]
+    return ExplanationResponse(
+        anchor_event_id=anchor,
+        anchor_event_time=anchor_time,
+        available=True,
+        method=method,
+        model_family=str(ml.champion.binary.fitted.family),
+        score_kind=ml.champion.score_kind,
+        decision_value=explanation.decision_value,
+        baseline_value=explanation.baseline_value,
+        contributions=tuple(
+            ExplanationContribution(
+                transformed_feature=item.transformed_feature,
+                contribution=item.contribution,
+            )
+            for item in reported
+        ),
+        transformed_feature_count=len(explanation.contributions),
+        omitted_contribution_count=len(explanation.contributions) - len(reported),
+        reconstruction_residual=explanation.reconstruction_residual,
+    )
+
+
+def _unexplained(
+    anchor_event_id: str, anchor_event_time: datetime, reason: str
+) -> ExplanationResponse:
+    """Return an explanation that decomposes nothing, and says why."""
+    return ExplanationResponse(
+        anchor_event_id=anchor_event_id,
+        anchor_event_time=anchor_event_time,
+        available=False,
+        unavailable_reason=reason,
+    )
+
+
 def _assert_no_scientific_state_is_written() -> None:
     """Fail at import if this module acquires a writer for frozen scientific state.
 
@@ -1182,7 +1384,18 @@ def _assert_serving_names_no_split() -> None:
     import sys
 
     namespace = vars(sys.modules[__name__])
-    forbidden = {"MLSplit", "SplitRow", "assemble_inference_dataset", "predict_binary"}
+    forbidden = {
+        "MLSplit",
+        "SplitRow",
+        "assemble_inference_dataset",
+        # Phase 5's population-level attribution entry point. It takes a
+        # ``scope: MLSplit`` and refuses TEST -- so calling it for a live row
+        # would require naming an experimental population this row is not in.
+        # The scope-free primitive it delegates to, ``local_contributions``, is
+        # the one serving uses.
+        "explain_predictions",
+        "predict_binary",
+    }
     offending = sorted(forbidden & set(namespace))
     if offending:
         raise ValueError(
