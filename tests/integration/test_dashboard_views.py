@@ -331,7 +331,11 @@ def test_a_submitted_detection_reaches_the_alerts_and_analytics_views(
 
     app.sidebar.radio[0].set_value("Attack Analytics").run()
     assert not app.exception
-    assert "1 detection(s) in this session." in _text(app)
+    # The caption names its source since Milestone 3: with a replay run also
+    # possible, "1 detection(s)" alone would no longer say whose.
+    text = _text(app)
+    assert "1 detection(s)." in text
+    assert "This dashboard session (manual submissions)" in text
 
 
 def test_a_batch_submission_records_one_alert_per_anchor(wired: None) -> None:
@@ -356,7 +360,9 @@ def test_a_batch_submission_records_one_alert_per_anchor(wired: None) -> None:
     assert f"Scored {events} anchors in one window" in _text(app)
 
     app.sidebar.radio[0].set_value("Attack Analytics").run()
-    assert f"{events} detection(s) in this session." in _text(app)
+    text = _text(app)
+    assert f"{events} detection(s)." in text
+    assert "This dashboard session (manual submissions)" in text
 
 
 def test_the_events_view_shows_the_composed_window_and_can_resend_it(

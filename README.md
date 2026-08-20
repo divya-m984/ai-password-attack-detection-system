@@ -353,11 +353,12 @@ promotes, or rethresholds on any finding.
 
 ---
 
-## Phase 6 status — Serving layer and analyst console (Milestones 1–2)
+## Phase 6 status — Serving layer, analyst console, live replay (Milestones 1–3)
 
 Phase 6 turns the finished engine into something runnable. Milestone 1 added the
-HTTP serving layer; Milestone 2 adds the SOC analyst console on top of it. No
-container and no deployment yet.
+HTTP serving layer; Milestone 2 added the SOC analyst console on top of it;
+Milestone 3 adds a safe synthetic live/replay demonstration that makes the
+detector *watchable*. No container and no deployment yet.
 
 The API is an **adapter**. It computes no feature, re-derives no threshold,
 re-weights no rule, and contains no second scoring implementation — every
@@ -425,7 +426,17 @@ src/password_attack_detector/api/
 └── routes/
     ├── health.py     /health, /ready, /version
     ├── detection.py  /api/v1/detect, /api/v1/detect/batch
+    ├── explain.py    /api/v1/explain
+    ├── replay.py     /api/v1/demo/scenarios, /demo/runs, /demo/runs/{id}/timeline
     └── system.py     /api/v1/system/status, /model/info, /rules
+
+src/password_attack_detector/replay/
+├── enums.py          the closed vocabularies: scenario, state, pace
+├── schemas.py        the replay wire contract, embedding AnchorDetection verbatim
+├── scenarios.py      the reviewed, deterministic, credential-free catalog
+├── store.py          bounded, process-local, non-persistent run storage
+├── engine.py         the state machine and the pace; the detector is injected
+└── service.py        the operations the API namespace is a shell over
 
 src/password_attack_detector/deployment/
 ├── bundle.py         the sealed serving-bundle manifest; write and verify
@@ -485,9 +496,9 @@ Browser → Streamlit console → DashboardAPIClient → FastAPI → Phase 3–5
   client declares no field the service does not send.
 - **No scientific setting exists.** `PROHIBITED_SETTING_NAMES` refuses a model
   id, threshold, fusion strategy, artifact root, or API key at import.
-- **Nine views** — Overview, Detection Console, Authentication Events, Security
-  Alerts, Attack Analytics, Rule vs ML vs Hybrid, Explainability, Drift
-  Monitoring, System & Model.
+- **Ten views** — Overview, Detection Console, Live Replay, Authentication
+  Events, Security Alerts, Attack Analytics, Rule vs ML vs Hybrid,
+  Explainability, Drift Monitoring, System & Model.
 - **Three safe synthetic templates** — normal activity, a brute-force-like
   failure burst, a spraying-like fan-out. Synthetic identities, RFC 5737
   documentation addresses, no credential material anywhere. Loading one fills the
@@ -519,8 +530,8 @@ src/password_attack_detector/dashboard/
 ├── formatting.py     how values are rendered, and what they may be called
 ├── scenarios.py      safe synthetic templates and the console's vocabularies
 ├── theme.py          the stylesheet and the escaping HTML helpers
-├── components/       header, status, metrics, alerts, charts
-└── views/            the nine views
+├── components/       header, status, metrics, alerts, charts, replay
+└── views/            the ten views
 ```
 
 `views/` rather than `pages/`: Streamlit treats a `pages/` directory beside the
@@ -559,17 +570,78 @@ strategy.
 
 Full reference: **[docs/dashboard.md](docs/dashboard.md)**.
 
+### Milestone 3 — the live replay demonstration
+
+A reviewed, deterministic synthetic scenario, emitted one event at a time into
+the **existing** serving path, so an analyst can watch rules fire, the model
+decide, and the frozen hybrid fuse the two, on a timeline, as it happens.
+
+```
+Scenario → replay engine → DetectionWindowRequest → detect_single() → timeline
+                                                    (the same function
+                                                     POST /api/v1/detect calls)
+```
+
+- **Nothing attacks anything.** No credential, no credential list, no external
+  request, no login endpoint, no network scan. Every scenario is a fabrication —
+  events that did not happen, involving entities that do not exist, replayed into
+  a service the operator is running themselves. Import-time guards refuse a
+  credential-shaped field name and any address outside the documentation ranges;
+  an AST test refuses a network client anywhere in the package.
+- **There is no second detection path.** The engine's detector is one call to
+  `detect_single`, through the same request schema an HTTP body is validated by.
+  A test reconstructs a replayed step's window, posts it to `POST /api/v1/detect`,
+  and compares the two verdicts field by field.
+- **Seven scenarios** — normal activity, brute force, password spraying,
+  credential stuffing, account takeover, bot activity, and a mixed timeline. Each
+  publishes the rules it fires, and an integration test asserts that list as an
+  **equality** against the real frozen deployment.
+- **Pace is presentation.** `instant`, `fast`, `normal`, `slow` map to bounded
+  intervals and change wall-clock spacing only. The same scenario produces
+  byte-identical verdicts at every pace — asserted against the real frozen
+  stacked deployment, not a stub.
+- **A strict state machine.** `created → running → completed | stopped | failed`,
+  with every terminal state absorbing. A finished run does not restart; a second
+  execution is a new run with its own identity. Content identity
+  (`scenario_fingerprint`) and instance identity (`run_id`) are separate and
+  documented.
+- **Bounded, process-local, non-persistent storage.** Four active runs, 24
+  retained, 256 records each, a 300-second run ceiling. Reaching a bound is a
+  typed refusal (`429`) and **never** an eviction of a run somebody is watching.
+  Restarting the API clears every run, and nothing presents it as a history.
+- **Incremental polling.** `?after_sequence=` returns only what a client has not
+  seen, bounded per page, with one `more_expected` flag that goes false when the
+  run is terminal — which is when the console stops polling.
+- **Replay is optional.** It is reported on `/api/v1/system/status` and as a
+  non-required `/ready` component: a detection service does not become unready
+  because a demonstration facility did not initialise.
+- **A tenth console view** with start/stop/refresh, a live timeline, a cumulative
+  layer-activity chart, and a run summary derived entirely from timeline records.
+  Replay data appears on the Overview, Events, Alerts and Analytics views under
+  its own heading or behind an explicit source selector — the two sources are
+  never silently merged.
+
+Two rules cannot be demonstrated, and this is stated rather than worked around:
+`PAD-CS-001` and `PAD-ATO-001` gate on a fitted behavioural baseline that the
+serving path does not load, so they report insufficient data on every live
+request. No threshold was moved to make a demonstration look better.
+
+Full reference: **[docs/live-replay.md](docs/live-replay.md)**.
+
 ### What Phase 6 does not claim yet
 
 The service and the console run locally. Neither is deployed, containerised,
 authenticated, rate-limited, or hardened for an untrusted network. Nothing is
-stored: the console's history is one browser session, and there is no alert store,
-no event database, no live or replay pipeline, and no serving drift report. A
-`stacked` deployment additionally requires the offline `deploy materialize` step
-to have been run against the frozen lineage; until it has, the hybrid is reported
-unavailable and readiness is `503` rather than a strategy nobody selected being
-substituted. See [docs/api.md](docs/api.md) §12 and
-[docs/dashboard.md](docs/dashboard.md) §11.
+persisted: the console's history is one browser session, a replay run lives in
+one API process's memory and is cleared by a restart, and there is still no alert
+store, no event database, and no serving drift report. The replay layer is
+synthetic only — there is no path for real traffic to enter one, and the reviewed
+catalog is its whole input surface. A `stacked` deployment additionally requires
+the offline `deploy materialize` step to have been run against the frozen
+lineage; until it has, the hybrid is reported unavailable and readiness is `503`
+rather than a strategy nobody selected being substituted. See
+[docs/api.md](docs/api.md) §12, [docs/dashboard.md](docs/dashboard.md) §11, and
+[docs/live-replay.md](docs/live-replay.md) §14.
 
 ---
 
@@ -1120,6 +1192,7 @@ See [docs/privacy-model.md](docs/privacy-model.md) and
 | [docs/phase5-acceptance.md](docs/phase5-acceptance.md) | Generated: the final Phase 5 acceptance report |
 | [docs/api.md](docs/api.md) | The HTTP serving layer: endpoints, constraints, privacy, limits |
 | [docs/dashboard.md](docs/dashboard.md) | The analyst console: API boundary, views, session limits, offline behaviour |
+| [docs/live-replay.md](docs/live-replay.md) | The synthetic replay demonstration: scenarios, determinism, run lifecycle, bounds |
 
 ---
 

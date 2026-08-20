@@ -385,6 +385,15 @@ def test_the_service_exposes_no_retraining_promotion_or_upload_route(
         "/api/v1/system/status",
         "/api/v1/model/info",
         "/api/v1/rules",
+        # The synthetic replay demonstration. Every one of these *reads* the
+        # frozen state through the same detect path: a run is a sequence of
+        # detections over a reviewed built-in scenario, and no field on any of
+        # them names a model, a threshold, a strategy, or a location.
+        "/api/v1/demo/scenarios",
+        "/api/v1/demo/runs",
+        "/api/v1/demo/runs/{run_id}",
+        "/api/v1/demo/runs/{run_id}/timeline",
+        "/api/v1/demo/runs/{run_id}/stop",
     }
     for forbidden in ("train", "retrain", "promote", "freeze", "upload", "select"):
         assert not any(forbidden in path for path in paths)
@@ -431,12 +440,17 @@ def test_a_detection_response_from_a_loaded_runtime_leaks_nothing(
         assert term not in text.lower()
 
 
-def test_only_window_routes_accept_a_body(client: Any) -> None:
+def test_only_two_request_shapes_exist_on_the_whole_service(client: Any) -> None:
     """Every other route is a read; a read has nothing to accept.
 
-    The three that do accept one all take the *same* window schema, which is the
-    property worth holding: a second request shape is a second place a field
-    nobody reviewed could be admitted.
+    A request shape is a place a field nobody reviewed could be admitted, so the
+    service has as few as it can. Three routes take the *window* schema. One
+    takes the replay create-run schema, and that one is asserted below to be two
+    closed-vocabulary fields -- which is why adding it did not widen the surface
+    in any way that matters.
+
+    ``POST …/stop`` is deliberately absent from this set: it addresses a run by
+    its path and carries nothing.
     """
     schema = client.get("/openapi.json").json()
     with_bodies = {
@@ -449,4 +463,34 @@ def test_only_window_routes_accept_a_body(client: Any) -> None:
         "/api/v1/detect",
         "/api/v1/detect/batch",
         "/api/v1/explain",
+        "/api/v1/demo/runs",
     }
+
+    components = schema["components"]["schemas"]
+    window_shapes = {
+        _body_schema(schema, path)
+        for path in ("/api/v1/detect", "/api/v1/detect/batch", "/api/v1/explain")
+    }
+    assert len(window_shapes) <= 3, "the window routes share one family of shapes"
+    for name in window_shapes:
+        assert set(components[name]["properties"]) <= {
+            "api_schema_version",
+            "events",
+            "anchor_event_ids",
+            "anchor_selection",
+        }, name
+
+    replay_shape = _body_schema(schema, "/api/v1/demo/runs")
+    assert set(components[replay_shape]["properties"]) == {"scenario_id", "pace"}
+    assert components[replay_shape]["additionalProperties"] is False
+
+
+def _body_schema(schema: dict[str, Any], path: str) -> str:
+    """Return the component name one route's request body references."""
+    for operation in schema["paths"][path].values():
+        body = operation.get("requestBody")
+        if body is None:
+            continue
+        reference = body["content"]["application/json"]["schema"]["$ref"]
+        return str(reference.rsplit("/", 1)[-1])
+    raise AssertionError(f"{path} declares no request body")

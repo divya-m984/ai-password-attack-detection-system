@@ -19,6 +19,7 @@ from password_attack_detector.dashboard.components.metrics import (
     render_posture_cards,
     render_session_cards,
 )
+from password_attack_detector.dashboard.components.replay import render_run_banner
 from password_attack_detector.dashboard.components.status import (
     Connectivity,
     render_component_table,
@@ -71,6 +72,8 @@ def render(
         _render_model_panel(model.document)
         _render_rule_panel(rules.document)
 
+    _render_replay_panel(session)
+
     st.markdown(section_title("This dashboard session"), unsafe_allow_html=True)
     render_session_cards(session.history)
     latest = session.latest
@@ -87,6 +90,29 @@ def render(
         )
         if session.last_result is not None:
             render_anchor_result(session.last_result.anchor)
+
+
+def _render_replay_panel(session: DashboardSession) -> None:
+    """Render the demo run this session is following, when there is one.
+
+    Only when there is one. An overview that always carried a "replay: idle" card
+    would be spending a landing-page slot on the absence of an optional
+    demonstration facility.
+    """
+    replay = session.replay
+    if not replay.attached or replay.run is None:
+        return
+    st.markdown(section_title("Attached demo replay run"), unsafe_allow_html=True)
+    render_run_banner(replay)
+    summary = replay.run.summary
+    st.caption(
+        f"{summary.detection_count} step(s) scored · "
+        f"{summary.rule_flagged_count} rule-flagged · "
+        f"{summary.ml_flagged_count} model-flagged · "
+        f"{summary.hybrid_flagged_count} hybrid-flagged · "
+        f"worst severity {summary.highest_severity or '—'}. "
+        f"Open **Live Replay** for the timeline."
+    )
 
 
 def _render_system_panel(status: Connectivity) -> None:

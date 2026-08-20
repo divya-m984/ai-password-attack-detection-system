@@ -19,10 +19,12 @@ from datetime import UTC, datetime
 import streamlit as st
 
 from password_attack_detector.dashboard.api_client import DashboardAPIClient
+from password_attack_detector.dashboard.components.replay import render_run_banner
 from password_attack_detector.dashboard.components.status import (
     Connectivity,
     render_problem,
 )
+from password_attack_detector.dashboard.formatting import format_timestamp
 from password_attack_detector.dashboard.state import DashboardSession
 from password_attack_detector.dashboard.theme import section_title
 from password_attack_detector.dashboard.views.detection import (
@@ -65,6 +67,7 @@ def render(
         st.caption(
             "No events in this session. Build a window on the **Detection Console**."
         )
+        _render_replay_events(session)
         return
 
     st.dataframe(
@@ -102,6 +105,44 @@ def render(
         if st.button("Clear session events", width="stretch"):
             session.clear_window()
             st.rerun()
+
+    _render_replay_events(session)
+
+
+def _render_replay_events(session: DashboardSession) -> None:
+    """Render the events a followed demo run has emitted so far.
+
+    Under its own heading, and describing only what the timeline records carry:
+    when each fabricated event claimed to occur, its outcome, and how large the
+    window was by the time it was scored. The run's *event bodies* are not
+    fetched -- the console has no endpoint that returns them and no reason to
+    want one -- so this is honestly a view of the run's steps rather than a copy
+    of its input.
+    """
+    replay = session.replay
+    if not replay.attached or not replay.records:
+        return
+    st.markdown(section_title("Server-side demo replay run"), unsafe_allow_html=True)
+    render_run_banner(replay)
+    st.dataframe(
+        [
+            {
+                "Step": item.sequence,
+                "Event time": format_timestamp(item.source_event_time),
+                "Outcome": item.authentication_outcome,
+                "Window size": item.window_event_count,
+                "Severity": str(item.detection.severity),
+            }
+            for item in replay.records
+        ],
+        width="stretch",
+        hide_index=True,
+    )
+    st.caption(
+        "These events were emitted by the **service**, from its own reviewed "
+        "scenario catalog. They are synthetic, they carry no credential, and "
+        "they were never submitted from this browser."
+    )
 
 
 def _resend(client: DashboardAPIClient, session: DashboardSession) -> None:

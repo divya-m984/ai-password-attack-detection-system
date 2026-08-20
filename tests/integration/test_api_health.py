@@ -83,7 +83,13 @@ def test_a_ready_runtime_reports_every_component(rule_only_client: Any) -> None:
         "model_artifacts",
         "ml_champion",
         "fusion",
+        # The optional demonstration replay subsystem. Reported like every other
+        # component and required like none of them: a detection service does not
+        # become unready because a demo facility did not initialise.
+        "replay",
     }
+    replay = next(item for item in body["components"] if item["component"] == "replay")
+    assert replay["required"] is False
 
 
 def test_a_missing_required_component_makes_readiness_fail(
@@ -178,7 +184,14 @@ def test_the_schema_is_titled_versioned_and_tagged(rule_only_client: Any) -> Non
     assert schema["info"]["title"] == "Password Attack Detector API"
     assert schema["info"]["version"] == __version__
     assert schema["info"]["description"]
-    assert {tag["name"] for tag in schema["tags"]} == {"Health", "Detection", "System"}
+    assert {tag["name"] for tag in schema["tags"]} == {
+        "Health",
+        "Detection",
+        "System",
+        # The synthetic replay demonstration, grouped separately so a reader can
+        # see at a glance that it is not part of the detection contract.
+        "Demo",
+    }
 
 
 def test_every_route_is_tagged(rule_only_client: Any) -> None:

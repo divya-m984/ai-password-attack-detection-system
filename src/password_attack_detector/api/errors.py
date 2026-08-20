@@ -78,6 +78,25 @@ class ErrorCode(StrEnum):
     PSEUDONYMIZATION_UNAVAILABLE = "API014"
     #: No route matches, or the method is not allowed on this route.
     NOT_FOUND = "API015"
+    #: The optional demonstration replay subsystem is not available on this
+    #: deployment: switched off, or it failed to initialise.
+    REPLAY_UNAVAILABLE = "API016"
+    #: The request names a scenario the built-in catalog does not contain.
+    #: Scenarios cannot be uploaded; the catalog is the whole admissible set.
+    REPLAY_SCENARIO_NOT_FOUND = "API017"
+    #: The request names a replay run this process does not have. A run is
+    #: process-local and non-persistent, so this also covers one that existed
+    #: before a restart or was evicted under the retention bound.
+    REPLAY_RUN_NOT_FOUND = "API018"
+    #: A bound on demonstration replay is already reached. Refused rather than
+    #: absorbed: admitting the request would mean stopping a run somebody else
+    #: is watching.
+    REPLAY_LIMIT_REACHED = "API019"
+    #: The run cannot make the transition asked of it -- chiefly, restarting one
+    #: that has already completed, stopped, or failed.
+    REPLAY_INVALID_TRANSITION = "API020"
+    #: The timeline cursor is not a position a cursor can occupy.
+    REPLAY_CURSOR_INVALID = "API021"
     #: Anything else.  Logged internally with context; reported without any.
     INTERNAL_ERROR = "API099"
 
@@ -131,6 +150,26 @@ ERROR_MESSAGES: Final[dict[ErrorCode, str]] = {
         "it; supply a pseudonymous source_id instead."
     ),
     ErrorCode.NOT_FOUND: "No such resource on this service.",
+    ErrorCode.REPLAY_UNAVAILABLE: (
+        "The demonstration replay subsystem is not available on this deployment."
+    ),
+    ErrorCode.REPLAY_SCENARIO_NOT_FOUND: (
+        "No such scenario in the built-in replay catalog."
+    ),
+    ErrorCode.REPLAY_RUN_NOT_FOUND: (
+        "No such replay run in this process. Replay runs are process-local and "
+        "are not retained across a restart."
+    ),
+    ErrorCode.REPLAY_LIMIT_REACHED: (
+        "A demonstration replay bound is already reached; no run was started or "
+        "extended."
+    ),
+    ErrorCode.REPLAY_INVALID_TRANSITION: (
+        "The replay run cannot make that transition from the state it is in."
+    ),
+    ErrorCode.REPLAY_CURSOR_INVALID: (
+        "The timeline cursor must be a non-negative sequence number."
+    ),
     ErrorCode.INTERNAL_ERROR: "The service could not complete the request.",
 }
 
@@ -151,6 +190,17 @@ _STATUS: Final[dict[ErrorCode, int]] = {
     ErrorCode.CREDENTIAL_FIELD_REJECTED: 422,
     ErrorCode.PSEUDONYMIZATION_UNAVAILABLE: 422,
     ErrorCode.NOT_FOUND: 404,
+    ErrorCode.REPLAY_UNAVAILABLE: 503,
+    ErrorCode.REPLAY_SCENARIO_NOT_FOUND: 404,
+    ErrorCode.REPLAY_RUN_NOT_FOUND: 404,
+    # 429 rather than 503: the deployment is healthy and is refusing *this*
+    # request because a bound is reached, which is a different thing from the
+    # service being unable to serve.
+    ErrorCode.REPLAY_LIMIT_REACHED: 429,
+    # 409 rather than 422: the body is perfectly valid, and what refuses it is
+    # the state the addressed run happens to be in.
+    ErrorCode.REPLAY_INVALID_TRANSITION: 409,
+    ErrorCode.REPLAY_CURSOR_INVALID: 422,
     ErrorCode.INTERNAL_ERROR: 500,
 }
 

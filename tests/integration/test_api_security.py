@@ -117,12 +117,64 @@ def test_an_event_cannot_carry_a_verdict(client: Any) -> None:
         assert response.status_code == 422, key
 
 
-def test_no_route_accepts_a_query_parameter(client: Any) -> None:
-    """Nothing is configurable per request, so nothing is read from the URL."""
+#: The only parameters any route reads from a URL, and what each one is.
+#:
+#: All four are *presentational or addressing*: which run, where in its timeline,
+#: and how much of it. Not one of them names a model, a threshold, a strategy, an
+#: artifact, a scope, a path, or a host -- which is the property this test exists
+#: to hold, and which is stronger than "there are no parameters" now that a
+#: paginated resource exists.
+ALLOWED_PARAMETERS = {"run_id", "after_sequence", "limit"}
+
+#: The routes permitted to read anything from a URL at all: the replay run
+#: resources, which address a specific run and page through its timeline.
+PARAMETERISED_ROUTES = {
+    "/api/v1/demo/runs/{run_id}",
+    "/api/v1/demo/runs/{run_id}/timeline",
+    "/api/v1/demo/runs/{run_id}/stop",
+}
+
+
+def test_no_route_reads_anything_configurable_from_a_url(client: Any) -> None:
+    """Nothing scientific is configurable per request, so nothing like it is read.
+
+    The detection routes read *nothing* from a URL, as before. The replay run
+    routes read an opaque run identifier and a bounded cursor, because a
+    paginated resource has to; the names are enumerated so a fifth one cannot
+    appear without this test noticing.
+    """
+    schema = client.get("/openapi.json").json()
+    parameterised: set[str] = set()
+    for path, operations in schema["paths"].items():
+        for method, operation in operations.items():
+            names = {item["name"] for item in operation.get("parameters", ())}
+            if not names:
+                continue
+            parameterised.add(path)
+            assert names <= ALLOWED_PARAMETERS, (path, method, names)
+    assert parameterised == PARAMETERISED_ROUTES
+
+
+def test_no_scientific_name_appears_anywhere_in_the_url_surface(client: Any) -> None:
+    """Stated over the whole schema, so a new route cannot slip one in."""
     schema = client.get("/openapi.json").json()
     for path, operations in schema["paths"].items():
         for method, operation in operations.items():
-            assert not operation.get("parameters"), (path, method)
+            for item in operation.get("parameters", ()):
+                lowered = str(item["name"]).lower()
+                for forbidden in (
+                    "model",
+                    "threshold",
+                    "fusion",
+                    "strategy",
+                    "artifact",
+                    "scope",
+                    "path",
+                    "url",
+                    "host",
+                    "token",
+                ):
+                    assert forbidden not in lowered, (path, method, item["name"])
 
 
 # ---------------------------------------------------------------------------

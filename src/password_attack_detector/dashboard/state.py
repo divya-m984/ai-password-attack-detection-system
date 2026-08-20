@@ -31,13 +31,19 @@ from password_attack_detector.dashboard.contracts import (
     BatchDetectionDocument,
     DetectionDocument,
     ExplanationDocument,
+    ReplayRunDocument,
+    ReplayTimelineDocument,
+    ReplayTimelineRecordDocument,
 )
 from password_attack_detector.dashboard.scenarios import prohibited_field_names
 
 __all__ = [
     "MAX_HISTORY",
+    "MAX_REPLAY_RECORDS",
+    "REPLAY_SCENARIO_PREFIX",
     "DashboardSession",
     "DetectionRecord",
+    "ReplaySession",
     "severity_counts",
     "triggered_rule_counts",
 ]
@@ -46,6 +52,17 @@ __all__ = [
 #: never forgets is a memory leak with a chart on top; the oldest are dropped and
 #: the counter keeps counting, so the sequence numbers stay honest.
 MAX_HISTORY: Final[int] = 200
+
+#: How many replay timeline records one session buffers.  Well above the largest
+#: scenario, so a complete run is always held in full; bounded anyway, because a
+#: buffer whose size is decided by the other end is not a buffer.
+MAX_REPLAY_RECORDS: Final[int] = 512
+
+#: What a replay-derived record's ``scenario`` label is prefixed with.  Present
+#: on every such record so a chart or table that shows both sources can always
+#: say which is which -- the one thing this console must never do with replay
+#: data is let it merge silently into the manual session's own history.
+REPLAY_SCENARIO_PREFIX: Final[str] = "replay:"
 
 
 @dataclass(frozen=True, slots=True)
@@ -155,6 +172,108 @@ class DetectionRecord:
 
 
 @dataclass
+class ReplaySession:
+    """What this browser session knows about one server-side demonstration run.
+
+    The distinction this class exists to keep visible: **the run lives on the
+    server and this is a view of it.**  The console holds a run identifier, a
+    cursor, and whatever records it has fetched so far; it does not own the run,
+    cannot resume one, and does not survive a reload.  Another browser tab
+    polling the same identifier would see the same run, which is exactly the
+    difference from the manual session history two tabs apart.
+
+    :attr:`records` is an append-only buffer built by incremental polling. The
+    cursor is what makes that possible: each poll asks for records after the
+    highest sequence already held, so a long run is not re-transmitted on every
+    tick and a record cannot be counted twice.
+    """
+
+    #: The run this session is attached to. ``None`` when none is.
+    run_id: str | None = None
+    #: The run's last known state, as the service reported it.
+    run: ReplayRunDocument | None = None
+    #: Records fetched so far, in sequence order.
+    records: list[ReplayTimelineRecordDocument] = field(default_factory=list)
+    #: The highest sequence held. The cursor the next poll is made with.
+    cursor: int = 0
+    #: The scenario and pace selected in the form. Presentation state; the run's
+    #: own scenario and pace are read off :attr:`run`.
+    selected_scenario: str = ""
+    selected_pace: str = "normal"
+
+    @property
+    def attached(self) -> bool:
+        """Return whether this session is following a run."""
+        return self.run_id is not None
+
+    @property
+    def active(self) -> bool:
+        """Return whether the followed run may still produce records."""
+        return self.run is not None and not self.run.terminal
+
+    def attach(self, run: ReplayRunDocument) -> None:
+        """Follow a newly started run, discarding any previous one's records.
+
+        Replaces rather than accumulates: two runs' timelines share a sequence
+        numbering that starts at 1 for each, so merging them would produce a
+        buffer whose cursor means nothing.
+        """
+        self.run_id = run.run_id
+        self.run = run
+        self.records = []
+        self.cursor = 0
+
+    def detach(self) -> None:
+        """Stop following any run, and forget what was fetched of it."""
+        self.run_id = None
+        self.run = None
+        self.records = []
+        self.cursor = 0
+
+    def observe(self, run: ReplayRunDocument) -> None:
+        """Record the run's latest published state."""
+        self.run = run
+        self.run_id = run.run_id
+
+    def absorb(self, page: ReplayTimelineDocument) -> int:
+        """Append one polled page and return how many records were new.
+
+        Records at or below the cursor are dropped rather than appended: a
+        client that double-counted on a repeated page would produce a chart that
+        grew while the run stood still.
+        """
+        added = 0
+        for item in page.records:
+            if item.sequence <= self.cursor:
+                continue
+            self.records.append(item)
+            self.cursor = item.sequence
+            added += 1
+        if len(self.records) > MAX_REPLAY_RECORDS:
+            del self.records[: len(self.records) - MAX_REPLAY_RECORDS]
+        return added
+
+    def detection_records(self) -> tuple[DetectionRecord, ...]:
+        """Return the fetched timeline as ordinary detection records.
+
+        So the existing charts and tables can render replay results without a
+        second implementation of any of them. The scenario label carries
+        :data:`REPLAY_SCENARIO_PREFIX`, which is what keeps the two sources
+        distinguishable wherever they appear together.
+        """
+        return tuple(
+            DetectionRecord.from_anchor(
+                item.detection,
+                event_count=item.window_event_count,
+                sequence=item.sequence,
+                observed_at=item.emitted_at or item.detection.anchor_event_time,
+                scenario=f"{REPLAY_SCENARIO_PREFIX}{item.scenario_id}",
+            )
+            for item in self.records
+        )
+
+
+@dataclass
 class DashboardSession:
     """Everything one browser session holds, in one mutable object.
 
@@ -180,6 +299,11 @@ class DashboardSession:
     #: How many detections this session has performed, including any dropped
     #: from :attr:`history`. The source of the sequence numbers.
     detection_count: int = 0
+    #: The server-side demonstration run this session is following, if any.
+    #: Deliberately a separate object from :attr:`history`: one is a record of
+    #: what this tab submitted, the other is a view of something happening on the
+    #: server, and the pages that show both always say which is which.
+    replay: ReplaySession = field(default_factory=ReplaySession)
 
     # -- the draft window ---------------------------------------------------
 

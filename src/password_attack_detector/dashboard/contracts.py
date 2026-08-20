@@ -43,9 +43,15 @@ __all__ = [
     "MLLayer",
     "ModelInfoDocument",
     "ReadinessDocument",
+    "ReplayRunDocument",
+    "ReplayRunSummaryDocument",
+    "ReplayTimelineDocument",
+    "ReplayTimelineRecordDocument",
     "RuleCatalogDocument",
     "RuleLayer",
     "RuleSummary",
+    "ScenarioCatalogDocument",
+    "ScenarioDocument",
     "SystemStatusDocument",
     "VersionDocument",
     "WindowSummary",
@@ -129,7 +135,13 @@ class VersionDocument(_Document):
 
 
 class SystemStatusDocument(_Document):
-    """``GET /api/v1/system/status``."""
+    """``GET /api/v1/system/status``.
+
+    The ``replay_*`` fields describe an **optional demonstration facility**, not
+    a detection layer.  A deployment with replay switched off is a complete,
+    healthy deployment; the console says "not offered here" rather than treating
+    it as a fault.
+    """
 
     service: str = ""
     status: str = "not_ready"
@@ -147,6 +159,12 @@ class SystemStatusDocument(_Document):
     enabled_rule_count: int = 0
     registered_rule_count: int = 0
     max_batch_events: int = 0
+    replay_enabled: bool = False
+    replay_available: bool = False
+    replay_required: bool = False
+    replay_unavailable_reason: str | None = None
+    replay_scenario_count: int = 0
+    max_active_replay_runs: int = 0
 
 
 class ModelInfoDocument(_Document):
@@ -305,6 +323,126 @@ class ExplanationContribution(_Document):
 
     transformed_feature: str
     contribution: float = 0.0
+
+
+class ScenarioDocument(_Document):
+    """One built-in replay scenario, from ``GET /api/v1/demo/scenarios``.
+
+    ``expected_rule_ids`` is the service's own claim, backed by its own tests.
+    The console renders it as a *stated expectation* beside whatever the run
+    actually produced; it never checks one against the other and never presents
+    the expectation as a result.
+    """
+
+    scenario_id: str
+    name: str = ""
+    description: str = ""
+    purpose: str = ""
+    scenario_schema_version: str = ""
+    revision: int = 0
+    scenario_fingerprint: str = ""
+    event_count: int = 0
+    duration_seconds: float = 0.0
+    expected_rule_ids: tuple[str, ...] = ()
+    expected_rule_families: tuple[str, ...] = ()
+    expected_severity_at_least: str | None = None
+    demonstrates_ml: bool = False
+    demonstrates_hybrid: bool = False
+    limitations: str = ""
+
+
+class ScenarioCatalogDocument(_Document):
+    """``GET /api/v1/demo/scenarios``."""
+
+    replay_schema_version: str = ""
+    scenario_schema_version: str = ""
+    scenario_count: int = 0
+    scenarios: tuple[ScenarioDocument, ...] = ()
+
+
+class ReplayRunSummaryDocument(_Document):
+    """The aggregate the service derived from one run's timeline records."""
+
+    detection_count: int = 0
+    rule_flagged_count: int = 0
+    ml_flagged_count: int = 0
+    ml_unavailable_count: int = 0
+    hybrid_flagged_count: int = 0
+    hybrid_unavailable_count: int = 0
+    highest_severity: str | None = None
+    severity_counts: dict[str, int] = Field(default_factory=dict)
+    triggered_rule_counts: dict[str, int] = Field(default_factory=dict)
+    fusion_strategies: tuple[str, ...] = ()
+
+
+class ReplayRunDocument(_Document):
+    """One replay run's state, from the create, read, and stop endpoints."""
+
+    replay_schema_version: str = ""
+    run_id: str
+    scenario_id: str = ""
+    scenario_name: str = ""
+    scenario_revision: int = 0
+    scenario_fingerprint: str = ""
+    pace: str = ""
+    state: str = "created"
+    event_count: int = 0
+    emitted_count: int = 0
+    created_at: datetime | None = None
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    next_sequence: int = 0
+    more_expected: bool = False
+    failure_reason: str | None = None
+    summary: ReplayRunSummaryDocument = Field(default_factory=ReplayRunSummaryDocument)
+
+    @property
+    def terminal(self) -> bool:
+        """Return whether the run has finished and will emit nothing further.
+
+        Read off ``more_expected``, which the service publishes, rather than
+        re-derived from the state name: a client that decided for itself when a
+        run was over could disagree with the run.
+        """
+        return not self.more_expected
+
+    @property
+    def progress(self) -> float:
+        """Return how far through the scenario this run is, in ``[0, 1]``."""
+        if self.event_count <= 0:
+            return 0.0
+        return min(1.0, self.emitted_count / self.event_count)
+
+
+class ReplayTimelineRecordDocument(_Document):
+    """One replayed step, from ``GET /api/v1/demo/runs/{id}/timeline``."""
+
+    sequence: int
+    run_id: str = ""
+    scenario_id: str = ""
+    replay_state: str = ""
+    event_index: int = 0
+    window_event_count: int = 0
+    source_event_time: datetime | None = None
+    emitted_at: datetime | None = None
+    authentication_outcome: str = ""
+    detection: AnchorDetection
+
+
+class ReplayTimelineDocument(_Document):
+    """``GET /api/v1/demo/runs/{run_id}/timeline``."""
+
+    replay_schema_version: str = ""
+    run_id: str = ""
+    scenario_id: str = ""
+    state: str = ""
+    after_sequence: int = 0
+    next_sequence: int = 0
+    record_count: int = 0
+    records: tuple[ReplayTimelineRecordDocument, ...] = ()
+    more_expected: bool = False
+    emitted_count: int = 0
+    event_count: int = 0
 
 
 class ExplanationDocument(_Document):

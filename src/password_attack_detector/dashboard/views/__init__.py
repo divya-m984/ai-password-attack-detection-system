@@ -1,4 +1,4 @@
-"""The nine views the sidebar navigates between.
+"""The ten views the sidebar navigates between.
 
 Named ``views`` rather than ``pages`` on purpose.  Streamlit treats a directory
 called ``pages/`` sitting beside the entrypoint script as an *automatic*

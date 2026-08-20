@@ -143,6 +143,24 @@ class APISettings(BaseSettings):
         default=DEFAULT_MAX_REQUEST_BYTES, ge=1_024, le=MAX_MAX_REQUEST_BYTES
     )
 
+    # -- demonstration replay ----------------------------------------------
+    #: Whether the synthetic live/replay demonstration endpoints are served.
+    #:
+    #: A **facility** switch, not a scientific one.  Turning replay off removes
+    #: a way of *watching* the detector and changes nothing about what the
+    #: detector decides: the scenarios are fixed, they are scored through the
+    #: same orchestration ``/api/v1/detect`` uses, and no replay setting can name
+    #: a model, a threshold, or a strategy.
+    replay_enabled: bool = True
+    #: Whether readiness depends on the replay subsystem.
+    #:
+    #: False by default, and that default is the decision: replay is an optional
+    #: demonstration facility sharing a process with a detection service, and a
+    #: detector that refused to serve because its demo history could not
+    #: initialise would have its priorities backwards.  A deployment that exists
+    #: *only* to demonstrate can set this true and get the opposite behaviour.
+    replay_required: bool = False
+
     # -- degraded operation -------------------------------------------------
     #: Whether a loadable ML champion is required for the service to be ready.
     #:

@@ -27,6 +27,7 @@ from password_attack_detector.dashboard.state import (
 
 __all__ = [
     "render_layer_agreement_chart",
+    "render_replay_activity_chart",
     "render_rule_frequency_chart",
     "render_session_timeline",
     "render_severity_chart",
@@ -92,6 +93,46 @@ def layer_flag_counts(history: Sequence[DetectionRecord]) -> Mapping[str, int]:
         "ml": sum(1 for item in history if item.ml_flagged),
         "hybrid": sum(1 for item in history if item.hybrid_flagged),
     }
+
+
+def render_replay_activity_chart(history: Sequence[DetectionRecord]) -> None:
+    """Render each layer's cumulative flag count across a replay run.
+
+    Three running totals against the run's own step number, which is the shape
+    that makes a replay legible: an analyst watches the moment a layer starts
+    firing and how the three then diverge or agree.
+
+    Cumulative rather than per-step because a per-step boolean plotted as a line
+    is a square wave nobody can read, and cumulative counts over the *step* axis
+    -- not over wall-clock time -- keep the picture identical at every pace.
+    Every point is a count of records the service returned; nothing is smoothed,
+    interpolated, or projected forward.
+    """
+    if len(history) < 2:
+        _empty("A replay chart needs at least two scored steps.")
+        return
+    rule = ml = hybrid = 0
+    steps: list[int] = []
+    rules: list[int] = []
+    models: list[int] = []
+    hybrids: list[int] = []
+    for item in history:
+        rule += 1 if item.rule_flagged else 0
+        ml += 1 if item.ml_flagged else 0
+        hybrid += 1 if item.hybrid_flagged else 0
+        steps.append(item.sequence)
+        rules.append(rule)
+        models.append(ml)
+        hybrids.append(hybrid)
+    frame = pd.DataFrame(
+        {
+            "step": steps,
+            "rule flags": rules,
+            "model flags": models,
+            "hybrid flags": hybrids,
+        }
+    ).set_index("step")
+    st.line_chart(frame, height=260, color=["#3fb950", "#58a6ff", "#f0883e"])
 
 
 def render_session_timeline(history: Sequence[DetectionRecord]) -> None:

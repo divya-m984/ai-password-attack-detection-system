@@ -50,6 +50,7 @@ from password_attack_detector.dashboard.views import (
     events,
     explainability,
     overview,
+    replay,
     system,
 )
 from password_attack_detector.exceptions import ConfigurationError
@@ -59,7 +60,7 @@ __all__ = ["VIEWS", "View", "main"]
 _CLIENT_KEY: Final[str] = "pad_api_client"
 _SESSION_KEY: Final[str] = "pad_session"
 
-#: What every view's entry point is.  One signature for all nine, so no view
+#: What every view's entry point is.  One signature for all ten, so no view
 #: acquires its own way of reaching the backend or its own idea of what a
 #: session is: the client, this render's connectivity, and the session are
 #: handed to each of them and nothing else is.
@@ -71,6 +72,7 @@ View = Callable[[DashboardAPIClient, Connectivity, DashboardSession], None]
 VIEWS: Final[dict[str, View]] = {
     "Overview": overview.render,
     "Detection Console": detection.render,
+    "Live Replay": replay.render,
     "Authentication Events": events.render,
     "Security Alerts": alerts.render,
     "Attack Analytics": analytics.render,

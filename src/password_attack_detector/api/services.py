@@ -24,6 +24,7 @@ detection refused; it never leaves a silently substituted alternative in place.
 
 from __future__ import annotations
 
+import asyncio
 import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -36,10 +37,12 @@ from password_attack_detector.api.errors import APIError, ErrorCode, sanitize
 from password_attack_detector.api.schemas import (
     MAX_REPORTED_CONTRIBUTIONS,
     AnchorDetection,
+    AnchorSelection,
     BatchDetectionResponse,
     ComponentReport,
     ComponentState,
     DetectionResponse,
+    DetectionWindowRequest,
     ExplanationContribution,
     ExplanationResponse,
     HybridLayerResult,
@@ -131,18 +134,27 @@ from password_attack_detector.ml.test_evaluation import (
     EVALUATION_RECEIPT_FILE,
     EVALUATIONS_DIR,
 )
+from password_attack_detector.replay.engine import (
+    ReplayEngine,
+    ReplayRuntime,
+    StepDetector,
+)
+from password_attack_detector.replay.scenarios import SCENARIOS
+from password_attack_detector.replay.store import ReplayStore
 
 __all__ = [
     "COMPONENT_FEATURE_CONTRACT",
     "COMPONENT_FUSION",
     "COMPONENT_ML_CHAMPION",
     "COMPONENT_MODEL_ARTIFACTS",
+    "COMPONENT_REPLAY",
     "COMPONENT_RULE_ENGINE",
     "SERVING_SCOPE",
     "FusionRuntime",
     "MLRuntime",
     "RuleRuntime",
     "RuntimeState",
+    "build_replay_detector",
     "build_runtime",
     "detect_batch",
     "detect_single",
@@ -162,6 +174,7 @@ COMPONENT_FEATURE_CONTRACT: Final[str] = "feature_contract"
 COMPONENT_MODEL_ARTIFACTS: Final[str] = "model_artifacts"
 COMPONENT_ML_CHAMPION: Final[str] = "ml_champion"
 COMPONENT_FUSION: Final[str] = "fusion"
+COMPONENT_REPLAY: Final[str] = "replay"
 
 #: What a live request is, in the ML layer's own vocabulary.
 #:
@@ -290,6 +303,10 @@ class RuntimeState:
         unavailable_reason="no_fusion_selection",
     )
     pseudonymizer: PseudonymService | None = None
+    #: The optional demonstration replay subsystem.  ``None`` on a deployment
+    #: that switched it off.  Held here rather than on the application object so
+    #: "which state is this request using" stays one answerable question.
+    replay: ReplayRuntime | None = None
 
     @property
     def ready(self) -> bool:
@@ -403,6 +420,20 @@ def build_runtime(settings: APISettings) -> RuntimeState:
         )
     )
 
+    replay = _build_replay_runtime(settings)
+    components.append(
+        _report(
+            COMPONENT_REPLAY,
+            # Not yet available: the engine is attached below, once the runtime
+            # it scores through exists. What this report describes is whether
+            # replay *can* be assembled at all.
+            ready=replay is not None,
+            reason=None if replay is not None else "replay_disabled",
+            required=settings.replay_required,
+            disabled=replay is None,
+        )
+    )
+
     state = RuntimeState(
         settings=settings,
         components=tuple(components),
@@ -412,13 +443,83 @@ def build_runtime(settings: APISettings) -> RuntimeState:
         ml=ml,
         fusion=fusion,
         pseudonymizer=_load_pseudonymizer(),
+        replay=replay,
     )
+    if replay is not None:
+        # Attached after the state exists, because the detector is bound to
+        # *this* runtime -- the finished one, whose readiness a replayed step is
+        # gated on exactly as an HTTP detection is. Binding it to a partially
+        # assembled copy would let a replay run score through a runtime that the
+        # service itself would have refused.
+        replay.engine = ReplayEngine(
+            replay.store, detector=build_replay_detector(state)
+        )
     _log.info(
         "serving runtime initialised",
         ready=state.ready,
         components={item.component: str(item.state) for item in state.components},
     )
     return state
+
+
+def _build_replay_runtime(settings: APISettings) -> ReplayRuntime | None:
+    """Return the replay subsystem this deployment offers, or ``None``.
+
+    Cheap and infallible: a store is an empty dictionary and a lock.  There is no
+    artifact to verify, no file to read, and nothing to fail on -- which is
+    precisely why replay defaults to not being a required component.  A
+    deployment that switched it off gets ``None`` and every replay endpoint
+    refuses with a stable code.
+    """
+    if not settings.replay_enabled:
+        return None
+    return ReplayRuntime(
+        store=ReplayStore(), enabled=True, required=settings.replay_required
+    )
+
+
+def build_replay_detector(runtime: RuntimeState) -> StepDetector:
+    """Return the binding the replay engine scores every step through.
+
+    **This is the whole of the replay layer's access to detection**, and it is
+    one call to :func:`detect_single` -- the same function ``POST /api/v1/detect``
+    calls, with a request built through the same
+    :class:`~password_attack_detector.api.schemas.DetectionWindowRequest` schema
+    that validates an HTTP body.  A replayed step therefore meets every check a
+    client request meets: the credential-field scan, the canonical event rules,
+    the ordering and uniqueness contracts, the batch ceiling, and the readiness
+    gate.  There is no second detection path and no way to add one from here.
+
+    The window is the events emitted so far and the anchor is the newest of them,
+    which is the honest point-in-time reading: step *n* sees exactly the history
+    that existed when event *n* occurred, and no history is fabricated for the
+    early steps.
+
+    The call is dispatched to a worker thread.  Detection is CPU-bound -- feature
+    computation, rule evaluation, a model forward pass -- and running it on the
+    event loop would stall every other request in the process, including the
+    health checks, for the duration of a demonstration nobody else asked for.
+    ``detect_single`` builds a fresh
+    :class:`~password_attack_detector.features.engine.FeatureEngine` per call, so
+    two concurrent runs cannot see one another's history; the M1 request-isolation
+    guarantee is inherited rather than re-established.
+    """
+
+    async def detect(
+        events: Sequence[Mapping[str, Any]], *, anchor_event_id: str
+    ) -> AnchorDetection:
+        """Score the window and return the verdict for one anchor."""
+        request = DetectionWindowRequest.model_validate(
+            {
+                "events": [dict(item) for item in events],
+                "anchor_selection": AnchorSelection.EXPLICIT.value,
+                "anchor_event_ids": [anchor_event_id],
+            }
+        )
+        response = await asyncio.to_thread(detect_single, runtime, request)
+        return response.anchor
+
+    return detect
 
 
 def _load_feature_contract(
@@ -774,6 +875,7 @@ def version_document() -> VersionResponse:
 def system_status_document(runtime: RuntimeState) -> SystemStatusResponse:
     """Return which detection layers this deployment is running."""
     rule = runtime.rule
+    replay = runtime.replay
     return SystemStatusResponse(
         status=ReadinessState.READY if runtime.ready else ReadinessState.NOT_READY,
         package_version=__version__,
@@ -799,7 +901,31 @@ def system_status_document(runtime: RuntimeState) -> SystemStatusResponse:
         enabled_rule_count=0 if rule is None else len(rule.engine.enabled_rule_ids),
         registered_rule_count=len(RULE_CATALOG),
         max_batch_events=runtime.settings.max_batch_events,
+        # Replay is reported here and not on ``/health``: liveness stays cheap
+        # and uninformative, and whether an optional subsystem came up is what a
+        # status document is for. It never contributes to ``status`` unless the
+        # deployment asked for it to by setting ``replay_required``.
+        replay_enabled=runtime.settings.replay_enabled,
+        replay_available=replay is not None and replay.available,
+        replay_required=runtime.settings.replay_required,
+        replay_unavailable_reason=_replay_reason(runtime),
+        replay_scenario_count=len(SCENARIOS),
+        max_active_replay_runs=(
+            0 if replay is None else replay.store.limits.max_active_runs
+        ),
     )
+
+
+def _replay_reason(runtime: RuntimeState) -> str | None:
+    """Return why replay is unavailable, or ``None`` when it is not."""
+    replay = runtime.replay
+    if replay is not None and replay.available:
+        return None
+    if not runtime.settings.replay_enabled:
+        return "replay_disabled"
+    if replay is None:  # pragma: no cover - enabled implies a runtime
+        return "replay_disabled"
+    return replay.unavailable_reason or "replay_not_initialised"
 
 
 def model_info_document(runtime: RuntimeState) -> ModelInfoResponse:

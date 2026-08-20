@@ -22,8 +22,14 @@ from password_attack_detector.dashboard.components.charts import (
     render_session_timeline,
     render_severity_chart,
 )
+from password_attack_detector.dashboard.components.replay import (
+    SOURCE_LABELS,
+    DataSource,
+    render_run_banner,
+    select_source,
+)
 from password_attack_detector.dashboard.components.status import Connectivity
-from password_attack_detector.dashboard.state import DashboardSession
+from password_attack_detector.dashboard.state import DashboardSession, DetectionRecord
 from password_attack_detector.dashboard.theme import section_title
 
 __all__ = ["render"]
@@ -35,46 +41,53 @@ def render(
     """Render the analytics view."""
     st.markdown(section_title("Current dashboard session"), unsafe_allow_html=True)
     st.info(
-        "Every figure below is computed from the detections performed in **this "
-        "browser session**. No historical or aggregate traffic data exists yet, "
-        "and none is simulated to fill the space.",
+        "Every figure below is computed from detections this console has "
+        "actually seen — windows submitted from this browser session, or the "
+        "steps of a demo replay run it is following. No historical or aggregate "
+        "traffic data exists yet, and none is simulated to fill the space.",
     )
 
-    if not session.history:
+    render_run_banner(session.replay)
+    source = select_source(session, key="analytics_source")
+    history = _history(session, source)
+    if history:
         st.caption(
-            "No detection activity in this dashboard session. Submit a few "
-            "windows on the **Detection Console** and these charts populate "
-            "from the results."
+            f"Counting: **{SOURCE_LABELS[source]}** — {len(history)} detection(s)."
+        )
+
+    if not history:
+        st.caption(
+            "No detection activity from this source. Submit a window on the "
+            "**Detection Console**, or start a run on **Live Replay**, and "
+            "these charts populate from the results."
         )
         return
-
-    st.caption(f"{len(session.history)} detection(s) in this session.")
 
     left, right = st.columns(2)
     with left:
         st.markdown(section_title("Detections by severity"), unsafe_allow_html=True)
-        render_severity_chart(session.history)
+        render_severity_chart(history)
         st.caption("Phase 4 ordinal severity, in the scale's own order.")
     with right:
         st.markdown(section_title("Triggered rules"), unsafe_allow_html=True)
-        render_rule_frequency_chart(session.history)
-        st.caption("How often each rule fired across this session's windows.")
+        render_rule_frequency_chart(history)
+        st.caption("How often each rule fired across these windows.")
 
     lower_left, lower_right = st.columns(2)
     with lower_left:
         st.markdown(section_title("Flags raised, by layer"), unsafe_allow_html=True)
-        render_layer_agreement_chart(session.history)
+        render_layer_agreement_chart(history)
         st.caption(
             "Three independent counts. Not a stacked total: the layers are not "
             "parts of one quantity."
         )
     with lower_right:
-        st.markdown(section_title("Session activity"), unsafe_allow_html=True)
-        render_session_timeline(session.history)
+        st.markdown(section_title("Activity over sequence"), unsafe_allow_html=True)
+        render_session_timeline(history)
 
-    st.markdown(section_title("Scenarios submitted"), unsafe_allow_html=True)
+    st.markdown(section_title("Scenarios observed"), unsafe_allow_html=True)
     counts: dict[str, int] = {}
-    for item in session.history:
+    for item in history:
         counts[item.scenario] = counts.get(item.scenario, 0) + 1
     st.dataframe(
         [
@@ -86,3 +99,27 @@ def render(
         width="stretch",
         hide_index=True,
     )
+    st.caption(
+        "A scenario prefixed `replay:` came from a server-side demo run; the "
+        "rest are windows submitted from this browser session. The two are never "
+        "summed into a single unlabelled figure."
+    )
+
+
+def _history(
+    session: DashboardSession, source: DataSource
+) -> tuple[DetectionRecord, ...]:
+    """Return the records the chosen source contributes, in observation order.
+
+    Sorting the combined view by sequence would interleave two independent
+    numberings that both start at 1, so the sources are concatenated in a fixed
+    order instead -- manual first, then replay -- and every row still carries the
+    prefix that says which it is.
+    """
+    manual = tuple(session.history)
+    replayed = session.replay.detection_records()
+    if source is DataSource.MANUAL:
+        return manual
+    if source is DataSource.REPLAY:
+        return replayed
+    return manual + replayed

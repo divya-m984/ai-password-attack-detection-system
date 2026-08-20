@@ -921,6 +921,57 @@ class SystemStatusResponse(BaseModel):
     registered_rule_count: int = Field(ge=0)
     max_batch_events: int = Field(ge=1)
 
+    # -- demonstration replay ----------------------------------------------
+    #: Reported here rather than on ``/health`` deliberately. Liveness stays
+    #: cheap and uninformative; whether an *optional* subsystem initialised is
+    #: exactly the sort of thing a status document is for.
+    replay_enabled: bool = Field(
+        default=False,
+        description="Whether this deployment serves the replay endpoints.",
+    )
+    replay_available: bool = Field(
+        default=False,
+        description="Whether a replay run can actually be started right now.",
+    )
+    replay_required: bool = Field(
+        default=False,
+        description=(
+            "Whether overall readiness depends on replay. False on an ordinary "
+            "deployment: a detection service does not become unavailable because "
+            "an optional demonstration facility did not initialise."
+        ),
+    )
+    replay_unavailable_reason: ReasonCode | None = None
+    replay_scenario_count: int = Field(
+        default=0, ge=0, description="Scenarios in the built-in replay catalog."
+    )
+    max_active_replay_runs: int = Field(
+        default=0, ge=0, description="Concurrent replay runs this deployment admits."
+    )
+
+    @model_validator(mode="after")
+    def check_replay(self) -> Self:
+        """An available subsystem names no reason; an enabled-but-broken one does.
+
+        A *disabled* subsystem is exempt from the reason requirement: "switched
+        off" is already the whole explanation, and demanding a code for it would
+        make every deployment that does not want replay carry a field that reads
+        like a fault.
+        """
+        if self.replay_available:
+            if not self.replay_enabled:
+                raise ValueError("a disabled replay subsystem is not available")
+            if self.replay_unavailable_reason is not None:
+                raise ValueError(
+                    "an available replay subsystem names no unavailable reason"
+                )
+        elif self.replay_enabled and self.replay_unavailable_reason is None:
+            raise ValueError(
+                "a replay subsystem that is enabled and not available must name "
+                "a reason code"
+            )
+        return self
+
     @model_validator(mode="after")
     def check_hybrid(self) -> Self:
         """An executing hybrid is the frozen one, and names no reason."""

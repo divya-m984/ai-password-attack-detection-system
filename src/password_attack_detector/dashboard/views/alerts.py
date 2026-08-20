@@ -18,6 +18,7 @@ import streamlit as st
 from password_attack_detector.dashboard.api_client import DashboardAPIClient
 from password_attack_detector.dashboard.components.alerts import render_alert_history
 from password_attack_detector.dashboard.components.metrics import render_session_cards
+from password_attack_detector.dashboard.components.replay import render_run_banner
 from password_attack_detector.dashboard.components.status import Connectivity
 from password_attack_detector.dashboard.formatting import (
     SEVERITY_COLORS,
@@ -47,6 +48,10 @@ def render(
             "No detection activity in this dashboard session. Submit a window "
             "on the **Detection Console** to populate this page."
         )
+        # The manual history is empty and the demo run's is a different thing
+        # entirely, so the page carries on to it rather than returning: a viewer
+        # who has just watched a replay should not be told there is nothing here.
+        _render_replay_alerts(session)
         return
 
     st.markdown(section_title("Session results"), unsafe_allow_html=True)
@@ -72,3 +77,33 @@ def render(
     if st.button("Clear session history"):
         session.clear_history()
         st.rerun()
+
+    _render_replay_alerts(session)
+
+
+def _render_replay_alerts(session: DashboardSession) -> None:
+    """Render the flagged steps of the demo run this session is following.
+
+    A separate section under its own heading, never merged into the table above.
+    The two have different origins and different lifetimes -- one is what this
+    browser tab submitted, the other is what a run on the server produced -- and
+    a console that listed them together would be inviting the reader to treat a
+    demonstration as an alert queue.
+    """
+    replay = session.replay
+    if not replay.attached or not replay.records:
+        return
+    st.markdown(section_title("Server-side demo replay run"), unsafe_allow_html=True)
+    render_run_banner(replay)
+    flagged = tuple(
+        item for item in replay.detection_records() if item.any_layer_flagged
+    )
+    if not flagged:
+        st.caption("No step of this run has been flagged by any layer.")
+        return
+    st.caption(
+        f"{len(flagged)} of {len(replay.records)} scored steps raised a flag on "
+        f"at least one layer. Sequence numbers here are the **run's** steps, not "
+        f"this session's submissions."
+    )
+    render_alert_history(flagged)

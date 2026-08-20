@@ -36,6 +36,7 @@ from password_attack_detector.api.services import (
     COMPONENT_FUSION,
     COMPONENT_ML_CHAMPION,
     COMPONENT_MODEL_ARTIFACTS,
+    COMPONENT_REPLAY,
     COMPONENT_RULE_ENGINE,
     SERVING_SCOPE,
     FusionRuntime,
@@ -106,6 +107,7 @@ def test_every_declared_component_is_reported(rule_only: RuntimeState) -> None:
         COMPONENT_MODEL_ARTIFACTS,
         COMPONENT_ML_CHAMPION,
         COMPONENT_FUSION,
+        COMPONENT_REPLAY,
     }
 
 

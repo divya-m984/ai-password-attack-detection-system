@@ -49,7 +49,10 @@ from password_attack_detector.dashboard.contracts import (
     HealthDocument,
     ModelInfoDocument,
     ReadinessDocument,
+    ReplayRunDocument,
+    ReplayTimelineDocument,
     RuleCatalogDocument,
+    ScenarioCatalogDocument,
     SystemStatusDocument,
     VersionDocument,
 )
@@ -247,6 +250,62 @@ class DashboardAPIClient:
         """``GET /api/v1/rules`` -- the public rule catalog."""
         return self._get("/api/v1/rules", RuleCatalogDocument)
 
+    # -- demonstration replay ------------------------------------------------
+    #
+    # Added to *this* client rather than to a second one. A page that opened its
+    # own connection would get its own timeout, its own idea of what "offline"
+    # looks like, and its own retry behaviour -- and the Live Replay page is the
+    # one page that calls the backend repeatedly, so it is the last place that
+    # should be allowed to diverge.
+
+    def demo_scenarios(self) -> APIResult[ScenarioCatalogDocument]:
+        """``GET /api/v1/demo/scenarios`` -- the built-in scenario catalog."""
+        return self._get("/api/v1/demo/scenarios", ScenarioCatalogDocument)
+
+    def start_demo_run(
+        self, scenario_id: str, *, pace: str
+    ) -> APIResult[ReplayRunDocument]:
+        """``POST /api/v1/demo/runs`` -- start one built-in scenario.
+
+        Not retried, like every other ``POST`` here, and for a sharper reason
+        than usual: a start that timed out may well have started, and re-sending
+        it would run the same scenario twice while the console showed one.
+        """
+        return self._post(
+            "/api/v1/demo/runs",
+            {"scenario_id": scenario_id, "pace": pace},
+            ReplayRunDocument,
+            ok_statuses=(200, 201),
+        )
+
+    def demo_run(self, run_id: str) -> APIResult[ReplayRunDocument]:
+        """``GET /api/v1/demo/runs/{run_id}`` -- one run's state and summary."""
+        return self._get(f"/api/v1/demo/runs/{run_id}", ReplayRunDocument)
+
+    def demo_timeline(
+        self, run_id: str, *, after_sequence: int = 0, limit: int = 50
+    ) -> APIResult[ReplayTimelineDocument]:
+        """``GET /api/v1/demo/runs/{run_id}/timeline`` -- one page after a cursor.
+
+        The only method here a page calls repeatedly. It stays a plain single
+        request: the polling schedule is the view's decision and is bounded
+        there, and a client that retried internally would make that schedule
+        unknowable from outside.
+        """
+        return self._get(
+            f"/api/v1/demo/runs/{run_id}/timeline",
+            ReplayTimelineDocument,
+            params={"after_sequence": after_sequence, "limit": limit},
+        )
+
+    def stop_demo_run(self, run_id: str) -> APIResult[ReplayRunDocument]:
+        """``POST /api/v1/demo/runs/{run_id}/stop`` -- stop one run.
+
+        Idempotent on the service's side, so a second press is harmless -- but it
+        is still sent once per press and never on the console's own initiative.
+        """
+        return self._post(f"/api/v1/demo/runs/{run_id}/stop", {}, ReplayRunDocument)
+
     # -- writes -------------------------------------------------------------
 
     def detect(
@@ -306,10 +365,19 @@ class DashboardAPIClient:
         document: type[DocumentT],
         *,
         ok_statuses: tuple[int, ...] = (200,),
+        params: Mapping[str, int | str] | None = None,
     ) -> APIResult[DocumentT]:
-        """Perform one GET and parse it, or return why it could not be."""
+        """Perform one GET and parse it, or return why it could not be.
+
+        *params* carries only values this package computed -- a cursor and a page
+        size -- and is passed to ``httpx`` for encoding rather than interpolated
+        into the path.
+        """
         try:
-            response = self._client.get(self._settings.endpoint(path))
+            response = self._client.get(
+                self._settings.endpoint(path),
+                params=None if params is None else dict(params),
+            )
         except httpx.TimeoutException:
             return APIResult(problem=Problem(ProblemKind.TIMEOUT))
         except httpx.HTTPError:
@@ -321,12 +389,19 @@ class DashboardAPIClient:
         return self._parse(response, document, ok_statuses=ok_statuses)
 
     def _post(
-        self, path: str, body: Mapping[str, Any], document: type[DocumentT]
+        self,
+        path: str,
+        body: Mapping[str, Any],
+        document: type[DocumentT],
+        *,
+        ok_statuses: tuple[int, ...] = (200,),
     ) -> APIResult[DocumentT]:
         """Perform one POST and parse it, or return why it could not be.
 
         One attempt. A timed-out detection may already have been evaluated, and
-        a client that resent it would produce two session alerts for one window.
+        a client that resent it would produce two session alerts for one window;
+        a timed-out replay start may already have started a run, and re-sending
+        it would run the scenario twice.
         """
         try:
             response = self._client.post(self._settings.endpoint(path), json=dict(body))
@@ -334,7 +409,7 @@ class DashboardAPIClient:
             return APIResult(problem=Problem(ProblemKind.TIMEOUT))
         except httpx.HTTPError:
             return APIResult(problem=Problem(ProblemKind.OFFLINE))
-        return self._parse(response, document)
+        return self._parse(response, document, ok_statuses=ok_statuses)
 
     @classmethod
     def _parse(

@@ -26,9 +26,15 @@ __all__ = ["PAGES", "render_header", "render_sidebar"]
 
 #: The navigation labels, in order.  Stable: they are how the documentation, the
 #: tests, and a demo script all refer to a view.
+#:
+#: "Live Replay" sits directly under the Detection Console because the two are
+#: the same act at two scales -- one window somebody composed, and a whole
+#: scenario the server walks through -- and an analyst comparing them should not
+#: have to cross the rest of the navigation to do it.
 PAGES: Final[tuple[str, ...]] = (
     "Overview",
     "Detection Console",
+    "Live Replay",
     "Authentication Events",
     "Security Alerts",
     "Attack Analytics",

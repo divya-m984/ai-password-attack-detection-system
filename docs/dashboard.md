@@ -85,10 +85,12 @@ src/password_attack_detector/dashboard/
 │   ├── status.py     connectivity probing and the error-display contract
 │   ├── metrics.py    the compact cards
 │   ├── alerts.py     the three-layer result view and the session table
-│   └── charts.py     session charts
+│   ├── charts.py     session and replay charts
+│   └── replay.py     where replay data appears on a page that is not Live Replay
 └── views/
     ├── overview.py        Overview
     ├── detection.py       Detection Console
+    ├── replay.py          Live Replay
     ├── events.py          Authentication Events
     ├── alerts.py          Security Alerts
     ├── analytics.py       Attack Analytics
@@ -108,7 +110,7 @@ a second navigation beside the real one, listing the same views under filenames
 and calling their render functions with no arguments.
 
 Every view exposes one `render(client, status, session)` function. One signature
-for all nine, so no view acquires its own way of reaching the backend; a test
+for all ten, so no view acquires its own way of reaching the backend; a test
 asserts the signature and asserts that the dispatch table's keys are exactly the
 navigation labels.
 
@@ -195,15 +197,16 @@ report, and the report is exactly what the page needs to show.
 
 ---
 
-## 5. The nine views
+## 5. The ten views
 
 | View | What it shows | Backend needed |
 | --- | --- | --- |
-| **Overview** | Posture cards, readiness, architecture, champion, rule summary, session activity | yes |
+| **Overview** | Posture cards, readiness, architecture, champion, rule summary, session activity, attached demo run | yes |
 | **Detection Console** | Templates, event builder, window, JSON preview, submit, result | yes to submit |
-| **Authentication Events** | The window composed in this session | no |
-| **Security Alerts** | This session's detection results | no |
-| **Attack Analytics** | Charts over this session's results | no |
+| **Live Replay** | A server-side synthetic scenario, replayed step by step | yes |
+| **Authentication Events** | The window composed in this session, and a demo run's emitted steps | no |
+| **Security Alerts** | This session's detection results, and a demo run's flagged steps | no |
+| **Attack Analytics** | Charts over this session's results, a demo run's, or both — behind a source selector | no |
 | **Rule vs ML vs Hybrid** | The three layers, the architecture diagram, the active strategy | yes |
 | **Explainability** | Per-anchor model attribution via `POST /api/v1/explain` | yes |
 | **Drift Monitoring** | The drift contract and its thresholds | no |
@@ -255,6 +258,64 @@ Events: N · Anchor mode: … · API: connected / not connected
 Anchor mode selects `last` (one anchor) or `all` (every event). The deployment's
 `max_batch_events` is read from `/api/v1/system/status` and a window over it is
 flagged before the request is made.
+
+### Live Replay
+
+The tenth view, added in Milestone 3, and the one page that calls the backend
+repeatedly.
+
+It starts a **server-side** replay run, polls its timeline, and stops it. The run
+executes in the API process; this page holds a run identifier, a cursor, and
+whatever records it has fetched. A browser reload loses the *view* and not the
+run, and another tab polling the same identifier sees the same timeline — which
+is exactly the difference from the manual session history two tabs apart.
+
+Shown: scenario, pace, status, progress, events emitted / total, active fusion
+strategy, current severity; the latest steps in colour; the full timeline as
+`TIME | EVENT | RULE | RISK | ML | HYBRID | SEVERITY`; a cumulative
+layer-activity chart; and a **Demo run summary** on completion, every figure of
+which the service derived from that run's own timeline records.
+
+Controls: **▶ Start replay**, **■ Stop replay**, **↻ Refresh**.
+
+**Polling.** While a run is active the timeline block is a Streamlit fragment
+with a fixed 1.5-second interval — no `while` loop, no busy wait. The interval is
+a constant tied to the service's *pace* vocabulary rather than to
+`refresh_seconds`, because what it has to keep up with is a replay step and not
+an operator's idea of how often to re-read a status. The moment the service
+reports the run terminal the fragment is not used at all and the page stops
+calling the backend. `poll_interval()` is the whole policy and returns `None` for
+a terminal run; it is a plain function so it can be tested without Streamlit
+running.
+
+**Nothing starts or stops on the console's initiative.** Start and Stop are
+buttons *outside* the polling fragment; a run identifier is written into session
+state the instant one is created; and Start is disabled while a run is attached
+and active, so a page that reruns — which Streamlit does constantly — cannot
+start a second run behind the first.
+
+**The scenario catalog comes from the API.** So does the pace vocabulary's
+meaning; the console restates the four words and a test pins them against the
+service's own enumeration. There is no scenario editor and no JSON field on this
+page.
+
+### Where replay data appears elsewhere
+
+| View | What it adds | Label |
+| --- | --- | --- |
+| **Overview** | The attached run's state and summary | "Attached demo replay run", only when one is attached |
+| **Authentication Events** | The run's emitted steps | Separate "Server-side demo replay run" section |
+| **Security Alerts** | The run's flagged steps | Separate section, never merged into the session table |
+| **Attack Analytics** | Optionally the run's records | An explicit **Data source** selector, defaulting to the manual session |
+
+**The two sources are never silently merged.** Manual submissions are what this
+browser tab sent; a replay run is something happening on the server. They have
+different origins and different lifetimes, so every replay-derived record carries
+a `replay:` scenario prefix, every page that shows both says which is which, and
+the analytics selector offers "this dashboard session", "active demo replay run",
+or "both, labelled by source" — and defaults to the first.
+
+Full contract: **[live-replay.md](live-replay.md)**.
 
 ### Safe synthetic scenarios
 
@@ -546,8 +607,11 @@ because it is what a viewer gets when they open the console first.
 server-side history. Every count, chart, and table on the session pages describes
 this browser tab, and says so on the page. A reload starts empty.
 
-**No live or replay pipeline.** Windows are composed by hand or loaded from one
-of three fixed templates. Replay automation is Milestone 3.
+**A replay run is not history either.** The Live Replay view follows a run that
+lives in one API process's memory, bounded and cleared by a restart. It is a
+demonstration somebody is watching, not a record anybody should later rely on,
+and every page that shows it says so. A reload loses the console's view of the
+run; the run itself carries on until it finishes or is stopped.
 
 **No serving drift report.** Drift is computed offline by `ml drift`; nothing in
 the serving layer publishes a report, and the Drift Monitoring page documents the
@@ -572,6 +636,7 @@ from the browser, so no browser origin needs to be allowed yet.
 ## 12. Related documents
 
 - **[api.md](api.md)** — the serving API this console consumes
+- **[live-replay.md](live-replay.md)** — the synthetic replay demonstration the Live Replay view drives
 - **[rule-catalog.md](rule-catalog.md)** — the rules the catalog page lists
 - **[explainability.md](explainability.md)** — the Phase 5 attribution contract
 - **[drift-monitoring.md](drift-monitoring.md)** — what the drift page documents

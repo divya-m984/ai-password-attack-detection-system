@@ -247,11 +247,16 @@ def test_every_navigation_label_has_a_view() -> None:
     assert list(VIEWS) == list(PAGES)
 
 
-def test_the_navigation_offers_the_nine_declared_areas() -> None:
-    """The labels are stable: documentation and demo scripts refer to them."""
+def test_the_navigation_offers_the_ten_declared_areas() -> None:
+    """The labels are stable: documentation and demo scripts refer to them.
+
+    Ten since Milestone 3. "Live Replay" sits beside the Detection Console
+    deliberately: the two are the same act at two scales.
+    """
     assert PAGES == (
         "Overview",
         "Detection Console",
+        "Live Replay",
         "Authentication Events",
         "Security Alerts",
         "Attack Analytics",
@@ -263,7 +268,7 @@ def test_the_navigation_offers_the_nine_declared_areas() -> None:
 
 
 def test_every_view_is_callable_with_the_one_signature() -> None:
-    """One signature for all nine, so no view invents its own dependencies."""
+    """One signature for all ten, so no view invents its own dependencies."""
     import inspect
 
     from password_attack_detector.dashboard.app import VIEWS

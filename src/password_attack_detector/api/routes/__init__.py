@@ -11,11 +11,13 @@ from __future__ import annotations
 from password_attack_detector.api.routes.detection import detection_router
 from password_attack_detector.api.routes.explain import explain_router
 from password_attack_detector.api.routes.health import health_router
+from password_attack_detector.api.routes.replay import replay_router
 from password_attack_detector.api.routes.system import system_router
 
 __all__ = [
     "detection_router",
     "explain_router",
     "health_router",
+    "replay_router",
     "system_router",
 ]

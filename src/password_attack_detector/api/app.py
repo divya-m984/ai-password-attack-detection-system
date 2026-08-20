@@ -48,6 +48,7 @@ from password_attack_detector.api.routes import (
     detection_router,
     explain_router,
     health_router,
+    replay_router,
     system_router,
 )
 from password_attack_detector.api.services import RuntimeState, build_runtime
@@ -96,6 +97,15 @@ _TAGS: list[dict[str, Any]] = [
     {
         "name": "System",
         "description": "Public-safe system, model, and rule-catalog information.",
+    },
+    {
+        "name": "Demo",
+        "description": (
+            "Replay a built-in synthetic scenario through the same detection "
+            "path as /api/v1/detect, one event at a time. Scenarios are "
+            "fabricated, credential-free, and cannot be uploaded; runs are "
+            "process-local and are not retained across a restart."
+        ),
     },
 ]
 
@@ -282,9 +292,15 @@ def create_app(
         try:
             yield
         finally:
-            # Nothing to release: the runtime holds verified in-memory artifacts
-            # and no connection, file handle, or background task. The attribute
-            # is cleared so a stopped application cannot answer from stale state.
+            # The detection runtime holds verified in-memory artifacts and no
+            # connection or file handle, so there is nothing to release there.
+            # The *replay* subsystem does hold background tasks, and a process
+            # that exited with runs still marked ``running`` would leave its last
+            # published state describing something that is not happening. Every
+            # active run is cancelled and recorded as stopped first.
+            if state.replay is not None and state.replay.engine is not None:
+                await state.replay.engine.shutdown()
+            # Cleared so a stopped application cannot answer from stale state.
             setattr(application.state, RUNTIME_ATTRIBUTE, None)
 
     application = FastAPI(
@@ -321,6 +337,7 @@ def create_app(
     application.include_router(detection_router)
     application.include_router(explain_router)
     application.include_router(system_router)
+    application.include_router(replay_router)
     if runtime is not None:
         # A test-injected runtime is available immediately, so the application
         # is usable without a lifespan for callers that do not start one.

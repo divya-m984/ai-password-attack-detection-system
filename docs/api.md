@@ -326,6 +326,7 @@ different strategy.
 | `model_artifacts` | when a champion is required | A frozen champion lock is present under the artifact root |
 | `ml_champion` | when a champion is required | The lock verified end to end and bound to the feature contract |
 | `fusion` | **when one was selected** | The frozen strategy can actually execute |
+| `replay` | only when configured required | The optional synthetic demonstration subsystem is assembled |
 
 ### Readiness semantics for the hybrid
 
@@ -498,6 +499,25 @@ required exactly when one was frozen (or when the lineage is ambiguous, which
 requires a hybrid it cannot name); and only a running stacked hybrid may carry a
 state fingerprint. A document describing a substituted gate is not serialisable.
 
+The same document also reports the optional **synthetic replay demonstration**:
+
+```json
+{
+  "replay_enabled": true,
+  "replay_available": true,
+  "replay_required": false,
+  "replay_unavailable_reason": null,
+  "replay_scenario_count": 7,
+  "max_active_replay_runs": 4
+}
+```
+
+Replay is a demonstration facility, not a detection layer. `replay_required` is
+`false` by default, so a deployment whose replay subsystem could not initialise
+stays **ready** and refuses only the replay endpoints. `/health` is untouched:
+liveness stays cheap, and whether an optional subsystem came up is what a status
+document is for. Details in [live-replay.md](live-replay.md) §10.
+
 ### `GET /api/v1/model/info`
 
 The champion's family, catalog identifier, content-derived model identifier,
@@ -612,6 +632,44 @@ remains available.
 Nothing here fits, calibrates, re-thresholds, or writes. An integration test
 hashes every artifact byte under the deployment before and after a run of
 explanations and asserts they are identical.
+
+---
+
+### `GET /api/v1/demo/scenarios`, `POST /api/v1/demo/runs`, and the run endpoints
+
+The synthetic live/replay demonstration, under `/api/v1/demo`, tagged **Demo**.
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /api/v1/demo/scenarios` | The reviewed, built-in scenario catalog |
+| `POST /api/v1/demo/runs` | Start one scenario at one pace |
+| `GET /api/v1/demo/runs` | The runs this *process* retains, newest first |
+| `GET /api/v1/demo/runs/{run_id}` | One run's state and summary |
+| `GET /api/v1/demo/runs/{run_id}/timeline` | One bounded page after a cursor |
+| `POST /api/v1/demo/runs/{run_id}/stop` | Stop that run, idempotently |
+
+A replay emits a fixed synthetic scenario one event at a time into **this
+service's own `detect_single`** — the same function `POST /api/v1/detect` calls,
+through the same request schema, with the window being every event emitted so
+far and the anchor being the newest. There is no second detection path, and a
+test reconstructs a replayed step's window, posts it to `/api/v1/detect`, and
+compares the two verdicts field by field.
+
+The create-run body is **two fields**:
+
+```json
+{ "scenario_id": "brute_force", "pace": "normal" }
+```
+
+Both are closed vocabularies, and `extra="forbid"` means anything else is a
+refusal. There is no field for an event list, an address, a URL, a filesystem
+path, a schedule, a model, a threshold, a fusion strategy, or a credential.
+
+Runs are **process-local, bounded, and not retained across a restart**. Nothing
+here is persistence, and no document presents it as history.
+
+Full contract, scenario catalog, determinism guarantees, state machine, bounds
+and limitations: **[live-replay.md](live-replay.md)**.
 
 ---
 
@@ -839,6 +897,12 @@ Never a value, a path, or a row.
 | `API013` | 422 | Credential material offered |
 | `API014` | 422 | Source address supplied but no pseudonymization key |
 | `API015` | 404 / 405 | No such route, or method not allowed |
+| `API016` | 503 | Replay subsystem not available on this deployment |
+| `API017` | 404 | No such scenario in the built-in replay catalog |
+| `API018` | 404 | No such replay run in this process |
+| `API019` | 429 | A replay bound is reached; nothing was started or extended |
+| `API020` | 409 | The replay run cannot make that transition from its current state |
+| `API021` | 422 | The replay timeline cursor is not a position a cursor can occupy |
 | `API099` | 500 | Internal error |
 
 A code is a contract: `API007` means the same thing in this release and in every
@@ -874,6 +938,8 @@ All variables use the `PAD_API_` prefix and may also be set in an untracked
 | `PAD_API_MAX_BATCH_EVENTS` | `500` | Events per window (1 – 5 000) |
 | `PAD_API_MAX_REQUEST_BYTES` | `1048576` | Body ceiling (1 KiB – 16 MiB) |
 | `PAD_API_REQUIRE_ML_CHAMPION` | `true` | Whether a loadable champion is required for readiness |
+| `PAD_API_REPLAY_ENABLED` | `true` | Whether the synthetic demonstration replay endpoints are served |
+| `PAD_API_REPLAY_REQUIRED` | `false` | Whether readiness depends on the replay subsystem |
 
 Configured paths must be **absolute** and free of `..` segments: a relative path
 would resolve against whatever working directory the process happened to start
@@ -972,7 +1038,19 @@ detail. Set `PAD_API_DOCS_ENABLED=false` to serve none of the three.
 * **No persistence.** Every request is scored from the window it supplies. The
   service stores no event, no verdict, and no alert, and it has no history of
   its own — which is exactly why a caller has to supply the window. Persistence
-  arrives in a later phase.
+  arrives in a later phase. The replay layer's run store is the one exception
+  and is not an exception at all: it is bounded, in-memory, process-local, and
+  cleared by a restart, which the documents and the console both say.
+* **Replay is synthetic only.** `/api/v1/demo` replays a reviewed built-in
+  catalog. There is no path for real traffic to enter one, no way to upload or
+  parameterise a scenario beyond its pace, and no field on any replay request
+  that names a host, a path, or a scientific parameter.
+* **Two rules cannot be demonstrated on live requests.** `PAD-CS-001` and
+  `PAD-ATO-001` gate on a fitted behavioural baseline, and the serving path
+  computes point-in-time features from the supplied window alone with no
+  baseline artifact loaded. Both report insufficient data on every request
+  through this API, whether it arrives from a client or from a replay. See
+  [live-replay.md](live-replay.md) §3.
 * **No alerting, grouping, or suppression.** The Phase 4 alert lifecycle
   (grouping, cooldown, rate limiting, escalation) is not exposed. The API
   returns event-level risk assessments, not `SecurityAlert` records.
@@ -1014,4 +1092,5 @@ detail. Set `PAD_API_DOCS_ENABLED=false` to serve none of the three.
 | [test-evaluation.md](test-evaluation.md) | The locked TEST protocol and fusion selection |
 | [explainability.md](explainability.md) | The attribution contract `/api/v1/explain` reuses |
 | [dashboard.md](dashboard.md) | The analyst console that consumes this API |
+| [live-replay.md](live-replay.md) | The synthetic replay demonstration built on `/api/v1/detect` |
 | [detection-limitations.md](detection-limitations.md) | What the detection layer does not do |

@@ -122,6 +122,16 @@ class ServingTransport(httpx.BaseTransport):
 
     The point of doing this rather than mocking: every dashboard assertion runs
     against bytes the actual serving application produced.
+
+    **The client must be entered as a context manager.**  A ``TestClient`` that
+    has not been entered creates a *fresh event loop per request* and tears it
+    down when the response is returned -- which is invisible for a request/
+    response endpoint and fatal for a background task.  A replay run started
+    through such a client is scheduled on a loop that stops existing a moment
+    later, so the run stays at ``running`` with nothing driving it, forever.
+    Under uvicorn there is one loop for the life of the process and the question
+    does not arise; the fixture below enters the client so the test harness
+    matches.
     """
 
     def __init__(self, client: TestClient) -> None:
@@ -144,13 +154,20 @@ class ServingTransport(httpx.BaseTransport):
 
 
 @pytest.fixture()
-def serving_transport(served: APISettings) -> ServingTransport:
+def serving_transport(served: APISettings) -> Any:
     """A transport into the frozen deployment, for the dashboard's own client.
 
-    The runtime is built and injected rather than resolved by the application's
-    lifespan, because nothing here starts one: a dashboard talking to an
-    application whose artifacts were never loaded would exercise the "not ready"
-    path on every assertion.
+    The runtime is built and injected rather than resolved from scratch, because
+    a dashboard talking to an application whose artifacts were never loaded would
+    exercise the "not ready" path on every assertion. The lifespan still runs --
+    it adopts the injected runtime -- which is what gives this client the single
+    persistent event loop a replay run needs to make progress, and what runs the
+    engine's shutdown when the test ends.
+
+    Function-scoped on purpose: each test gets its own replay store, so one
+    test's runs are invisible to the next and the bounded-capacity assertions
+    mean something.
     """
     application = create_app(settings=served, runtime=build_runtime(served))
-    return ServingTransport(TestClient(application))
+    with TestClient(application) as connected:
+        yield ServingTransport(connected)
