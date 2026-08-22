@@ -1019,6 +1019,24 @@ succeeds and mounts that volume **read-only**. The environment it is given is
 exactly the table in §9, with absolute paths inside the container. Nothing is
 fitted at startup there either. See [docker.md](docker.md).
 
+### On a server, behind a reverse proxy
+
+`compose.deploy.yaml` overlays the above: the API keeps port 8000 but stops
+publishing it, and a reverse proxy becomes the only public listener. **Under the
+default routing policy this service is not reachable from the internet at all** —
+the dashboard's client runs server-side and reaches it as `http://api:8000`
+across the Compose network, so every endpoint below still works while none of
+them is public.
+
+A second reviewed policy publishes the read-only surface — `/docs`,
+`/openapi.json`, `/health`, `/ready`, `/version`, `/api/v1/system/status`,
+`/api/v1/model/info`, `/api/v1/rules`, `/api/v1/demo/scenarios` — and no more.
+The scoring endpoints (`/detect`, `/detect/batch`, `/explain`) and the replay
+control endpoints stay internal in both policies, because scoring costs CPU and
+this deployment has no rate limiting yet. Swagger's "Try it out" will return 404
+or 405 for them through the proxy; that is the proxy refusing the route, not this
+service failing. See [deployment.md](deployment.md) §6.
+
 ---
 
 ## 11. Swagger
@@ -1079,6 +1097,9 @@ detail. Set `PAD_API_DOCS_ENABLED=false` to serve none of the three.
   adds a loader to the serving path. Nothing was loosened in the meantime — no
   rule threshold moved and no baseline was synthesised. See
   [live-replay.md](live-replay.md) §3 and [docker.md](docker.md) §14.
+  [deployment.md](deployment.md) §16 classifies **all nine** rules against
+  measured per-rule outcomes: four fire on live requests, three are live-serving
+  but exercised by no replay scenario, and these two cannot fire at all.
 * **No alerting, grouping, or suppression.** The Phase 4 alert lifecycle
   (grouping, cooldown, rate limiting, escalation) is not exposed. The API
   returns event-level risk assessments, not `SecurityAlert` records.
@@ -1099,13 +1120,23 @@ detail. Set `PAD_API_DOCS_ENABLED=false` to serve none of the three.
   untrusted network. No cross-origin policy is installed: the Milestone 2 console
   calls this service from Python rather than from a browser, so no origin needs
   allowing yet, and a permissive default would be a decision nobody made.
+
+  Milestone 5A's deployment perimeter does not change this — it *routes around*
+  it. The reverse proxy sets security headers and caps a request body, and the
+  default routing policy publishes none of this service's endpoints. Rate
+  limiting is still absent and was deliberately deferred rather than built on a
+  third-party proxy module; [deployment.md](deployment.md) §15 states the
+  residual risk in full. There is still no authentication anywhere in this
+  system.
 * **Synthetic evaluation only.** Every published figure about this system
   describes generated authentication traffic. It is not evidence of real-world
   detection effectiveness.
 * **Not deployed anywhere.** Milestone 4 packages the system into containers that
-  run on one machine — see [docker.md](docker.md). Nothing is published, hosted,
-  or reachable from another host: the container's ports are bound to the host's
-  loopback interface, which is the only exposure control there is.
+  run on one machine — see [docker.md](docker.md). Milestone 5A prepares the
+  perimeter a public deployment would need — a reverse proxy, TLS, security
+  headers, a firewall contract, log rotation, update and rollback — and verifies
+  it locally; see [deployment.md](deployment.md). **Neither performs a
+  deployment.** This project has no public URL, no server, and no domain name.
 
 * **Nothing the containerized demonstration measures is a performance claim.**
   Its champion is trained on four hours of synthetic traffic, sized so the
@@ -1130,4 +1161,5 @@ detail. Set `PAD_API_DOCS_ENABLED=false` to serve none of the three.
 | [dashboard.md](dashboard.md) | The analyst console that consumes this API |
 | [live-replay.md](live-replay.md) | The synthetic replay demonstration built on `/api/v1/detect` |
 | [docker.md](docker.md) | The containerized deployment that runs this service |
+| [deployment.md](deployment.md) | The public perimeter: proxy, TLS, firewall, routing policy |
 | [detection-limitations.md](detection-limitations.md) | What the detection layer does not do |

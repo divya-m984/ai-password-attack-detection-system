@@ -29,6 +29,12 @@ htmlcov/
 .env.local
 .env.*.local
 
+# The server's own deployment environment: hostname, publish specifications,
+# routing policy. `.env.deploy.example` is the tracked template and carries no
+# hostname, no secret, and nothing scientific; the real file belongs to one
+# machine and stays on it.
+.env.deploy
+
 # Streamlit secrets. The dashboard holds no credential and the API it talks to
 # accepts none, so this file has no legitimate content in this project; it is
 # refused here so one cannot arrive by habit. `.streamlit/config.toml` is

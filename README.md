@@ -353,13 +353,15 @@ promotes, or rethresholds on any finding.
 
 ---
 
-## Phase 6 status — Serving layer, analyst console, live replay, containers (Milestones 1–4)
+## Phase 6 status — Serving layer, analyst console, live replay, containers, deployment perimeter (Milestones 1–5A)
 
 Phase 6 turns the finished engine into something runnable. Milestone 1 added the
 HTTP serving layer; Milestone 2 added the SOC analyst console on top of it;
 Milestone 3 added a safe synthetic live/replay demonstration that makes the
 detector *watchable*; Milestone 4 packages the whole thing so one command starts
-it. Nothing is publicly deployed.
+it; Milestone 5A prepares and verifies the perimeter a public deployment would
+need. **Nothing is publicly deployed.** This project has no public URL, no
+server, and no domain name.
 
 ```bash
 docker compose up --build
@@ -665,12 +667,70 @@ Three services and one ordering: `prepare → api → dashboard`.
 
 Full reference: **[docs/docker.md](docs/docker.md)**.
 
+### Milestone 5A — the deployment perimeter
+
+An **additive** overlay on the above. `docker compose up --build` is unchanged;
+a server adds one file:
+
+```bash
+docker compose --env-file .env.deploy \
+  -f compose.yaml -f compose.deploy.yaml up -d --build
+```
+
+```
+internet → 80/443 → proxy (Caddy) → dashboard → api → frozen serving bundle
+```
+
+- **The application ports stop being published.** Not narrowed — removed.
+  Compose *appends* sequences when it merges files, so an override cannot
+  un-publish a port by restating a shorter list; `ports: !reset null` removes the
+  key outright. A test reads the resolved `docker compose config` and asserts
+  that only the proxy publishes anything, and that it publishes only 80 and 443.
+- **The smallest useful public surface.** The default routing policy publishes
+  the console and nothing else — the API is unreachable from the internet, and
+  loses nothing by it, because the console's client runs server-side. A second
+  reviewed policy adds Swagger and the read-only reports for a viva. Scoring and
+  replay-control endpoints stay internal in **both**.
+- **Two TLS modes.** `PAD_SITE_ADDRESS=:80` for an IP-only smoke test;
+  a hostname for automatic HTTPS over ACME. No certificate or private key exists
+  in this repository, and no hostname is invented in a tracked file.
+- **Security headers audited, not assumed.** The CSP is `frame-ancestors 'none'`
+  only: a `script-src` tight enough to be worth having stops Streamlit rendering,
+  and one loose enough to work would have to permit `'unsafe-inline'` and
+  `'unsafe-eval'` — a control that claims a protection it does not provide.
+- **Bounded logs**, 10 MiB × 3 per container, and memory ceilings retuned from
+  what Milestone 4 measured, for a 2 GiB machine.
+- **A server bootstrap that refuses to run on a laptop**, never edits sshd, opens
+  no port unless asked, and is honest that `docker` group membership is
+  root-equivalent.
+- **Verified locally, end to end.** The real topology was brought up with the
+  proxy on an unprivileged loopback port and checked against fifteen points:
+  8000 and 8501 refuse connections, the console and its websocket work through
+  the proxy, all seven replay scenarios complete fused by the frozen `stacked`
+  hybrid, the containers stay unprivileged and read-only, a restart preserves the
+  champion and clears the replay history, and teardown leaves nothing.
+
+Full reference: **[docs/deployment.md](docs/deployment.md)**.
+
 ### What Phase 6 does not claim yet
 
-The service and the console run locally, now in containers. Neither is deployed
-publicly, authenticated, rate-limited, or hardened for an untrusted network — the
-published ports are bound to loopback, which is the only exposure control there
-is. Nothing is persisted: the console's history is one browser session, a replay
+The service and the console run locally, in containers, and now have a verified
+public perimeter. **Neither is deployed.** Neither is authenticated, and neither
+is rate-limited: rate limiting was deliberately deferred rather than built on a
+third-party proxy module that would replace a pinned official image with one this
+project has to patch itself, and [docs/deployment.md](docs/deployment.md) §15
+states that residual risk rather than implying it is covered. There is no
+authentication anywhere in this system and none was added for a demonstration — a
+half-built auth platform is a larger surface than the one it closes.
+
+Of the nine rules, **four fire on live requests** (`PAD-BF-001`, `PAD-BF-002`,
+`PAD-BOT-001`, `PAD-PS-001`), **three are live-serving but exercised by no replay
+scenario** (`PAD-DBF-001`, `PAD-GEO-001`, `PAD-MFA-001` — they evaluate normally
+and return clean negatives), and **two cannot fire at all** — see below.
+[docs/deployment.md](docs/deployment.md) §16 gives the measured per-rule
+outcomes over all 154 replay anchors.
+
+Nothing is persisted: the console's history is one browser session, a replay
 run lives in one API process's memory and is cleared by a restart, and there is
 still no alert store, no event database, and no serving drift report. The replay
 layer is synthetic only — there is no path for real traffic to enter one, and the
@@ -695,8 +755,9 @@ fitted from the deployment's own TRAIN split still leaves `user_in_baseline`
 catalog's identities are content-addressed pseudonyms no training population
 contains. Doing it properly is also a bundle-schema change, not a packaging one.
 No threshold was moved and no baseline was synthesised to make a demonstration
-look better. See [docs/docker.md](docs/docker.md) §14,
-[docs/api.md](docs/api.md) §12, [docs/dashboard.md](docs/dashboard.md) §11, and
+look better. See [docs/deployment.md](docs/deployment.md) §16,
+[docs/docker.md](docs/docker.md) §14, [docs/api.md](docs/api.md) §12,
+[docs/dashboard.md](docs/dashboard.md) §11, and
 [docs/live-replay.md](docs/live-replay.md) §14.
 
 ---
@@ -762,8 +823,14 @@ Real data (CSV / JSONL)
 ```
 .
 ├── Dockerfile              builder + runtime base + api/dashboard targets
-├── compose.yaml            prepare -> api -> dashboard
+├── compose.yaml            prepare -> api -> dashboard  (local)
+├── compose.deploy.yaml     + proxy, ports un-published  (server overlay)
 ├── .dockerignore           exclude everything, re-admit what the build needs
+├── .env.deploy.example     deployment template: hostname, ports, routing policy
+├── deploy/
+│   └── caddy/
+│       ├── Caddyfile           default policy: the console only
+│       └── Caddyfile.api-docs  optional: + the API's read-only surface
 ├── configs/
 │   ├── data/
 │   │   ├── synthetic-testing.yaml     small dataset for CI
@@ -787,6 +854,8 @@ Real data (CSV / JSONL)
 │   ├── data-contract.md
 │   ├── data-dictionary.md
 │   ├── dataset-splitting.md
+│   ├── deployment.md           the public perimeter, and how to stand one up
+│   ├── docker.md               the local containerized demonstration
 │   ├── feature-catalog.md      generated from the catalog
 │   ├── feature-contract.md
 │   ├── ingestion.md
@@ -799,7 +868,9 @@ Real data (CSV / JSONL)
 │   ├── verify.sh
 │   ├── prepare_demo_bundle.py  the offline pipeline the container runs once
 │   ├── start_demo.sh           thin wrapper around `docker compose up`
-│   └── stop_demo.sh            thin wrapper around `docker compose down`
+│   ├── stop_demo.sh            thin wrapper around `docker compose down`
+│   └── deploy/
+│       └── bootstrap_server.sh SERVER ONLY — prepares a fresh Ubuntu host
 ├── src/
 │   └── password_attack_detector/
 │       ├── cli.py               root Typer CLI
@@ -888,6 +959,17 @@ docker compose down           # or ./scripts/stop_demo.sh
 The first run trains a champion before the API starts: a one-shot `prepare`
 service runs the real pipeline offline and takes about a minute. Nothing is
 fitted at serving time. See **[docs/docker.md](docs/docker.md)**.
+
+On a server, add the deployment overlay — one reverse proxy becomes the only
+public listener and both application ports stop being published:
+
+```bash
+cp .env.deploy.example .env.deploy      # hostname, publish spec, routing policy
+docker compose --env-file .env.deploy \
+  -f compose.yaml -f compose.deploy.yaml up -d --build
+```
+
+See **[docs/deployment.md](docs/deployment.md)**. Nothing is deployed today.
 
 ---
 
@@ -1154,10 +1236,21 @@ Docker daemon is reachable or the images have not been built:
 ```bash
 docker compose build
 uv run pytest -m slow tests/integration/test_docker_compose.py --no-cov
+uv run pytest -m slow tests/integration/test_deployment_topology.py --no-cov
 ```
 
-It brings the stack up only if it is not already up, and tears down only what it
-started — running it will not destroy a stack somebody is demonstrating from.
+The first brings the local stack up only if it is not already up, and tears down
+only what it started — running it will not destroy a stack somebody is
+demonstrating from. The second brings up the **deployment** topology with the
+proxy on an unprivileged loopback port, and removes everything it created,
+volumes included; it skips itself if a `pad-demo` stack is already running,
+because the service containers have fixed names.
+
+The architecture and security claims that need no daemon are unit tests:
+`tests/unit/deployment/test_container_contract.py` (95) and
+`tests/unit/deployment/test_deployment_contract.py` (92) read the Dockerfile,
+both Compose files, both Caddyfiles, `.dockerignore`, `.gitignore`, the
+environment template and the bootstrap script, and assert what they promise.
 
 ---
 
@@ -1202,6 +1295,12 @@ See [docs/privacy-model.md](docs/privacy-model.md) and
   different library version may produce different output for the same seed.
 - Phases 1-5 do not implement: a FastAPI service, a SOC dashboard, database
   persistence, MLflow, DVC, or deployment. These are planned for later phases.
+- **Nothing is deployed.** Phase 6 Milestone 4 containerizes the system and
+  Milestone 5A prepares and locally verifies the perimeter a public deployment
+  would need. Neither performs one: this project has no public URL, no server,
+  and no domain name. The deployment has **no authentication and no rate
+  limiting**, and [docs/deployment.md](docs/deployment.md) §15 states that
+  residual risk rather than implying it is covered.
 - **Nothing in this repository demonstrates real-world detection
   effectiveness.** Every figure the locked evaluation produces was measured on
   traffic this repository generated, under a declared scenario configuration.
@@ -1289,6 +1388,8 @@ See [docs/privacy-model.md](docs/privacy-model.md) and
 | [docs/api.md](docs/api.md) | The HTTP serving layer: endpoints, constraints, privacy, limits |
 | [docs/dashboard.md](docs/dashboard.md) | The analyst console: API boundary, views, session limits, offline behaviour |
 | [docs/live-replay.md](docs/live-replay.md) | The synthetic replay demonstration: scenarios, determinism, run lifecycle, bounds |
+| [docs/docker.md](docs/docker.md) | The local containerized demonstration: images, the preparation job, volumes, security model |
+| [docs/deployment.md](docs/deployment.md) | The public perimeter: proxy, routing policy, TLS, firewall, update/rollback, per-rule availability |
 
 ---
 

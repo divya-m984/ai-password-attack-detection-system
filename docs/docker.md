@@ -17,6 +17,13 @@ a minute more to train a champion; after that, starting is seconds.
 | Swagger | <http://localhost:8000/docs> |
 | Dashboard | <http://localhost:8501> |
 
+> **Deploying this to a server instead?** [deployment.md](deployment.md) adds a
+> reverse proxy in front of what is described here, un-publishes both ports, and
+> covers TLS, the cloud firewall, log rotation and update/rollback. It is an
+> *overlay* on this file — `compose.deploy.yaml` — so everything below stays
+> true of a deployed instance, and `docker compose up --build` on its own keeps
+> working exactly as documented here.
+
 ---
 
 ## 1. Architecture
@@ -492,6 +499,12 @@ container side and the internal URL must stay as they are).
 machine. There is no TLS, no authentication, and no rate limiting, because there
 is no exposure to protect — the ports are bound to loopback.
 
+A **public** deployment has been prepared and verified locally but not performed:
+[deployment.md](deployment.md) adds a reverse proxy, TLS, security headers, log
+rotation and a firewall contract on top of exactly this stack. It still has no
+rate limiting, and says so — see its §15 for why that was deferred rather than
+built on a fragile dependency. This project has no public URL.
+
 **Demonstration scale.** See §4. The dataset is four hours long and no figure it
 produces is a performance claim.
 
@@ -530,12 +543,19 @@ Nothing was loosened to work around this. No rule threshold was changed, no
 `min_novel_context_count` was lowered, and no baseline was synthesised for a
 demonstration. The two rules stay enabled, keep reporting insufficient data, and
 say why — in the scenario catalog's `limitations`, in
-[live-replay.md](live-replay.md) §3, in [api.md](api.md) §12, and here.
+[live-replay.md](live-replay.md) §3, in [api.md](api.md) §12, in
+[deployment.md](deployment.md) §16, and here.
+
+[deployment.md](deployment.md) §16 goes further and classifies **all nine** rules
+against measured per-rule outcomes over all seven replay scenarios: four fire,
+three are live-serving but have no scenario that exercises them, and these two
+cannot fire on any live request.
 
 ---
 
 ## Related documents
 
+* [deployment.md](deployment.md) — putting this stack behind a public boundary
 * [api.md](api.md) — the detection service, its startup, and the serving bundle
 * [dashboard.md](dashboard.md) — the analyst console
 * [live-replay.md](live-replay.md) — the synthetic replay demonstration

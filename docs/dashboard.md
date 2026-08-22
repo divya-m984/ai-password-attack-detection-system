@@ -620,6 +620,34 @@ inside a network namespace nothing else can enter, so the container image sets
 gets a console on every interface by running it the ordinary way — and the
 published port is bound to the host's loopback regardless.
 
+### Behind a public reverse proxy
+
+`compose.deploy.yaml` un-publishes 8501 entirely and puts a reverse proxy in
+front. **The console then becomes the whole public surface**: `/` routes to it
+and, under the default routing policy, nothing routes to the API — which costs
+the demonstration nothing, because this client runs server-side and reaches the
+API across the Compose network either way.
+
+Three things about Streamlit behind a proxy that were verified rather than
+assumed:
+
+* **The websocket survives it.** `/_stcore/stream` upgrades to `HTTP/1.1 101`
+  through the proxy, with no extra configuration: Caddy forwards the `Upgrade`
+  header and skips compression for it. Without that the page loads and then
+  never updates, which is the failure mode worth naming.
+* **Streamlit's own origin and XSRF checks stay satisfied**, because the proxy
+  passes the original `Host` header through.
+* **The Content-Security-Policy is deliberately narrow.** Streamlit's bundled
+  client evaluates generated code and installs inline styles, so a `script-src`
+  policy tight enough to be worth having stops the console rendering, and one
+  loose enough to keep it working would have to permit `'unsafe-inline'` and
+  `'unsafe-eval'` — a control that claims a protection it does not provide. The
+  policy is `frame-ancestors 'none'` only, doubled by `X-Frame-Options: DENY`.
+  [deployment.md](deployment.md) §8 records the audit.
+
+The console gets no new configuration in that topology: no volume, no artifact
+path, no `PAD_API_*` variable, and nothing that names a hostname.
+
 ---
 
 ## 11. Current limitations
@@ -644,14 +672,20 @@ there should not be: the Phase 5 aggregate report is computed over a partition,
 and live requests are not one.
 
 **No authentication, no authorization, no multi-user state.** The console is a
-local demonstration client. It is containerised as of Milestone 4 but not
-deployed, not authenticated, not rate-limited, and not hardened for an untrusted
-network. Anyone who can reach the Streamlit port can use it, and anyone who can
-reach the API port can call it directly — which is why both ports are published
-to the host's loopback interface and no further.
+demonstration client. It is containerised as of Milestone 4 and has a verified
+public perimeter as of Milestone 5A, but it is **not deployed**, not
+authenticated, and not rate-limited. Anyone who can reach it can use it. Locally
+that means anyone on the machine, because both ports are published to loopback
+and no further. Behind the deployment perimeter it would mean anyone on the
+internet — which is why the API is not published there, why the session state is
+per-browser-tab and holds nothing, and why the abuse bounds in
+[deployment.md](deployment.md) §15 were audited before any of it was written
+down. Deliberately no authentication platform was added for that milestone: a
+half-built one on a demonstration is a larger surface than the one it closes.
 
 **No CORS policy on the API.** The console talks to the service from Python, not
-from the browser, so no browser origin needs to be allowed yet.
+from the browser, so no browser origin needs to be allowed yet. That stays true
+behind the proxy: the browser's only origin is the proxy's own.
 
 ---
 
@@ -660,6 +694,7 @@ from the browser, so no browser origin needs to be allowed yet.
 - **[api.md](api.md)** — the serving API this console consumes
 - **[live-replay.md](live-replay.md)** — the synthetic replay demonstration the Live Replay view drives
 - **[docker.md](docker.md)** — the containerized deployment this console runs inside
+- **[deployment.md](deployment.md)** — the public perimeter this console sits behind on a server
 - **[rule-catalog.md](rule-catalog.md)** — the rules the catalog page lists
 - **[explainability.md](explainability.md)** — the Phase 5 attribution contract
 - **[drift-monitoring.md](drift-monitoring.md)** — what the drift page documents

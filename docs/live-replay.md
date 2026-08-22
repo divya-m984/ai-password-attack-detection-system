@@ -544,6 +544,19 @@ configuration the published `expected_rule_ids` were proved against — a unit t
 asserts the two are equal, so what the catalog says about a scenario is true of
 what the container computes. See [docker.md](docker.md).
 
+### Or through a public boundary
+
+`compose.deploy.yaml` adds a reverse proxy and un-publishes both application
+ports. Replay works unchanged there, and it is worth being precise about why: a
+browser drives the **console**, the console's client drives the API across the
+Compose network, and the replay control endpoints are never routed from the
+internet in either routing policy. So a visitor can start and watch a scenario
+through the page, and cannot call `POST /api/v1/demo/runs` directly.
+
+All seven scenarios were run in that topology and each matched its published
+`expected_rule_ids` exactly, every step fused by the frozen `stacked` hybrid with
+no fallback. See [deployment.md](deployment.md).
+
 ### Or two terminals
 
 **Terminal 1 — the API:**
@@ -619,18 +632,29 @@ Stop both servers afterwards.
   scenario's identities are content-addressed pseudonyms derived from the
   scenario itself, so that the same catalog means the same thing in every
   deployment — and no training population, anywhere, contains them. See
-  [docker.md](docker.md) §14.
+  [docker.md](docker.md) §14. [deployment.md](deployment.md) §16 classifies all
+  nine rules against measured per-rule outcomes over all seven scenarios, and
+  separates "cannot fire on any live request" — these two — from "no scenario
+  exercises it": `PAD-DBF-001`, `PAD-GEO-001` and `PAD-MFA-001` evaluate normally
+  and return clean negatives, because no scenario carries the shape or the
+  columns they need.
 * **Rule expectations are configuration-dependent.** The published
   `expected_rule_ids` are proved against the repository's demo rule
   configuration. A deployment that changes a rule's windows or thresholds may see
   different rules fire; the fingerprint tells you the *scenario* is the same, not
   that the deployment is.
 * **No authentication or rate limiting.** As with the rest of the API, this is a
-  local demonstration service. The replay bounds limit resource use; they are not
-  an access-control mechanism.
-* **Containerised, not deployed.** Milestone 4 packages the demonstration so one
-  command starts it on one machine, with both ports bound to that machine's
-  loopback interface. Nothing is published or reachable from another host.
+  demonstration service. The replay bounds — 4 concurrent runs, 24 retained, 256
+  records each, 300 seconds per run, 100 records a page — limit resource use;
+  they are not an access-control mechanism. They are what a public deployment
+  relies on in place of a rate limiter, together with not routing the replay
+  control endpoints from the internet at all. [deployment.md](deployment.md) §15
+  states that residual risk in full rather than implying it is covered.
+* **Containerised and perimeter-verified, not deployed.** Milestone 4 packages
+  the demonstration so one command starts it on one machine, with both ports
+  bound to that machine's loopback interface. Milestone 5A prepares and verifies
+  the public boundary a server would need. **Neither publishes anything.** This
+  project has no public URL, no server, and no domain name.
 
 ---
 
@@ -641,6 +665,7 @@ Stop both servers afterwards.
 | [api.md](api.md) | The serving contract this layer replays through |
 | [dashboard.md](dashboard.md) | The analyst console the Live Replay view lives in |
 | [docker.md](docker.md) | The containerized deployment this runs inside |
+| [deployment.md](deployment.md) | The public perimeter, and the per-rule availability classification |
 | [rule-catalog.md](rule-catalog.md) | The rules the scenarios exercise |
 | [rule-contract.md](rule-contract.md) | What a rule may read, including the baseline signals |
 | [behavioral-baselines.md](behavioral-baselines.md) | The fitted baseline the serving path does not carry |
