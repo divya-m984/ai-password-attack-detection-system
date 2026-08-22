@@ -1,0 +1,77 @@
+# Feature-engineering configuration for the containerized demonstration.
+#
+# Sized for configs/data/synthetic-demo.yaml, and deliberately identical in
+# shape to the configuration the serving integration suite runs against: the
+# same short window ladder, the same small purge, the same baseline floors.
+#
+# That correspondence is the point, and a test pins it. The live/replay scenario
+# catalog publishes which rules each scenario is expected to trigger, and those
+# expectations were established against a 5-minute window ladder. A container
+# that built its features over a 15-minute or 1-hour ladder would serve a
+# detector whose published expectations no longer described it -- not wrong,
+# exactly, but documented wrongly, which is worse.
+#
+# NOT A RESEARCH CONFIGURATION. Strict isolation with a 5-minute purge is
+# defensible here only because the longest window declared is 5 minutes.
+# configs/features/feature-ml-development.yaml is the real one; its 24-hour
+# purge exists because its ladder reaches 24 hours.
+
+feature_schema_version: "1.0.0"
+source_schema_version: "1.0.0"
+
+# 1m and 5m only. Every window the demonstration's rules read, and nothing
+# longer than the purge can cover.
+windows: ["1m", "5m"]
+cardinality_windows: ["5m"]
+dispersion_windows: ["5m"]
+device_session_windows: ["5m"]
+pair_windows: ["5m"]
+
+anchor_mode: per_event
+null_policy: null_for_undefined
+min_count_for_rate: 1
+min_history_events: 0
+
+baseline:
+  baseline_schema_version: "1.0.0"
+  enabled: true
+  rate_reference_window: "5m"
+  min_events_per_user: 2
+  min_events_per_source: 2
+  known_set_max_size: 32
+  known_set_min_occurrences: 1
+  hour_histogram_alpha: 1.0
+  response_time_min_events: 2
+  max_response_time_zscore: 10.0
+
+# 35/20/45 over four hours, and the asymmetry is deliberate.
+#
+# The synthetic generator draws campaign start offsets from the first 50-80% of
+# a stream's span, so the last portion of any generated dataset is benign by
+# construction. A conventional 60/20/20 cut therefore hands train nearly every
+# attack and leaves validation with one or two campaigns and test with none --
+# which the ML eligibility audit correctly refuses as insufficient validation
+# support. Moving the boundaries earlier puts both evaluation windows inside the
+# attack-bearing region; test then carries a long benign tail, which costs it
+# nothing but rows it would have had anyway.
+#
+# The purge equals the longest declared window, which is what strict isolation
+# requires; at this span it costs roughly 4% of the stream rather than the 28%
+# a 24-hour purge would cost.
+split:
+  split_schema_version: "1.0.0"
+  mode: fractions
+  train_fraction: 0.35
+  validation_fraction: 0.20
+  test_fraction: 0.45
+  purge: "5m"
+  embargo: "0s"
+  strict_isolation: true
+  boundary_campaign_policy: exclude
+  normal_grouping: singleton
+  max_excluded_fraction: 0.6
+
+geospatial:
+  enabled: true
+  max_plausible_velocity_kmh: 1200.0
+  min_distance_km_for_velocity: 0.0

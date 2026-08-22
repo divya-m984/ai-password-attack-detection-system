@@ -1006,6 +1006,19 @@ HTTP surface — including deliberately broken runtimes — without a filesystem
 To drive the same service from the analyst console instead of `curl`, start it in
 a second terminal — see [dashboard.md](dashboard.md) §10.
 
+### In a container instead
+
+```bash
+docker compose up --build
+```
+
+One command, no Python toolchain, and no separate materialization step: a
+one-shot `prepare` service runs the whole pipeline — including the `deploy
+materialize` of §2 — into a named volume, and the API starts only after it
+succeeds and mounts that volume **read-only**. The environment it is given is
+exactly the table in §9, with absolute paths inside the container. Nothing is
+fitted at startup there either. See [docker.md](docker.md).
+
 ---
 
 ## 11. Swagger
@@ -1045,12 +1058,27 @@ detail. Set `PAD_API_DOCS_ENABLED=false` to serve none of the three.
   catalog. There is no path for real traffic to enter one, no way to upload or
   parameterise a scenario beyond its pace, and no field on any replay request
   that names a host, a path, or a scientific parameter.
-* **Two rules cannot be demonstrated on live requests.** `PAD-CS-001` and
-  `PAD-ATO-001` gate on a fitted behavioural baseline, and the serving path
-  computes point-in-time features from the supplied window alone with no
-  baseline artifact loaded. Both report insufficient data on every request
-  through this API, whether it arrives from a client or from a replay. See
-  [live-replay.md](live-replay.md) §3.
+* **Two rules cannot be demonstrated on live requests, and this is a v0.6.0
+  release blocker.** `PAD-CS-001` and `PAD-ATO-001` gate on a fitted behavioural
+  baseline, and the serving path computes point-in-time features from the
+  supplied window alone with no baseline artifact loaded. Both report
+  insufficient data on every request through this API, whether it arrives from a
+  client or from a replay.
+
+  Milestone 4 audited adding a baseline to the serving bundle on the same terms
+  as the stacked state — materialized offline, deterministic, fingerprinted,
+  loaded read-only, failing closed — and did not do it, for two independent
+  reasons. **It would not help:** a baseline fitted from a deployment's own TRAIN
+  split was loaded into a feature engine and the replay scenarios run through it,
+  and `user_in_baseline` came back `False` with all five `is_new_*_for_user`
+  flags `None`, unchanged, because the catalog's identities are content-addressed
+  synthetic pseudonyms that no training population contains. **And it is a
+  contract change, not a packaging one:** the bundle manifest has no field for a
+  baseline, so adding one bumps `BUNDLE_SCHEMA_VERSION`, extends the fingerprint
+  chain, gives `deploy materialize` a feature-layer input it does not take, and
+  adds a loader to the serving path. Nothing was loosened in the meantime — no
+  rule threshold moved and no baseline was synthesised. See
+  [live-replay.md](live-replay.md) §3 and [docker.md](docker.md) §14.
 * **No alerting, grouping, or suppression.** The Phase 4 alert lifecycle
   (grouping, cooldown, rate limiting, escalation) is not exposed. The API
   returns event-level risk assessments, not `SecurityAlert` records.
@@ -1074,8 +1102,16 @@ detail. Set `PAD_API_DOCS_ENABLED=false` to serve none of the three.
 * **Synthetic evaluation only.** Every published figure about this system
   describes generated authentication traffic. It is not evidence of real-world
   detection effectiveness.
-* **Not production-deployed.** This milestone makes the system runnable locally.
-  It does not package, deploy, or operate it.
+* **Not deployed anywhere.** Milestone 4 packages the system into containers that
+  run on one machine — see [docker.md](docker.md). Nothing is published, hosted,
+  or reachable from another host: the container's ports are bound to the host's
+  loopback interface, which is the only exposure control there is.
+
+* **Nothing the containerized demonstration measures is a performance claim.**
+  Its champion is trained on four hours of synthetic traffic, sized so the
+  pipeline finishes in about a minute. The evaluation windows are far too small
+  for a per-scenario metric to mean anything, and
+  `configs/ml/model-demo.yaml` says so at the top.
 
 ---
 
@@ -1093,4 +1129,5 @@ detail. Set `PAD_API_DOCS_ENABLED=false` to serve none of the three.
 | [explainability.md](explainability.md) | The attribution contract `/api/v1/explain` reuses |
 | [dashboard.md](dashboard.md) | The analyst console that consumes this API |
 | [live-replay.md](live-replay.md) | The synthetic replay demonstration built on `/api/v1/detect` |
+| [docker.md](docker.md) | The containerized deployment that runs this service |
 | [detection-limitations.md](detection-limitations.md) | What the detection layer does not do |

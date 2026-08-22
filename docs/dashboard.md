@@ -599,6 +599,27 @@ layers as unavailable, with the service's own reason codes.
 The console works with the API absent — that path is worth seeing at least once,
 because it is what a viewer gets when they open the console first.
 
+### One command instead of two terminals
+
+```bash
+docker compose up --build
+```
+
+The console then runs in its own container and reaches the API at
+`http://api:8000` over the project network — Docker's internal DNS, because
+inside that network `127.0.0.1` would name the console's own container. Its
+container is given **no volume, no artifact path, and no `PAD_API_*` variable at
+all**: the only detection it can display is one the API performed, and the
+deployment declines to hand it the means to be tempted otherwise. See
+[docker.md](docker.md).
+
+One override applies there and only there. This repository's
+`.streamlit/config.toml` binds `127.0.0.1`, which is right for a laptop and wrong
+inside a network namespace nothing else can enter, so the container image sets
+`STREAMLIT_SERVER_ADDRESS=0.0.0.0`. The tracked default stays loopback — nobody
+gets a console on every interface by running it the ordinary way — and the
+published port is bound to the host's loopback regardless.
+
 ---
 
 ## 11. Current limitations
@@ -623,10 +644,11 @@ there should not be: the Phase 5 aggregate report is computed over a partition,
 and live requests are not one.
 
 **No authentication, no authorization, no multi-user state.** The console is a
-local demonstration client. It is not deployed, not containerised, not
-authenticated, not rate-limited, and not hardened for an untrusted network.
-Anyone who can reach the Streamlit port can use it, and anyone who can reach the
-API port can call it directly.
+local demonstration client. It is containerised as of Milestone 4 but not
+deployed, not authenticated, not rate-limited, and not hardened for an untrusted
+network. Anyone who can reach the Streamlit port can use it, and anyone who can
+reach the API port can call it directly — which is why both ports are published
+to the host's loopback interface and no further.
 
 **No CORS policy on the API.** The console talks to the service from Python, not
 from the browser, so no browser origin needs to be allowed yet.
@@ -637,6 +659,7 @@ from the browser, so no browser origin needs to be allowed yet.
 
 - **[api.md](api.md)** — the serving API this console consumes
 - **[live-replay.md](live-replay.md)** — the synthetic replay demonstration the Live Replay view drives
+- **[docker.md](docker.md)** — the containerized deployment this console runs inside
 - **[rule-catalog.md](rule-catalog.md)** — the rules the catalog page lists
 - **[explainability.md](explainability.md)** — the Phase 5 attribution contract
 - **[drift-monitoring.md](drift-monitoring.md)** — what the drift page documents

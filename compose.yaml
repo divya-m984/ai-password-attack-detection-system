@@ -1,0 +1,253 @@
+# The local demonstration deployment.
+#
+#     docker compose up --build
+#
+# Three services and one ordering that matters:
+#
+#     prepare  ->  api  ->  dashboard
+#
+# `prepare` is a one-shot job. It runs the project's real pipeline -- generate,
+# build features, train, select, freeze, predict, detect, evaluate, materialize
+# -- into a named volume and exits. It exists because a serving process must
+# never fit anything at startup, and a container image must not ship a trained
+# model: an image carrying a frozen champion would make the image the provenance
+# of a scientific decision. So the decision is made offline, once, by something
+# that is explicitly not the service.
+#
+# `api` starts only after that job reports success, mounts the volume READ-ONLY,
+# verifies the frozen state it finds there, and serves. It can make a hybrid
+# unavailable by failing to find one; it has no way to make a different one
+# appear.
+#
+# `dashboard` reaches the API over the project network as `http://api:8000`. It
+# holds no artifact, gets no state mount, and is given no scientific
+# configuration, so the only detection it can display is one the API performed.
+#
+# WHAT IS NOT HERE, ON PURPOSE: no host networking, no privileged container, no
+# Docker socket, no added capability, no bind mount of the source tree, and no
+# environment variable that names a model, a threshold, or a fusion strategy.
+# tests/unit/deployment/test_container_contract.py asserts each of those against
+# this file rather than trusting it.
+
+name: pad-demo
+
+# ---------------------------------------------------------------------------
+# Shared hardening. Applied to every service rather than to the ones that
+# obviously need it: an exception is easier to notice than an omission.
+# ---------------------------------------------------------------------------
+x-hardening: &hardening
+  security_opt:
+    # A process in these containers cannot gain privileges it did not start
+    # with, so a setuid binary that arrived with a base-image update is inert.
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  # Nothing here writes into its own filesystem. The few paths a framework
+  # insists on are tmpfs, declared per service, and vanish with the container.
+  read_only: true
+
+x-python-runtime: &python-runtime
+  build:
+    context: .
+    dockerfile: Dockerfile
+  init: true
+  networks:
+    - demo
+
+services:
+  # -------------------------------------------------------------------------
+  # One-shot offline preparation. Not a service; a job that must finish.
+  # -------------------------------------------------------------------------
+  prepare:
+    <<: [*python-runtime, *hardening]
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: api
+    image: pad-demo-api:0.5.0
+    container_name: pad-demo-prepare
+    command:
+      - python
+      - /app/scripts/prepare_demo_bundle.py
+      - --state-root
+      - /srv/state
+    environment:
+      # Deployment properties only. There is deliberately no variable here that
+      # could name a champion, a threshold, or a strategy -- what gets trained
+      # and what gets selected are decided by the tracked configurations the
+      # script reads and by the evidence the commands publish.
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      # The only writable mount in the whole deployment, and it is writable for
+      # the length of one job.
+      - serving-state:/srv/state
+    tmpfs:
+      - /tmp:mode=1777,size=256m
+      - /home/pad:mode=0755,uid=10001,gid=10001,size=32m
+    restart: "no"
+    deploy:
+      resources:
+        limits:
+          # The heaviest thing in the deployment: a feature build and three
+          # model fits. Sampled at a 340 MiB peak; the ceiling is set well above
+          # that both because a sample can miss a spike and because a preparation
+          # step killed by the OOM killer would leave a half-published state root
+          # behind.
+          memory: 2g
+
+  # -------------------------------------------------------------------------
+  # The detection service. All scientific state lives here, and read-only.
+  # -------------------------------------------------------------------------
+  api:
+    <<: [*python-runtime, *hardening]
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: api
+    image: pad-demo-api:0.5.0
+    container_name: pad-demo-api
+    depends_on:
+      prepare:
+        # Not `service_started`. The API must not come up against a state root
+        # that a failed or still-running job left partly written.
+        condition: service_completed_successfully
+    environment:
+      # Absolute paths, as APISettings requires: a relative path would resolve
+      # against whatever working directory the process happened to start in.
+      PAD_API_HOST: 0.0.0.0
+      PAD_API_PORT: "8000"
+      PAD_API_LOG_LEVEL: INFO
+      PAD_API_ENVIRONMENT: production
+      PAD_API_DOCS_ENABLED: "true"
+      PAD_API_ARTIFACT_ROOT: /srv/state/artifacts
+      PAD_API_ALLOWLIST_PATH: /srv/state/allowlist.yaml
+      PAD_API_FEATURE_CONFIG_PATH: /app/configs/features/feature-demo.yaml
+      PAD_API_ML_CONFIG_PATH: /app/configs/ml/model-demo.yaml
+      PAD_API_DETECTION_CONFIG_PATH: /app/configs/detection/rules-demo.yaml
+      # The synthetic live/replay demonstration. A facility switch: it changes
+      # what can be watched, never what the detector decides.
+      PAD_API_REPLAY_ENABLED: "true"
+      PAD_API_REPLAY_REQUIRED: "false"
+    volumes:
+      # READ-ONLY. The champion, its calibrator, its threshold, the frozen
+      # fusion selection and the materialized stacked state are all under here,
+      # and the serving process has no business writing to any of them. Replay
+      # state is process-local memory and needs no filesystem at all.
+      - serving-state:/srv/state:ro
+    tmpfs:
+      - /tmp:mode=1777,size=64m
+      - /home/pad:mode=0755,uid=10001,gid=10001,size=16m
+    ports:
+      # Bound to the loopback interface of the host rather than to every
+      # interface. The demonstration is meant to be reachable from the machine
+      # running it; publishing it to the local network is a decision somebody
+      # should have to make on purpose.
+      - "127.0.0.1:8000:8000"
+    healthcheck:
+      # Liveness, not readiness, and the distinction is deliberate. `/health`
+      # answers "is this process serving"; `/ready` answers "can it detect", and
+      # a container reporting itself permanently unhealthy because a scientific
+      # component failed would hide that failure behind an orchestration state
+      # instead of surfacing the service's own reason codes -- which the console
+      # renders and which `docker compose logs api` states at startup.
+      #
+      # Startup ordering does not depend on this: it is handled by `prepare`
+      # completing successfully before this service starts at all.
+      #
+      # No curl. The image ships a Python interpreter, and installing an HTTP
+      # client to ask a Python process whether it is alive would add a binary,
+      # a CVE surface, and a layer for nothing.
+      test:
+        - CMD
+        - python
+        - -c
+        - |
+          import sys, urllib.request
+          with urllib.request.urlopen("http://127.0.0.1:8000/health", timeout=3) as answer:
+              sys.exit(0 if answer.status == 200 else 1)
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      # Generous, and not because startup is slow -- it is a few seconds. A
+      # short start period would make a machine under load report a failure it
+      # does not have.
+      start_period: 30s
+    # A transient crash recovers; a persistent one stops and shows itself rather
+    # than looping forever. Deliberately not `unless-stopped`: that would bring a
+    # demonstration back up on every Docker daemon start, which is behaviour
+    # nobody asked a demo for.
+    restart: on-failure:3
+    deploy:
+      resources:
+        limits:
+          # 105 MiB idle with the champion loaded, 121 MiB sampled while
+          # replays ran. The ceiling leaves room for scikit-learn's transient
+          # allocations without leaving room for a leak to go unnoticed.
+          memory: 1g
+
+  # -------------------------------------------------------------------------
+  # The analyst console. No artifacts, no scientific configuration, no volume.
+  # -------------------------------------------------------------------------
+  dashboard:
+    <<: [*python-runtime, *hardening]
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: dashboard
+    image: pad-demo-dashboard:0.5.0
+    container_name: pad-demo-dashboard
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      # Docker's internal DNS, not localhost: inside the project network the API
+      # is another container, and `127.0.0.1` here would name this one.
+      PAD_DASHBOARD_API_URL: http://api:8000
+      PAD_DASHBOARD_REQUEST_TIMEOUT_SECONDS: "10.0"
+      PAD_DASHBOARD_REFRESH_SECONDS: "30"
+    tmpfs:
+      - /tmp:mode=1777,size=64m
+      # Streamlit writes into $HOME. A tmpfs is enough: nothing it puts there
+      # needs to outlive the container, and nothing there is worth keeping.
+      - /home/pad:mode=0755,uid=10001,gid=10001,size=64m
+    ports:
+      - "127.0.0.1:8501:8501"
+    healthcheck:
+      # Streamlit's own health endpoint, which is what its server answers before
+      # it will serve a page.
+      test:
+        - CMD
+        - python
+        - -c
+        - |
+          import sys, urllib.request
+          with urllib.request.urlopen("http://127.0.0.1:8501/_stcore/health", timeout=3) as answer:
+              sys.exit(0 if answer.status == 200 else 1)
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    restart: on-failure:3
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+
+networks:
+  # An ordinary project-scoped bridge. The dashboard reaches the API across it;
+  # nothing else needs to enter, and neither service needs to leave -- no
+  # scenario in the replay catalog performs any outbound networking, and the
+  # detection path reads nothing it was not given at startup.
+  demo:
+    driver: bridge
+
+volumes:
+  # The frozen scientific state, written once by `prepare` and read-only
+  # thereafter. Not a database and not persistence in any durable sense: it is
+  # the output of a deterministic pipeline, and `docker compose down -v`
+  # discards it so the next `up` rebuilds it identically.
+  #
+  # Replay history is NOT here. It lives in the API process's memory and is gone
+  # when that process restarts, which is a property the dashboard states on the
+  # page rather than one it hides.
+  serving-state:

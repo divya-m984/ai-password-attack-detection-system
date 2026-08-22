@@ -353,12 +353,23 @@ promotes, or rethresholds on any finding.
 
 ---
 
-## Phase 6 status — Serving layer, analyst console, live replay (Milestones 1–3)
+## Phase 6 status — Serving layer, analyst console, live replay, containers (Milestones 1–4)
 
 Phase 6 turns the finished engine into something runnable. Milestone 1 added the
 HTTP serving layer; Milestone 2 added the SOC analyst console on top of it;
-Milestone 3 adds a safe synthetic live/replay demonstration that makes the
-detector *watchable*. No container and no deployment yet.
+Milestone 3 added a safe synthetic live/replay demonstration that makes the
+detector *watchable*; Milestone 4 packages the whole thing so one command starts
+it. Nothing is publicly deployed.
+
+```bash
+docker compose up --build
+```
+
+| | |
+| --- | --- |
+| API | <http://localhost:8000> |
+| Swagger | <http://localhost:8000/docs> |
+| Dashboard | <http://localhost:8501> |
 
 The API is an **adapter**. It computes no feature, re-derives no threshold,
 re-weights no rule, and contains no second scoring implementation — every
@@ -628,18 +639,63 @@ request. No threshold was moved to make a demonstration look better.
 
 Full reference: **[docs/live-replay.md](docs/live-replay.md)**.
 
+### Milestone 4 — containers, and one command
+
+Three services and one ordering: `prepare → api → dashboard`.
+
+- **The image ships no trained model.** A fitted champion is an *output*, and an
+  image carrying one would make the image the provenance of a scientific
+  decision. Instead a one-shot `prepare` job runs the project's **real pipeline**
+  — generate, build features, train, select, freeze, predict, detect, evaluate,
+  materialize — into a named volume and exits. The API starts only after that job
+  reports success, mounts the volume **read-only**, and verifies what it finds.
+  Nothing is fitted at serving time, on the first run or any later one.
+- **Deterministic across machines.** The container's champion scope key is
+  byte-identical to a host run of the same script: same seeds, same tracked
+  configurations, same commands, same answer.
+- **The console holds nothing.** No volume, no artifact path, no `PAD_API_*`
+  variable. It reaches the API at `http://api:8000` over the project network.
+- **Hardened by default** — non-root (uid 10001), read-only root filesystems,
+  all capabilities dropped, `no-new-privileges`, no host networking, no Docker
+  socket, no bind mounts, and ports published to the host's loopback only.
+- **No scientific control in the environment.** Every `PAD_API_*` variable in
+  `compose.yaml` answers *where* or *how much*. Two tests enforce it, one of
+  which refuses a variable name that merely *contains* `MODEL`, `THRESHOLD`,
+  `FUSION`, `CHAMPION`, `SCORE`, `SECRET`, or `TOKEN`.
+
+Full reference: **[docs/docker.md](docs/docker.md)**.
+
 ### What Phase 6 does not claim yet
 
-The service and the console run locally. Neither is deployed, containerised,
-authenticated, rate-limited, or hardened for an untrusted network. Nothing is
-persisted: the console's history is one browser session, a replay run lives in
-one API process's memory and is cleared by a restart, and there is still no alert
-store, no event database, and no serving drift report. The replay layer is
-synthetic only — there is no path for real traffic to enter one, and the reviewed
-catalog is its whole input surface. A `stacked` deployment additionally requires
-the offline `deploy materialize` step to have been run against the frozen
-lineage; until it has, the hybrid is reported unavailable and readiness is `503`
-rather than a strategy nobody selected being substituted. See
+The service and the console run locally, now in containers. Neither is deployed
+publicly, authenticated, rate-limited, or hardened for an untrusted network — the
+published ports are bound to loopback, which is the only exposure control there
+is. Nothing is persisted: the console's history is one browser session, a replay
+run lives in one API process's memory and is cleared by a restart, and there is
+still no alert store, no event database, and no serving drift report. The replay
+layer is synthetic only — there is no path for real traffic to enter one, and the
+reviewed catalog is its whole input surface. A `stacked` deployment requires the
+offline `deploy materialize` step to have been run against the frozen lineage;
+in a container the `prepare` job does that, and outside one it is a command an
+operator runs. Until it has, the hybrid is reported unavailable and readiness is
+`503` rather than a strategy nobody selected being substituted.
+
+**No figure the containerized demonstration reports is a performance claim.** Its
+dataset is four hours of synthetic traffic, sized so the whole pipeline finishes
+in about a minute; `configs/data/synthetic-ml-development.yaml` is the 30-day
+configuration that exists for measurement, and it is deliberately not what a
+container runs.
+
+**`PAD-CS-001` and `PAD-ATO-001` remain undemonstrable, and this is a v0.6.0
+release blocker rather than a fixed limitation.** Both gate on a fitted
+behavioural baseline the serving path does not load. Milestone 4 audited adding
+one to the serving bundle and **measured that it would not help**: a baseline
+fitted from the deployment's own TRAIN split still leaves `user_in_baseline`
+`False` and every `is_new_*_for_user` flag `None` for replay events, because the
+catalog's identities are content-addressed pseudonyms no training population
+contains. Doing it properly is also a bundle-schema change, not a packaging one.
+No threshold was moved and no baseline was synthesised to make a demonstration
+look better. See [docs/docker.md](docs/docker.md) §14,
 [docs/api.md](docs/api.md) §12, [docs/dashboard.md](docs/dashboard.md) §11, and
 [docs/live-replay.md](docs/live-replay.md) §14.
 
@@ -705,13 +761,22 @@ Real data (CSV / JSONL)
 
 ```
 .
+├── Dockerfile              builder + runtime base + api/dashboard targets
+├── compose.yaml            prepare -> api -> dashboard
+├── .dockerignore           exclude everything, re-admit what the build needs
 ├── configs/
 │   ├── data/
 │   │   ├── synthetic-testing.yaml     small dataset for CI
+│   │   ├── synthetic-demo.yaml        4h stream the container trains on
 │   │   └── synthetic-development.yaml larger dataset for local use
 │   ├── features/
 │   │   ├── feature-testing.yaml       CI-sized feature configuration
+│   │   ├── feature-demo.yaml          the container's feature contract
 │   │   └── feature-development.yaml   full window ladder, strict isolation
+│   ├── detection/
+│   │   └── rules-demo.yaml            the container's rule configuration
+│   ├── ml/
+│   │   └── model-demo.yaml            the container's ML configuration
 │   ├── development.yaml
 │   ├── production.yaml
 │   └── testing.yaml
@@ -731,7 +796,10 @@ Real data (CSV / JSONL)
 │   ├── synthetic-generation.md
 │   └── temporal-semantics.md
 ├── scripts/
-│   └── verify.sh
+│   ├── verify.sh
+│   ├── prepare_demo_bundle.py  the offline pipeline the container runs once
+│   ├── start_demo.sh           thin wrapper around `docker compose up`
+│   └── stop_demo.sh            thin wrapper around `docker compose down`
 ├── src/
 │   └── password_attack_detector/
 │       ├── cli.py               root Typer CLI
@@ -806,6 +874,20 @@ uv sync --all-groups
 cp .env.example .env          # edit as needed
 uv run pre-commit install
 ```
+
+### …or just run it
+
+Docker Engine with Compose v2, and nothing else — no Python, no `uv`, no
+database, no secret:
+
+```bash
+docker compose up --build     # or ./scripts/start_demo.sh
+docker compose down           # or ./scripts/stop_demo.sh
+```
+
+The first run trains a champion before the API starts: a one-shot `prepare`
+service runs the real pipeline offline and takes about a minute. Nothing is
+fitted at serving time. See **[docs/docker.md](docs/docker.md)**.
 
 ---
 
@@ -1061,7 +1143,21 @@ uv run pytest tests/integration/
 
 # Full verification (mirrors CI)
 bash scripts/verify.sh
+
+# Larger checks, deselected by default
+uv run pytest -m slow --no-cov
 ```
+
+The container suite lives behind the `slow` marker and skips itself when no
+Docker daemon is reachable or the images have not been built:
+
+```bash
+docker compose build
+uv run pytest -m slow tests/integration/test_docker_compose.py --no-cov
+```
+
+It brings the stack up only if it is not already up, and tears down only what it
+started — running it will not destroy a stack somebody is demonstrating from.
 
 ---
 

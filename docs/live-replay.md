@@ -531,7 +531,20 @@ imports the ML, detection, feature, deployment, or data packages, and that
 
 ## 13. Local demo
 
-Two terminals.
+### One command
+
+```bash
+docker compose up --build
+```
+
+Then open <http://localhost:8501>, go to **Live Replay**, and work through steps
+5–11 below against `localhost` instead of `127.0.0.1`. The containerized
+deployment serves `configs/detection/rules-demo.yaml`, which is the same rule
+configuration the published `expected_rule_ids` were proved against — a unit test
+asserts the two are equal, so what the catalog says about a scenario is true of
+what the container computes. See [docker.md](docker.md).
+
+### Or two terminals
 
 **Terminal 1 — the API:**
 
@@ -596,8 +609,17 @@ Stop both servers afterwards.
   there should not be: the catalog is the whole input surface.
 * **The scenarios are fixed.** Seven of them, reviewed, in source. There is no
   upload, no parameterisation beyond the pace, and no editor.
-* **Two rules cannot be demonstrated.** `PAD-CS-001` and `PAD-ATO-001` need a
-  fitted behavioural baseline the serving path does not load. See §3.
+* **Two rules cannot be demonstrated, and loading a baseline would not change
+  that.** `PAD-CS-001` and `PAD-ATO-001` need a fitted behavioural baseline the
+  serving path does not load — see §3. Milestone 4 measured what would happen if
+  it did: a baseline fitted from a deployment's own TRAIN split was loaded into a
+  feature engine and these scenarios were run through it, and `user_in_baseline`
+  came back `False` with every `is_new_*_for_user` flag `None`, exactly as
+  before. The reason is in this layer's design rather than in the bundle's: a
+  scenario's identities are content-addressed pseudonyms derived from the
+  scenario itself, so that the same catalog means the same thing in every
+  deployment — and no training population, anywhere, contains them. See
+  [docker.md](docker.md) §14.
 * **Rule expectations are configuration-dependent.** The published
   `expected_rule_ids` are proved against the repository's demo rule
   configuration. A deployment that changes a rule's windows or thresholds may see
@@ -606,8 +628,9 @@ Stop both servers afterwards.
 * **No authentication or rate limiting.** As with the rest of the API, this is a
   local demonstration service. The replay bounds limit resource use; they are not
   an access-control mechanism.
-* **Not deployed and not containerised.** This milestone makes the demonstration
-  runnable locally.
+* **Containerised, not deployed.** Milestone 4 packages the demonstration so one
+  command starts it on one machine, with both ports bound to that machine's
+  loopback interface. Nothing is published or reachable from another host.
 
 ---
 
@@ -617,6 +640,7 @@ Stop both servers afterwards.
 |---|---|
 | [api.md](api.md) | The serving contract this layer replays through |
 | [dashboard.md](dashboard.md) | The analyst console the Live Replay view lives in |
+| [docker.md](docker.md) | The containerized deployment this runs inside |
 | [rule-catalog.md](rule-catalog.md) | The rules the scenarios exercise |
 | [rule-contract.md](rule-contract.md) | What a rule may read, including the baseline signals |
 | [behavioral-baselines.md](behavioral-baselines.md) | The fitted baseline the serving path does not carry |
