@@ -37,6 +37,7 @@ import ast
 import base64
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -80,6 +81,28 @@ EXIT_OK = 0
 EXIT_BAD_PORT = 2
 EXIT_BUNDLE_UNVERIFIED = 3
 EXIT_CHILD_DIED = 4
+EXIT_PROXY_UNAVAILABLE = 5
+
+
+def _dockerfile_arg(name: str) -> str:
+    """Return the default value of one ``ARG`` in ``Dockerfile.render``.
+
+    The proxy's location and version are declared there, once. Reading them
+    rather than restating them means this suite cannot pass by checking a
+    version the image no longer carries.
+    """
+    text = (ROOT / "Dockerfile.render").read_text(encoding="utf-8")
+    match = re.search(rf"^ARG {name}=(\S+)$", text, re.MULTILINE)
+    assert match is not None, f"Dockerfile.render declares no {name}"
+    return match.group(1)
+
+
+#: Where the image puts the proxy, and what it is supposed to be.
+PROXY_BINARY = _dockerfile_arg("CADDY_BINARY")
+PROXY_VERSION = _dockerfile_arg("CADDY_VERSION")
+
+#: The account the image serves as.
+RUNTIME_UID = 10001
 
 #: Every scenario the catalog publishes must complete. Read from the running
 #: service rather than hardcoded, but the count is pinned so a catalog that
@@ -189,6 +212,23 @@ def _wait_for(url: str, *, seconds: float = 420.0) -> None:
     pytest.fail(f"{url} did not answer within {seconds:.0f}s (last: {last})")
 
 
+def _wait_for_log(name: str, marker: str, *, seconds: float = 180.0) -> None:
+    """Block until *marker* appears in a container's log, or fail.
+
+    The supervisor announces each stage it reaches, which makes its log the only
+    thing that can say where in its own lifecycle it currently is. An HTTP probe
+    cannot: it reports what is listening, not what the process supervising the
+    listener is doing next.
+    """
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        logs = _docker("logs", name, timeout=60)
+        if marker in logs.stdout + logs.stderr:
+            return
+        time.sleep(0.5)
+    pytest.fail(f"{name} never logged {marker!r}")
+
+
 def _remove(name: str) -> None:
     """Remove a container, running or not."""
     _docker("rm", "--force", "--volumes", name, timeout=120)
@@ -237,6 +277,17 @@ def lifecycle() -> Iterator[Callable[[], str]]:
         assert started.returncode == 0, started.stderr
         names.append(name)
         _wait_for(f"http://127.0.0.1:{LIFECYCLE_PORT}/healthz")
+        # ...and then until the supervisor has *left* its startup path.
+        #
+        # `/healthz` answering is not that moment. It answers the instant the
+        # proxy binds, which is up to one probe interval before the supervisor
+        # finishes waiting on the proxy and enters the steady-state loop. These
+        # tests stop and kill children, and the supervisor answers a child's
+        # death differently depending on which side of that line it is on --
+        # exit 1 during startup, exit 4 in steady state. Both are correct; only
+        # one is what these tests mean. Waiting for the marker removes a race
+        # that only opens under load, which is the worst kind to leave in.
+        _wait_for_log(name, f"serving on 0.0.0.0:{LIFECYCLE_PORT}")
         return name
 
     try:
@@ -434,6 +485,438 @@ def test_the_package_version_is_unchanged(served: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# The proxy executable, in the FINAL image
+#
+# The first real Render deployment of this image failed here, and failed in the
+# most expensive possible way: it verified the bundle, started the API, waited
+# for it, started the console, waited for it, and only then discovered that the
+# third process -- the one that owns the public port -- could not be run. The
+# log said `proxy exited with code 127`, and Render said `No open ports detected
+# on 0.0.0.0`.
+#
+# Every test below inspects the **final runtime image**, not a builder stage.
+# `Dockerfile.render` proves the same things at build time, and that is worth
+# having, but a build-stage proof is a statement about a layer that may or may
+# not be the layer the image ships: these run against the artifact itself.
+# ---------------------------------------------------------------------------
+
+
+def _in_image(script: str, *, timeout: float = 180.0) -> str:
+    """Run a Python *script* in a throwaway container off the final image.
+
+    No ``--user``, deliberately: the container runs as whatever account the
+    image declares, which is the account that will actually spawn the proxy.
+    """
+    completed = subprocess.run(
+        [
+            "docker",
+            "run",
+            "--rm",
+            "--interactive",
+            "--entrypoint",
+            "python",
+            RENDER_IMAGE,
+            "-",
+        ],
+        input=script,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=timeout,
+    )
+    assert completed.returncode == 0, completed.stderr
+    return completed.stdout
+
+
+def test_the_final_image_contains_the_proxy_executable() -> None:
+    """Present, a regular file, root-owned, and mode 0755.
+
+    The mode is asserted exactly rather than "has some execute bit", because
+    ``COPY --chown`` restates ownership while carrying the source image's mode
+    through unexamined. An image that lost the executable bit somewhere between
+    the Caddy image's layer and this one looks entirely correct in a listing and
+    cannot start a proxy.
+    """
+    facts = json.loads(
+        _in_image(
+            f"""
+import json, pathlib, stat
+binary = pathlib.Path({PROXY_BINARY!r})
+present = binary.exists()
+info = {{"exists": present}}
+if present:
+    stated = binary.stat()
+    info.update(
+        is_file=binary.is_file(),
+        mode=oct(stat.S_IMODE(stated.st_mode)),
+        uid=stated.st_uid,
+        gid=stated.st_gid,
+        size=stated.st_size,
+    )
+print(json.dumps(info))
+"""
+        ).strip()
+    )
+    assert facts["exists"] is True, f"{PROXY_BINARY} is not in the final image"
+    assert facts["is_file"] is True
+    assert facts["mode"] == "0o755", facts
+    assert facts["uid"] == 0 and facts["gid"] == 0, facts
+    assert facts["size"] > 1_000_000, facts
+
+
+def test_the_runtime_account_can_execute_the_proxy() -> None:
+    """Checked as the unprivileged account the image serves as, which is the
+    only account whose opinion matters.
+
+    Root may execute a file whose executable bits are all clear, so a check that
+    ran as root would pass on an image that cannot start.
+    """
+    facts = json.loads(
+        _in_image(
+            f"""
+import json, os
+print(json.dumps({{
+    "uid": os.getuid(),
+    "executable": os.access({PROXY_BINARY!r}, os.X_OK),
+}}))
+"""
+        ).strip()
+    )
+    assert facts["uid"] == RUNTIME_UID, facts
+    assert facts["executable"] is True, facts
+
+
+def test_the_proxy_reports_the_pinned_version_from_the_final_image() -> None:
+    """``caddy version``, by absolute path, in the image that ships.
+
+    This is also the self-containment proof. An Alpine binary that turned out
+    to be dynamically linked would fail ``exec`` here with ENOENT -- reporting
+    itself missing while sitting right there -- so a version string coming back
+    is proof that nothing about musl came with it.
+    """
+    completed = _docker(
+        "run",
+        "--rm",
+        "--entrypoint",
+        PROXY_BINARY,
+        RENDER_IMAGE,
+        "version",
+        timeout=120,
+    )
+    assert completed.returncode == 0, completed.stderr
+    first = completed.stdout.strip().splitlines()[0]
+    assert first.startswith(f"v{PROXY_VERSION} "), first
+
+
+def test_the_proxy_needs_no_dynamic_loader() -> None:
+    """Read out of the ELF program headers rather than inferred from a version.
+
+    A ``PT_INTERP`` entry names the dynamic loader a binary requires. Caddy is
+    built with CGO disabled and statically linked, so there is no interpreter to
+    be missing -- which is what makes lifting one binary out of an Alpine image
+    into a Debian one sound rather than lucky.
+    """
+    headers = json.loads(
+        _in_image(
+            f"""
+import json, pathlib, struct
+data = pathlib.Path({PROXY_BINARY!r}).read_bytes()[:4096]
+assert data[:4] == b"\\x7fELF", "not an ELF binary"
+assert data[4] == 2, "not 64-bit"
+phoff, = struct.unpack_from("<Q", data, 0x20)
+phentsize, phnum = struct.unpack_from("<HH", data, 0x36)
+kinds = [
+    struct.unpack_from("<I", data, phoff + index * phentsize)[0]
+    for index in range(phnum)
+]
+print(json.dumps({{"kinds": kinds}}))
+"""
+        ).strip()
+    )
+    pt_interp = 3
+    assert pt_interp not in headers["kinds"], "the proxy requires a dynamic loader"
+
+
+def test_the_shipped_supervisor_and_the_image_agree_on_the_proxy_path() -> None:
+    """Asserted against the artifact, not against the repository.
+
+    ``tests/unit/deployment/test_render_contract.py`` checks that
+    ``Dockerfile.render`` and ``scripts/render_entrypoint.py`` declare the same
+    path. This checks the stronger thing: that the supervisor *inside this
+    image* will exec a file that *inside this image* exists.
+    """
+    reported = _in_image(
+        """
+import importlib.util, json, pathlib, sys
+spec = importlib.util.spec_from_file_location(
+    "_entry", "/app/scripts/render_entrypoint.py"
+)
+module = importlib.util.module_from_spec(spec)
+sys.modules["_entry"] = module
+spec.loader.exec_module(module)
+print(json.dumps({
+    "declared": module.PROXY_BINARY,
+    "exists": pathlib.Path(module.PROXY_BINARY).exists(),
+    "argv0": module.proxy_command()[0],
+}))
+"""
+    ).strip()
+    facts = json.loads(reported)
+    assert facts["declared"] == PROXY_BINARY, facts
+    assert facts["argv0"] == PROXY_BINARY, facts
+    assert facts["exists"] is True, facts
+
+
+def test_the_supervisors_own_availability_check_passes_inside_the_image() -> None:
+    """The exact code path that will run on Render, run here, on this image.
+
+    Not a re-implementation of the check and not an approximation of it: the
+    shipped module's own function, against the shipped binary, as the shipped
+    account. It must return ``None``.
+    """
+    reported = _in_image(
+        """
+import importlib.util, json, sys
+spec = importlib.util.spec_from_file_location(
+    "_entry", "/app/scripts/render_entrypoint.py"
+)
+module = importlib.util.module_from_spec(spec)
+sys.modules["_entry"] = module
+spec.loader.exec_module(module)
+print(json.dumps({"reason": module.proxy_unavailable_reason()}))
+"""
+    ).strip()
+    assert json.loads(reported)["reason"] is None
+
+
+# ---------------------------------------------------------------------------
+# ...and the process that owns the public port really is the proxy
+# ---------------------------------------------------------------------------
+
+
+_LISTENER_OWNERS = """
+import pathlib
+
+# Listening sockets, by inode. State 0A is TCP_LISTEN.
+sockets = {}
+for family in ("tcp", "tcp6"):
+    try:
+        rows = pathlib.Path("/proc/net/" + family).read_text().splitlines()[1:]
+    except OSError:
+        continue
+    for row in rows:
+        fields = row.split()
+        if fields[3] != "0A":
+            continue
+        address, port = fields[1].rsplit(":", 1)
+        sockets[fields[9]] = (address, int(port, 16))
+
+# ...matched to the process holding each one, through its own file descriptors.
+owners = {}
+for entry in pathlib.Path("/proc").iterdir():
+    if not entry.name.isdigit():
+        continue
+    try:
+        command = (entry / "cmdline").read_bytes().decode().replace(chr(0), " ")
+        handles = list((entry / "fd").iterdir())
+    except OSError:
+        continue
+    for handle in handles:
+        try:
+            target = str(handle.readlink())
+        except OSError:
+            continue
+        if target.startswith("socket:[") and target[8:-1] in sockets:
+            owners[sockets[target[8:-1]]] = command.strip()
+print(repr(sorted(owners.items())))
+"""
+
+
+@pytest.fixture(scope="module")
+def listener_owners(served: str) -> dict[tuple[str, int], str]:
+    """Return ``{(hex address, port): command}`` for every listening socket."""
+    parsed = ast.literal_eval(_inside(SERVED_NAME, _LISTENER_OWNERS).strip())
+    return dict(parsed)
+
+
+def test_the_proxy_owns_the_public_port(
+    listener_owners: dict[tuple[str, int], str],
+) -> None:
+    """Not merely "something is listening on it".
+
+    The kernel's socket table is joined to the process holding the descriptor,
+    so this names which of the four processes accepted the public port. If the
+    API ever bound it, the previous test in this file -- which only checked that
+    *a* listener existed -- would still have passed.
+    """
+    public = {
+        address: command
+        for (address, port), command in listener_owners.items()
+        if port == SERVED_PORT
+    }
+    assert public, f"nothing is listening on {SERVED_PORT}"
+    for address, command in public.items():
+        assert PROXY_BINARY in command, (address, command)
+        assert address != "0100007F", "the public port must not be loopback-only"
+
+
+def test_the_api_is_owned_by_uvicorn_and_bound_to_loopback(
+    listener_owners: dict[tuple[str, int], str],
+) -> None:
+    """8000 is the detection service, and it is reachable from inside only."""
+    bound = {
+        address: command
+        for (address, port), command in listener_owners.items()
+        if port == 8000
+    }
+    assert list(bound) == ["0100007F"], bound
+    assert "uvicorn" in bound["0100007F"]
+
+
+def test_the_dashboard_is_owned_by_streamlit_and_bound_to_loopback(
+    listener_owners: dict[tuple[str, int], str],
+) -> None:
+    """8501 is the console, and it is reachable through the proxy only."""
+    bound = {
+        address: command
+        for (address, port), command in listener_owners.items()
+        if port == 8501
+    }
+    assert list(bound) == ["0100007F"], bound
+    assert "streamlit" in bound["0100007F"]
+
+
+def test_the_startup_log_records_that_the_proxy_was_checked(served: str) -> None:
+    """A deploy log that says the check happened is what makes its absence visible."""
+    logs = _docker("logs", SERVED_NAME, timeout=60)
+    combined = logs.stdout + logs.stderr
+    assert "proxy executable verified" in combined, combined[-2000:]
+
+
+# ---------------------------------------------------------------------------
+# ...and an image whose proxy cannot run says so, immediately
+# ---------------------------------------------------------------------------
+
+
+def test_an_unexecutable_proxy_refuses_to_start_before_the_api(
+    tmp_path: Path,
+) -> None:
+    """One of the faults behind the Render failure, now diagnosed in one line.
+
+    Which of them the deploy actually hit is unrecoverable -- the old catch-all
+    reported all of them as 127 -- so this asserts the shape of the answer
+    rather than claiming to have reproduced the cause.
+
+    The proxy binary is shadowed by a file the runtime account cannot execute --
+    which is what an image built without the executable bit would look like from
+    the supervisor's point of view. Three things must hold:
+
+    * the exit code is the dedicated one, not the old opaque 127;
+    * the log names the path and the reason, and leaks nothing else;
+    * **nothing was started.** The old behaviour spent a full cold start --
+      ninety seconds on 0.1 CPU -- getting to this discovery. A container that
+      cannot serve should cost a second.
+    """
+    shadow = tmp_path / "not-executable"
+    shadow.write_text("this is not a proxy\n", encoding="utf-8")
+    shadow.chmod(0o644)
+
+    name = "pad-render-proxy-missing"
+    _remove(name)
+    try:
+        completed = _docker(
+            "run",
+            "--name",
+            name,
+            "--memory",
+            MEMORY_LIMIT,
+            "--read-only",
+            "--tmpfs",
+            "/tmp:mode=1777,size=64m",
+            "--env",
+            f"PORT={LIFECYCLE_PORT}",
+            "--volume",
+            f"{shadow}:{PROXY_BINARY}:ro",
+            RENDER_IMAGE,
+            timeout=300,
+        )
+        assert completed.returncode == EXIT_PROXY_UNAVAILABLE, (
+            completed.returncode,
+            completed.stdout,
+            completed.stderr,
+        )
+        combined = completed.stdout + completed.stderr
+        assert "refusing to start" in combined, combined
+        assert PROXY_BINARY in combined, combined
+        assert "not executable" in combined, combined
+        # Nothing behind the proxy was ever started, and no bundle was verified.
+        assert "started api" not in combined, combined
+        assert "started dashboard" not in combined, combined
+        assert "verifying the baked serving bundle" not in combined, combined
+        # And no internals beyond the reviewed path.
+        assert "Traceback" not in combined, combined
+        assert "PATH=" not in combined, combined
+    finally:
+        _remove(name)
+
+
+def test_a_proxy_that_is_absent_entirely_refuses_to_start(tmp_path: Path) -> None:
+    """The other shape of the same fault: the binary is simply not in the image.
+
+    Proved on a real image rather than by shadowing a path, because that is the
+    fault being guarded against -- a runtime stage that, for whatever reason,
+    did not end up with the file. A one-layer image derived from the one under
+    test, with the binary removed and nothing else changed, is exactly that
+    image, and it is the closest this suite can get to reproducing the deploy
+    that failed.
+    """
+    tag = "pad-render-noproxy:itest"
+    (tmp_path / "Dockerfile").write_text(
+        f"FROM {RENDER_IMAGE}\nUSER root\nRUN rm -f {PROXY_BINARY}\nUSER pad:pad\n",
+        encoding="utf-8",
+    )
+    built = _docker(
+        "build", "--tag", tag, "--file", str(tmp_path / "Dockerfile"), str(tmp_path)
+    )
+    assert built.returncode == 0, built.stderr
+
+    name = "pad-render-proxy-absent"
+    _remove(name)
+    try:
+        completed = _docker(
+            "run",
+            "--name",
+            name,
+            "--memory",
+            MEMORY_LIMIT,
+            "--read-only",
+            "--tmpfs",
+            "/tmp:mode=1777,size=64m",
+            "--env",
+            f"PORT={LIFECYCLE_PORT}",
+            tag,
+            timeout=300,
+        )
+        assert completed.returncode == EXIT_PROXY_UNAVAILABLE, (
+            completed.returncode,
+            completed.stdout + completed.stderr,
+        )
+        combined = completed.stdout + completed.stderr
+        assert "refusing to start" in combined, combined
+        assert f"{PROXY_BINARY} does not exist in this image" in combined, combined
+        # The whole point: this is discovered before a cold start is spent on it.
+        assert "started api" not in combined, combined
+        assert "started dashboard" not in combined, combined
+        assert "verifying the baked serving bundle" not in combined, combined
+        # ...and the old symptom is gone. No opaque 127, no traceback.
+        assert "code 127" not in combined, combined
+        assert "Traceback" not in combined, combined
+    finally:
+        _remove(name)
+        _docker("image", "rm", "--force", tag, timeout=120)
+
+
+# ---------------------------------------------------------------------------
 # The runtime fits nothing and needs no persistence
 # ---------------------------------------------------------------------------
 
@@ -540,8 +1023,16 @@ def test_the_supervisor_is_pid_one(served: str) -> None:
 
 
 def test_exactly_three_processes_are_supervised(served: str) -> None:
-    """The proxy, the API and the console, and nothing else long-lived."""
-    script = """
+    """The proxy, the API and the console, and nothing else long-lived.
+
+    The proxy is matched on the absolute path it is exec'd from, not on the name
+    ``caddy``. That is the point of the executable contract: ``argv[0]`` in the
+    running process is the reviewed path, so a process claiming to be the proxy
+    while running some other file would not be counted as one here.
+    """
+    script = (
+        f"PROXY = {PROXY_BINARY!r}\n"
+        + """
 import pathlib
 found = []
 for entry in pathlib.Path("/proc").iterdir():
@@ -556,12 +1047,13 @@ for entry in pathlib.Path("/proc").iterdir():
         found.append("api")
     elif "streamlit" in joined and " run " in joined:
         found.append("dashboard")
-    elif joined.startswith("caddy"):
+    elif joined.startswith(PROXY):
         found.append("proxy")
     elif "render_entrypoint" in joined:
         found.append("supervisor")
 print(sorted(found))
 """
+    )
     found = _inside(SERVED_NAME, script).strip()
     assert found == "['api', 'dashboard', 'proxy', 'supervisor']", found
 

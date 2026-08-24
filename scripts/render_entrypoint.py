@@ -45,10 +45,27 @@ difference between a demo that responds and one that does not.
 The two startup waits do poll -- an HTTP readiness probe has to -- but they poll
 by *sleeping inside the same select*, so a SIGTERM arriving during a slow cold
 start is acted on immediately instead of after the current sleep.
+
+EVERY CHILD IS NAMED BY ABSOLUTE PATH
+
+No child is resolved through ``PATH``. The first real deployment of this image
+failed with ``proxy exited with code 127``, and 127 was this file's own
+``os._exit`` in the forked child: the proxy -- alone among the three -- was
+spawned as the bare name ``caddy`` via ``execvp``, so *any* child-side failure
+(the file missing, the file not executable, the wrong architecture, an
+exhausted address space) arrived as the same opaque number with no reason
+attached. Both halves of that are fixed here. Children are exec'd by absolute
+path with :func:`os.execv`, and a child that cannot exec says why on stderr
+before it exits.
+
+The proxy executable is additionally probed *before anything is forked*, so an
+image that cannot serve says so in a second rather than after a ninety-second
+cold start that was never going to end in a listening port.
 """
 
 from __future__ import annotations
 
+import contextlib
 import errno
 import os
 import select
@@ -59,6 +76,7 @@ import time
 import urllib.error
 import urllib.request
 from collections.abc import Sequence
+from pathlib import Path
 from typing import Final, NoReturn
 
 # ---------------------------------------------------------------------------
@@ -85,6 +103,19 @@ STATE_ROOT: Final[str] = "/srv/state"
 CADDYFILE: Final[str] = "/etc/caddy/Caddyfile"
 VERIFIER: Final[str] = "/app/scripts/verify_serving_bundle.py"
 
+#: The proxy executable, named by absolute path and never looked up on ``PATH``.
+#:
+#: This is one half of a contract with ``Dockerfile.render``, which copies the
+#: pinned Caddy binary to exactly this location and proves at build time that it
+#: is there, is mode 0755, and runs;
+#: ``tests/unit/deployment/test_render_contract.py`` asserts the two files agree
+#: on the string, so the image and the supervisor cannot drift apart silently.
+#:
+#: A ``PATH`` lookup would make the deployment depend on an environment variable
+#: that the platform, the base image, or an operator with a dashboard can all
+#: change, to locate a file whose position this repository chose.
+PROXY_BINARY: Final[str] = "/usr/local/bin/caddy"
+
 #: How long a child may take to start serving. Generous because the target is a
 #: 0.1 CPU instance doing a cold import of the scientific stack: on a laptop the
 #: API is answering in a few seconds, and a ceiling tuned to a laptop would turn
@@ -100,17 +131,47 @@ PROXY_STARTUP_TIMEOUT: Final[float] = 60.0
 PROBE_INTERVAL: Final[float] = 0.5
 SHUTDOWN_GRACE: Final[float] = 25.0
 
+#: How long the proxy executable gets to answer ``version`` during the preflight.
+#: Generous for a 0.1 CPU instance; the binary does nothing but print.
+PROXY_PROBE_TIMEOUT: Final[float] = 30.0
+
 #: Exit codes. Distinct so a Render log says which invariant broke.
 EXIT_OK: Final[int] = 0
 EXIT_STARTUP_FAILED: Final[int] = 1
 EXIT_BAD_PORT: Final[int] = 2
 EXIT_BUNDLE_UNVERIFIED: Final[int] = 3
 EXIT_CHILD_DIED: Final[int] = 4
+EXIT_PROXY_UNAVAILABLE: Final[int] = 5
+
+#: What a forked child exits with when it could not exec at all, as distinct
+#: from a program that ran and then failed. 126 is the shell's long-standing
+#: code for "found, but could not be executed", and using it here keeps the
+#: previous meaning of 127 -- an opaque catch-all -- out of the logs entirely.
+CHILD_EXEC_FAILED: Final[int] = 126
 
 
 def log(message: str) -> None:
     """Write one line to stdout, unbuffered, which is what Render collects."""
     print(f"[entrypoint] {message}", flush=True)
+
+
+def _sanitized_reason(failure: BaseException) -> str:
+    """Return a short, safe description of an operating-system failure.
+
+    ``strerror`` and the exception's class name, and deliberately nothing else.
+    ``str(exc)`` on an :class:`OSError` interpolates the filename it was given,
+    and the repr of a failure raised between ``fork`` and ``exec`` can carry
+    fragments of the child's argument vector; neither belongs in a log line that
+    exists only to say *which* precondition broke.
+
+    Nothing produced here reaches an HTTP client. This process serves no
+    requests -- it is PID 1 -- and the three that do serve requests never read
+    its output.
+    """
+    strerror = getattr(failure, "strerror", None)
+    if isinstance(strerror, str) and strerror:
+        return strerror
+    return type(failure).__name__
 
 
 # ---------------------------------------------------------------------------
@@ -169,7 +230,22 @@ class Child:
         self.status: int | None = None
 
     def start(self) -> None:
-        """Fork, put the child in a new session, and exec into *argv*."""
+        """Fork, put the child in a new session, and exec into *argv*.
+
+        :func:`os.execv`, never :func:`os.execvp`. ``argv[0]`` is an absolute
+        path this repository chose -- the interpreter running this file, or the
+        proxy binary the image copied to a reviewed location -- so there is
+        nothing for a ``PATH`` lookup to add except a way for the deployment to
+        resolve onto a different file than the one that was reviewed.
+
+        A child that cannot exec writes one sanitized line to stderr and exits
+        with :data:`CHILD_EXEC_FAILED`, so the supervisor's account of its death
+        names a cause instead of a number.
+        """
+        if not self.argv[0].startswith("/"):  # pragma: no cover - defensive
+            raise ValueError(
+                f"{self.name} must be started by absolute path, not {self.argv[0]!r}"
+            )
         pid = os.fork()
         if pid == 0:  # pragma: no cover - the child never returns
             try:
@@ -181,9 +257,20 @@ class Child:
                     signal.SIGHUP,
                 ):
                     signal.signal(number, signal.SIG_DFL)
-                os.execvp(self.argv[0], self.argv)
-            except BaseException:
-                os._exit(127)
+                os.execv(self.argv[0], self.argv)
+            except BaseException as failure:
+                # os.write rather than print: this runs after fork and before
+                # exec, where the inherited stdio buffers belong to a process
+                # that is about to be replaced. Suppressed because a child that
+                # cannot even report why it is failing must still exit with the
+                # code that says it failed.
+                with contextlib.suppress(OSError):
+                    os.write(
+                        2,
+                        f"[entrypoint] cannot execute {self.name} "
+                        f"({self.argv[0]}): {_sanitized_reason(failure)}\n".encode(),
+                    )
+                os._exit(CHILD_EXEC_FAILED)
         self.pid = pid
         log(f"started {self.name} (pid {pid})")
 
@@ -210,7 +297,10 @@ class Child:
             return "still running"
         if os.WIFSIGNALED(self.status):
             return f"killed by signal {os.WTERMSIG(self.status)}"
-        return f"exited with code {os.WEXITSTATUS(self.status)}"
+        code = os.WEXITSTATUS(self.status)
+        if code == CHILD_EXEC_FAILED:
+            return "could not be executed at all (the reason is on the line above)"
+        return f"exited with code {code}"
 
 
 # ---------------------------------------------------------------------------
@@ -439,13 +529,76 @@ def dashboard_command() -> list[str]:
 
 
 def proxy_command() -> list[str]:
-    """Return the proxy command. The Caddyfile reads ``PORT`` from the environment."""
-    return ["caddy", "run", "--config", CADDYFILE, "--adapter", "caddyfile"]
+    """Return the proxy command. The Caddyfile reads ``PORT`` from the environment.
+
+    Named by absolute path for the same reason the other two are: the file this
+    starts is the file ``Dockerfile.render`` put there, and not whichever
+    ``caddy`` a ``PATH`` happened to resolve to.
+    """
+    return [PROXY_BINARY, "run", "--config", CADDYFILE, "--adapter", "caddyfile"]
 
 
 def verify_bundle_command() -> list[str]:
     """Return the bundle verification command."""
     return [sys.executable, VERIFIER, "--state-root", STATE_ROOT]
+
+
+# ---------------------------------------------------------------------------
+# The proxy executable
+# ---------------------------------------------------------------------------
+
+
+def proxy_unavailable_reason(path: str = PROXY_BINARY) -> str | None:
+    """Return why the proxy cannot be started, or ``None`` if it can.
+
+    Four questions, in the order in which each subsumes the last, because "it
+    did not start" is four different deployment faults wearing one exit code:
+
+    1. **Is the file there at all?** A runtime image built without the ``COPY``
+       that places the binary looks entirely healthy until the last of the
+       three processes is started. This is the plainest of the four and not,
+       on the evidence, the one the first deployment hit: an image built from
+       the same tree on linux/amd64 carries a working proxy at this path. Which
+       of the four it actually was is the question the old catch-all destroyed
+       and this function exists to answer on the next deploy.
+    2. **Is it a regular file?** A directory at that path is executable in the
+       ``os.access`` sense and is not a program.
+    3. **Is it executable by this account?** The image serves as an
+       unprivileged user, and a mode that survived the build as root does not
+       prove anything about the account that will actually spawn it.
+    4. **Does it run?** The only one of the four that catches a binary lifted
+       out of an Alpine image that turns out not to be self-contained: a
+       dynamically-linked executable whose ELF interpreter is absent fails
+       ``exec`` with ``ENOENT``, which is to say it reports itself missing while
+       sitting right there with its executable bit set. ``version`` is used
+       because it reads no configuration, opens no socket, and writes nothing.
+
+    The returned string names the reviewed path and the operating system's own
+    reason, and nothing else -- no environment, no ``PATH``, no account, no
+    directory listing. It is written to the deployment log and never to a
+    response.
+    """
+    binary = Path(path)
+    if not binary.exists():
+        return f"{path} does not exist in this image"
+    if not binary.is_file():
+        return f"{path} is not a regular file"
+    if not os.access(binary, os.X_OK):
+        return f"{path} is not executable by the account this container runs as"
+    try:
+        probe = subprocess.run(
+            [path, "version"],
+            capture_output=True,
+            check=False,
+            timeout=PROXY_PROBE_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired:
+        return f"{path} did not answer 'version' within {PROXY_PROBE_TIMEOUT:.0f}s"
+    except OSError as failure:
+        return f"{path} could not be executed: {_sanitized_reason(failure)}"
+    if probe.returncode != 0:
+        return f"{path} exited with code {probe.returncode} when asked its version"
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -473,6 +626,28 @@ def run() -> int:
         log(f"refusing to start: {failure}")
         return EXIT_BAD_PORT
     log(f"public port {port}")
+
+    # Before the bundle, and long before anything is forked.
+    #
+    # The proxy is started *last*, because the public port must not exist until
+    # both processes behind it are serving -- that ordering is what makes
+    # Render's health check meaningful and it is preserved exactly. But the
+    # question "can this image start a proxy at all" is answered by four
+    # filesystem checks and one 20-millisecond subprocess, and there is no
+    # reason to spend a ninety-second cold start discovering the answer is no.
+    #
+    # This is what the first deployment of this image needed and did not have:
+    # it started an API, started a console, and only then found out that the
+    # thing which owns the public port could not be executed.
+    unavailable = proxy_unavailable_reason()
+    if unavailable is not None:
+        log(
+            f"refusing to start: the proxy cannot be run ({unavailable}). "
+            "Nothing would listen on the public port, so this image is not "
+            "serviceable; rebuild it rather than restarting it."
+        )
+        return EXIT_PROXY_UNAVAILABLE
+    log("proxy executable verified")
 
     log("verifying the baked serving bundle")
     if verify_bundle() != 0:

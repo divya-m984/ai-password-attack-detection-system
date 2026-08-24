@@ -69,6 +69,19 @@ ARG PYTHON_IMAGE=python:3.12-slim@sha256:c3d81d25b3154142b0b42eb1e61300024426268
 # binary is taken from it; the image itself is never run here.
 ARG CADDY_IMAGE=caddy:2.10-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d
 
+# The version that digest contains, stated separately so the build can *prove*
+# it rather than trust the tag. A digest pins the bytes; this pins what the
+# bytes are supposed to be, and the runtime stage below fails the build if the
+# binary disagrees.
+ARG CADDY_VERSION=2.10.2
+
+# Where the proxy binary lands in the runtime image, and the single place that
+# location is written down. `scripts/render_entrypoint.py` spawns the proxy from
+# exactly this absolute path -- never through PATH -- and
+# `tests/unit/deployment/test_render_contract.py` asserts the two files agree on
+# the string, so the image and its supervisor cannot drift apart in silence.
+ARG CADDY_BINARY=/usr/local/bin/caddy
+
 FROM ${CADDY_IMAGE} AS caddybin
 
 # ---------------------------------------------------------------------------
@@ -162,6 +175,12 @@ FROM ${PYTHON_IMAGE} AS runtime
 ARG APP_UID=10001
 ARG APP_GID=10001
 
+# Re-declared so this stage can use the global defaults above. An ARG that is
+# not re-declared inside a stage expands to the empty string there, which for a
+# COPY destination would silently place the proxy binary somewhere nobody named.
+ARG CADDY_VERSION
+ARG CADDY_BINARY
+
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PATH="/app/.venv/bin:${PATH}" \
@@ -186,24 +205,53 @@ COPY --chown=root:root deploy/render/Caddyfile /etc/caddy/Caddyfile
 # The proxy: one statically-linked binary out of the official image, rather than
 # the image itself. Nothing else from it is wanted -- not its entrypoint, not
 # its default configuration, not its root-owned data directory.
-COPY --from=caddybin --chown=root:root /usr/bin/caddy /usr/local/bin/caddy
+#
+# No Caddy state or configuration directory is created. `auto_https off` means
+# there is no certificate to persist, and the two XDG variables set below point
+# whatever else it wants at /tmp.
+COPY --from=caddybin --chown=root:root /usr/bin/caddy ${CADDY_BINARY}
 
 # The frozen scientific state, root-owned. The account that serves it can read
 # it and cannot write it, on a platform that offers no read-only mount.
 COPY --from=prepare --chown=root:root /srv/state /srv/state
 
-# Two build-time proofs, both of which would otherwise surface as a cold start
-# that fails on Render:
+# Four build-time proofs about the proxy. Every one of them would otherwise
+# surface the way the first real deployment of this image surfaced: an API that
+# starts, a console that starts, and then `proxy exited with code 127` with
+# nothing listening on the public port and no reason given.
 #
-#   1. the binary taken from an Alpine image runs on this base. Caddy is built
-#      with CGO disabled and statically linked, and a build that discovered
-#      otherwise should fail here;
-#   2. the Caddyfile adapts and validates. PORT is supplied only so the listener
+#   1. the binary is at the exact absolute path the supervisor execs, is a
+#      regular file, is owned by root, and is mode 0755. The mode is *set* here
+#      rather than inherited: `COPY --chown` restates ownership but carries the
+#      source image's mode through unexamined, and a build that lost the
+#      executable bit in transit would produce an image that looks correct in a
+#      layer listing and cannot start;
+#   2. it runs as the unprivileged account that will actually spawn it. Testing
+#      this as root would prove nothing -- root may execute a file whose
+#      executable bits are all clear;
+#   3. it is the reviewed version. The digest pins the bytes; this pins what the
+#      bytes are;
+#   4. the Caddyfile adapts and validates. PORT is supplied only so the listener
 #      address parses -- the value is not baked anywhere and is not the port the
 #      container will use.
-RUN caddy version \
+#
+# Proof 2 is also the self-containment test, and is why no assumption is made
+# about an Alpine binary on a Debian base: Caddy is built with CGO disabled and
+# statically linked, so it needs no musl loader here -- but a binary that turned
+# out to be dynamically linked would fail `exec` with ENOENT at this line rather
+# than on a public URL. `tests/integration/test_render_container.py` goes
+# further and reads the ELF program headers to assert there is no interpreter
+# to be missing in the first place.
+RUN set -eu \
+ && test -f "${CADDY_BINARY}" \
+ && chown root:root "${CADDY_BINARY}" \
+ && chmod 0755 "${CADDY_BINARY}" \
+ && test "$(stat -c '%U:%G %a' "${CADDY_BINARY}")" = "root:root 755" \
+ && "${CADDY_BINARY}" version \
+ && setpriv --reuid="${APP_UID}" --regid="${APP_GID}" --clear-groups \
+      "${CADDY_BINARY}" version | grep -q "^v${CADDY_VERSION} " \
  && PORT=10000 XDG_DATA_HOME=/tmp/caddy XDG_CONFIG_HOME=/tmp/caddy \
-    caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+    "${CADDY_BINARY}" validate --config /etc/caddy/Caddyfile --adapter caddyfile
 
 # ---------------------------------------------------------------------------
 # Serving configuration.

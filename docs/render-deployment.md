@@ -81,7 +81,7 @@ These are treated as hard deployment constraints, not as guidance:
 
 | Constraint | Value | Consequence for this deployment |
 |---|---|---|
-| Memory | 512 MB | Measured peak 198.3 MiB — see [§11](#11-memory) |
+| Memory | 512 MB | Measured peak 191.9 MiB — see [§11](#11-memory) |
 | CPU | 0.1 | Cold start ~92 s — see [§12](#12-cpu-and-cold-starts) |
 | Disk | none | The serving bundle is baked into the image |
 | Filesystem | ephemeral | Nothing scientific is written at runtime |
@@ -150,6 +150,11 @@ Files:
 | `deploy/render/Caddyfile` | The public routing policy and response hardening. |
 | `scripts/render_entrypoint.py` | The supervisor. Standard library only. |
 | `scripts/verify_serving_bundle.py` | Bundle verification, at build time and at start. |
+
+The proxy binary itself is not a repository file. `Dockerfile.render` lifts it
+out of a digest-pinned `caddy` image and places it at `/usr/local/bin/caddy` —
+declared once, as `ARG CADDY_BINARY`, and exec'd from exactly there by the
+supervisor. See [§6.1](#61-the-proxy-executable-contract).
 
 ---
 
@@ -282,15 +287,95 @@ pull numpy, pandas and scikit-learn into a process whose entire job is to wait.
 **Startup, in order, with the next step gated on the previous one:**
 
 1. read and validate `PORT`; refuse to start if it is missing or invalid (exit 2);
-2. verify the baked serving bundle, in a **subprocess** so its memory is returned
+2. check that the proxy executable can actually be run; refuse to start if it
+   cannot (exit 5). See [§6.1](#61-the-proxy-executable-contract);
+3. verify the baked serving bundle, in a **subprocess** so its memory is returned
    to the operating system; refuse to start if it does not verify (exit 3);
-3. start the API, and wait until `127.0.0.1:8000/health` answers 200;
-4. start the console, and wait until `127.0.0.1:8501/_stcore/health` answers 200;
-5. start the proxy, and wait until `/healthz` answers through it.
+4. start the API, and wait until `127.0.0.1:8000/health` answers 200;
+5. start the console, and wait until `127.0.0.1:8501/_stcore/health` answers 200;
+6. start the proxy, and wait until `/healthz` answers through it.
 
 The proxy starts **last**, which is what makes Render's health check meaningful:
 until both processes behind it are serving, nothing is listening on the public
-port at all, so the check cannot pass against a half-started container.
+port at all, so the check cannot pass against a half-started container. Step 2
+does not change that ordering — it starts nothing. It only answers, in about a
+millisecond, the question step 6 would otherwise answer ninety seconds later.
+
+### 6.1 The proxy executable contract
+
+The first real Render deployment of this image failed at step 6 of the old,
+five-step sequence, and the log said this and nothing more:
+
+```
+[entrypoint] started proxy
+[entrypoint] startup failed: proxy exited with code 127 during startup
+```
+
+followed by Render's `No open ports detected on 0.0.0.0`.
+
+**127 was not Caddy's exit code.** Caddy never ran. 127 was the supervisor's
+own `os._exit(127)`, in the forked child, from a bare `except BaseException`
+around `os.execvp` — so *every* child-side failure produced that one number
+with no reason attached: the file absent, the file not executable, the wrong
+architecture, a missing ELF interpreter, no memory to map the image. The
+deployment log could not distinguish them, and neither could anyone reading it.
+
+**And it still cannot be distinguished, because the evidence was destroyed when
+it was produced.** The pre-correction image was rebuilt from the same commit and
+run on linux/amd64 under Render's limits — 512 MiB, `PORT=10000`, read-only root
+filesystem — and it started correctly: `/usr/local/bin/caddy` was present,
+`root:root`, mode 0755, on `PATH`, executable by uid 10001, and it bound the
+public port. The fault is therefore *not* reproducible from repository content
+on this architecture, which rules out the simplest reading — "the `COPY` was
+never there" — and leaves the rest of the list intact. The honest statement of
+the root cause is not which of the five it was; it is that **the deployment was
+built so that its own failure could not be diagnosed**, and one number was
+allowed to stand for five unrelated faults. That is the defect corrected below,
+and the next deploy will name whichever of them it is instead of counting to
+127.
+
+Two things were wrong, and both are fixed.
+
+**The proxy was the only child resolved through `PATH`.** The API and the
+console were started as `sys.executable` — an absolute path. The proxy was
+started as the bare name `caddy`, which made the deployment depend on `PATH`
+to locate a file whose position this repository chose. Every child is now
+exec'd by absolute path with `os.execv`; `os.execvp` does not appear in the
+file, and `Child.start` refuses a relative `argv[0]` before it forks.
+
+The path is declared once, as `ARG CADDY_BINARY` in `Dockerfile.render`, and
+read as `PROXY_BINARY` in `scripts/render_entrypoint.py`.
+`tests/unit/deployment/test_render_contract.py` asserts the two agree, and
+`tests/integration/test_render_container.py` asserts that the supervisor
+*inside the built image* will exec a file that *inside the built image* exists.
+
+**A failure to exec said nothing.** It now says what happened. Before anything
+is forked, the supervisor asks four questions of the binary, in order:
+
+| Question | Why it is not covered by the previous one |
+|---|---|
+| Does the file exist? | The plain case, and the one a missing `COPY` produces. |
+| Is it a regular file? | A directory satisfies `os.access(X_OK)` and is not a program. |
+| Is it executable by *this* account? | The image serves as uid 10001. A mode that satisfied root at build time proves nothing about the account that spawns it. |
+| Does it run? | A dynamically-linked binary whose ELF interpreter is absent fails `exec` with `ENOENT` — it reports itself *missing* while sitting right there with its executable bit set. Nothing above catches that. |
+
+If any of them fails, the container exits 5 with one sanitized line naming the
+reviewed path and the operating system's own reason — and nothing else. No
+`PATH`, no environment, no account, no traceback, no directory listing. None of
+it reaches an HTTP client under any circumstances: PID 1 serves no requests, and
+the three processes that do never read its output.
+
+A child that still somehow cannot exec writes one line to stderr and exits with
+126, "found but could not be executed", so the ambiguous 127 is now absent from
+this deployment's vocabulary entirely.
+
+**And the image proves its half at build time.** `Dockerfile.render` copies the
+binary from the pinned Caddy image to `${CADDY_BINARY}`, then *sets* mode 0755
+rather than inheriting it — `COPY --chown` restates ownership but carries the
+source image's mode through unexamined — asserts `root:root 755`, runs
+`version` as uid 10001, and checks the output against `ARG CADDY_VERSION`. A
+build that lost the executable bit, landed the file elsewhere, or resolved onto
+a different Caddy fails the build instead of the deployment.
 
 **Steady state.** The supervisor blocks in `select.select` with no timeout on a
 self-pipe fed by `signal.set_wakeup_fd`. It consumes no CPU until a child dies
@@ -461,11 +546,33 @@ explanation call.
 
 | Measurement | Value | Share of 512 MiB |
 |---|---|---|
-| Idle, all three processes serving | 177.6 MiB | 34.7 % |
-| Peak sampled during the demonstration | 197.2 MiB | 38.5 % |
-| **Peak recorded by the kernel (`memory.peak`)** | **198.3 MiB** | **38.7 %** |
+| Idle, all three processes serving | 175.0 MiB | 34.2 % |
+| **Peak recorded by the kernel (`memory.peak`)** | **191.9 MiB** | **37.5 %** |
 | OOM events / OOM kills (`memory.events`) | 0 / 0 | — |
-| Headroom below the limit | 313.7 MiB | 61.3 % |
+| Headroom below the limit | 320.1 MiB | 62.5 % |
+
+**Re-measured after the proxy-executable correction** (§6.1), because that
+correction execs Caddy once at startup for its preflight and a new 44 MiB
+mapping is exactly the kind of thing that should be checked rather than assumed.
+Both images were run on the same machine, under the same limits, and left to
+settle for twenty seconds with nothing exec'd into the cgroup — a `docker exec
+python` is itself charged to it and would drown the difference being measured:
+
+| Image | Idle `memory.current` | Idle `memory.peak` |
+|---|---|---|
+| Before the correction | 177.0 MiB | 178.2 MiB |
+| After the correction | 175.0 MiB | 176.2 MiB |
+
+**−2.0 MiB**, which is to say no measurable cost at all: the difference is
+smaller than the run-to-run variance of the two Python interpreters behind the
+proxy, and it has the wrong sign to be the preflight. The preflight's own
+subprocess exits before the API is started, so its 44 MiB mapping is returned
+to the kernel well before the high-water mark is set by anything else.
+
+The 191.9 MiB peak is taken after a full replay pass — all four scenarios below
+— driven by `docker exec python`, and that interpreter is inside the cgroup and
+charged to it. It is **below** the 198.3 MiB recorded before this correction, so
+there is no memory regression to explain.
 
 Approximate per-process resident set at idle (shared pages counted once per
 process, so these deliberately do not sum to the total):
@@ -704,7 +811,7 @@ volume, all capabilities dropped and `no-new-privileges`.
 | 21 | Explanation available; residual `-0.0` | pass |
 | 22 | Read-only rootfs refuses writes to `/srv/state`, `/app`, `/etc/caddy` | pass |
 | 23 | No volume and no bind mount | pass |
-| 24 | Peak memory (`memory.peak`) | 198.3 MiB |
+| 24 | Peak memory (`memory.peak`) | 191.9 MiB |
 | 25 | OOM kills (`memory.events`) | 0 |
 | 26 | Cold start at 0.1 CPU | 92.2 s |
 | 27 | Verdicts identical at 0.1 and 0.5 CPU | pass |
@@ -717,6 +824,17 @@ volume, all capabilities dropped and `no-new-privileges`.
 | 34 | Absent bundle refused before anything starts | exit 3 |
 | 35 | Arbitrary ports (19080, 34567, 41573) | pass |
 | 36 | No container or volume left behind | pass |
+| 37 | Proxy binary present in the **final** image, `root:root`, mode 0755 | pass |
+| 38 | Proxy executable by uid 10001 (not merely by root) | pass |
+| 39 | Proxy reports the pinned version from the final image | `v2.10.2` |
+| 40 | Proxy ELF has no `PT_INTERP` — needs no dynamic loader | pass |
+| 41 | Shipped supervisor's `PROXY_BINARY` exists inside the image | pass |
+| 42 | Supervisor's own availability check inside the image | `None` |
+| 43 | Public `$PORT` is owned by `/usr/local/bin/caddy` (socket→pid) | pass |
+| 44 | `127.0.0.1:8000` owned by `uvicorn`, `127.0.0.1:8501` by `streamlit` | pass |
+| 45 | Image with the proxy removed refuses to start, nothing forked | exit 5 |
+| 46 | Proxy present but not executable refuses to start | exit 5 |
+| 47 | Idle memory before vs. after the correction | 177.0 → 175.0 MiB |
 
 ---
 
@@ -725,6 +843,21 @@ volume, all capabilities dropped and `no-new-privileges`.
 **The deploy log ends at `refusing to start: PORT is not set`.**
 Render sets `PORT` for every web service. Seeing this means the image was run
 somewhere that does not — pass `-e PORT=...` when running it locally.
+
+**The deploy log ends at `refusing to start: the proxy cannot be run (...)`.**
+Exit 5. The message names the path and the reason. The image is not
+serviceable — nothing at runtime puts a proxy there — so rebuild rather than
+restart, and read the build log: `Dockerfile.render` proves the same four
+properties at build time, so a build that succeeded and an image that fails
+this check means the binary did not survive the builder. See
+[§6.1](#61-the-proxy-executable-contract).
+
+**The deploy log says `proxy exited with code 127`.**
+This cannot happen any more, and if it does the image predates this correction.
+127 was the supervisor's own catch-all for "the child could not exec", raised
+for any of five unrelated reasons; the proxy is now checked before anything
+starts (exit 5) and a child that cannot exec exits 126 with a reason on stderr.
+Rebuild from a tree that contains `ARG CADDY_BINARY` in `Dockerfile.render`.
 
 **`refusing to start: the baked serving bundle did not verify`.**
 The image is not serviceable. Restarting will not help, because nothing at

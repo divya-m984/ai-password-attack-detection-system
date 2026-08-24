@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import os
 import re
 import sys
 from pathlib import Path
@@ -920,9 +921,306 @@ def test_the_supervisor_starts_the_proxy_from_the_baked_configuration(
 ) -> None:
     """One file, at a fixed path, copied into the image."""
     command = entrypoint.proxy_command()
-    assert command[0] == "caddy"
+    assert command[0] == entrypoint.PROXY_BINARY
     assert entrypoint.CADDYFILE in command
     assert entrypoint.CADDYFILE == "/etc/caddy/Caddyfile"
+
+
+# ---------------------------------------------------------------------------
+# The proxy executable contract
+#
+# The first real deployment of this image failed with `proxy exited with code
+# 127` and `No open ports detected on 0.0.0.0`. 127 was the supervisor's own
+# `os._exit` in the forked child: the proxy was the only one of the three
+# started by bare name through PATH, and every child-side failure -- the file
+# absent, the file not executable, the wrong architecture, no memory to map it
+# -- arrived as that one number with no reason attached.
+#
+# These tests hold both halves of the correction: no child is resolved through
+# PATH, and a proxy that cannot run is reported before anything is forked.
+# ---------------------------------------------------------------------------
+
+
+def test_no_child_is_started_by_a_name_resolved_through_path(
+    entrypoint: Any,
+) -> None:
+    """Every ``argv[0]`` is absolute.
+
+    PATH is an environment variable that the platform, the base image and an
+    operator with a dashboard can all change. Using it to locate a file whose
+    position this repository chose adds a way for the deployment to resolve onto
+    something other than what was reviewed, and no way for it to resolve onto
+    something better.
+    """
+    for command in (
+        entrypoint.api_command(),
+        entrypoint.dashboard_command(),
+        entrypoint.proxy_command(),
+        entrypoint.verify_bundle_command(),
+    ):
+        assert command[0].startswith("/"), command
+
+
+def test_the_supervisor_execs_without_a_path_search() -> None:
+    """``os.execv``, never ``os.execvp``.
+
+    Asserted over the source because the difference is one character and it is
+    the whole of the first half of this correction.
+    """
+    text = RENDER_ENTRYPOINT.read_text(encoding="utf-8")
+    assert "os.execv(" in text
+    assert "os.execvp(" not in text
+
+
+def test_a_relative_argv_is_refused_rather_than_searched_for(
+    entrypoint: Any,
+) -> None:
+    """And refused before ``fork``, so nothing is left behind by the refusal."""
+    child = entrypoint.Child("proxy", ["caddy", "run"])
+    with pytest.raises(ValueError, match="absolute path"):
+        child.start()
+    assert child.pid is None
+
+
+def test_the_image_and_the_supervisor_agree_on_the_proxy_path(
+    entrypoint: Any, render_dockerfile: str
+) -> None:
+    """The load-bearing cross-file contract of this whole milestone.
+
+    ``Dockerfile.render`` declares where the proxy binary lands and
+    ``render_entrypoint.py`` declares where it will exec one from. If those two
+    strings ever disagree the image builds, passes every check the build makes,
+    deploys, serves an API and a console, and then fails on the third process --
+    which is exactly what happened.
+    """
+    match = re.search(r"ARG CADDY_BINARY=(\S+)", render_dockerfile)
+    assert match is not None, "the Dockerfile must declare where the proxy lands"
+    assert match.group(1) == entrypoint.PROXY_BINARY
+    assert entrypoint.PROXY_BINARY.startswith("/")
+
+
+def test_the_build_places_the_proxy_at_the_declared_path(
+    render_dockerfile: str,
+) -> None:
+    """One COPY, from the pinned Caddy stage, to the declared destination."""
+    copies = [
+        instruction
+        for instruction in _instructions(render_dockerfile)
+        if instruction.startswith("COPY") and "--from=caddybin" in instruction
+    ]
+    assert len(copies) == 1
+    assert copies[0].endswith("${CADDY_BINARY}")
+    assert "--chown=root:root" in copies[0]
+
+
+def test_the_build_proves_the_proxy_runs_before_the_image_is_finished(
+    render_dockerfile: str,
+) -> None:
+    """Mode set rather than inherited, and the binary exercised by absolute path.
+
+    ``COPY --chown`` restates ownership but carries the source image's mode
+    through unexamined. Setting it here means the executable bit is a property
+    this file states, not one it hopes survived a builder it does not control.
+    """
+    proofs = [
+        instruction
+        for instruction in _instructions(render_dockerfile)
+        if instruction.startswith("RUN ") and "${CADDY_BINARY}" in instruction
+    ]
+    assert len(proofs) == 1
+    proof = proofs[0]
+    assert 'chmod 0755 "${CADDY_BINARY}"' in proof
+    assert 'chown root:root "${CADDY_BINARY}"' in proof
+    assert "root:root 755" in proof
+    assert '"${CADDY_BINARY}" version' in proof
+    # ...run as the unprivileged account, for whom the executable bit means
+    # something. Root may execute a file whose executable bits are all clear.
+    assert "setpriv" in proof
+    assert '--reuid="${APP_UID}"' in proof
+    # ...and the binary is never invoked by bare name anywhere in the build.
+    assert "caddy version" not in render_dockerfile.replace('"${CADDY_BINARY}"', "")
+
+
+def test_the_proxy_version_is_pinned_as_well_as_the_digest(
+    render_dockerfile: str,
+) -> None:
+    """A digest pins the bytes; this pins what the bytes are supposed to be.
+
+    The two are checked against each other at build time, so an image whose
+    digest silently resolved to a different Caddy fails the build rather than
+    the deployment.
+    """
+    version = re.search(r"ARG CADDY_VERSION=(\S+)", render_dockerfile)
+    image = re.search(r"ARG CADDY_IMAGE=(\S+)", render_dockerfile)
+    assert version is not None and image is not None
+    assert re.fullmatch(r"\d+\.\d+\.\d+", version.group(1)), version.group(1)
+    # The pinned tag is a minor-series tag, so the pinned version must be in it.
+    series = image.group(1).split("@")[0].removeprefix("caddy:").removesuffix("-alpine")
+    assert version.group(1).startswith(f"{series}.")
+    assert 'grep -q "^v${CADDY_VERSION} "' in render_dockerfile
+
+
+def test_the_runtime_stage_redeclares_the_arguments_it_uses(
+    render_dockerfile: str,
+) -> None:
+    """A global ARG not re-declared in a stage expands to the empty string there.
+
+    For a COPY destination that would place the proxy binary at a path nobody
+    named, in an image that still builds.
+    """
+    instructions = _instructions(render_dockerfile)
+    index = next(
+        i for i, line in enumerate(instructions) if line.endswith("AS runtime")
+    )
+    runtime = instructions[index:]
+    for name in ("CADDY_BINARY", "CADDY_VERSION"):
+        assert f"ARG {name}" in runtime, name
+
+
+def test_the_proxy_availability_check_passes_for_a_real_executable(
+    entrypoint: Any, tmp_path: Path
+) -> None:
+    """The positive case, so the negatives below mean something."""
+    binary = tmp_path / "caddy"
+    binary.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    binary.chmod(0o755)
+    assert entrypoint.proxy_unavailable_reason(str(binary)) is None
+
+
+def test_a_missing_proxy_executable_is_reported_rather_than_raised(
+    entrypoint: Any, tmp_path: Path
+) -> None:
+    """One of the faults the old catch-all could not distinguish, at unit scale.
+
+    Previously any of them reached ``os.execvp`` inside a forked child and came
+    back as ``exited with code 127``. Each must now be a sentence naming itself.
+    """
+    reason = entrypoint.proxy_unavailable_reason(str(tmp_path / "absent"))
+    assert reason is not None
+    assert "does not exist" in reason
+
+
+def test_a_proxy_that_is_not_executable_is_reported(
+    entrypoint: Any, tmp_path: Path
+) -> None:
+    """A build that lost the executable bit produces an image that looks right."""
+    binary = tmp_path / "caddy"
+    binary.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    binary.chmod(0o644)
+    reason = entrypoint.proxy_unavailable_reason(str(binary))
+    assert reason is not None
+    assert "not executable" in reason
+
+
+def test_a_directory_where_the_proxy_should_be_is_reported(
+    entrypoint: Any, tmp_path: Path
+) -> None:
+    """A directory satisfies ``os.access(X_OK)`` and is not a program."""
+    (tmp_path / "caddy").mkdir()
+    reason = entrypoint.proxy_unavailable_reason(str(tmp_path / "caddy"))
+    assert reason is not None
+    assert "not a regular file" in reason
+
+
+def test_a_proxy_that_cannot_actually_exec_is_reported(
+    entrypoint: Any, tmp_path: Path
+) -> None:
+    """The case an existence-and-mode check alone would miss.
+
+    A dynamically-linked binary whose ELF interpreter is absent -- an Alpine
+    build dropped into a Debian image, say -- fails ``exec`` with ``ENOENT``:
+    it reports itself missing while sitting right there with its executable bit
+    set. Simulated here with an interpreter that does not exist, which fails the
+    same way for the same reason.
+    """
+    binary = tmp_path / "caddy"
+    binary.write_text("#!/nonexistent/loader\n", encoding="utf-8")
+    binary.chmod(0o755)
+    reason = entrypoint.proxy_unavailable_reason(str(binary))
+    assert reason is not None
+    assert "could not be executed" in reason
+
+
+def test_a_proxy_that_runs_but_fails_is_reported(
+    entrypoint: Any, tmp_path: Path
+) -> None:
+    """Executable and broken is still not serviceable."""
+    binary = tmp_path / "caddy"
+    binary.write_text("#!/bin/sh\nexit 3\n", encoding="utf-8")
+    binary.chmod(0o755)
+    reason = entrypoint.proxy_unavailable_reason(str(binary))
+    assert reason is not None
+    assert "exited with code 3" in reason
+
+
+def test_the_unavailability_reason_exposes_no_environment_or_account(
+    entrypoint: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Sanitized: the reviewed path and the operating system's reason, nothing else.
+
+    Nothing this process writes reaches an HTTP client -- it is PID 1 and serves
+    no requests -- but a startup diagnostic that dumped ``PATH`` or the account
+    it runs as would be one copy-paste away from a public issue tracker.
+    """
+    monkeypatch.setenv("PAD_RENDER_MARKER", "must-not-appear")
+    reason = entrypoint.proxy_unavailable_reason(str(tmp_path / "absent"))
+    assert reason is not None
+    assert "must-not-appear" not in reason
+    assert "PATH" not in reason
+    for leak in (str(os.getuid()), "environ", "Traceback"):
+        assert leak not in reason
+
+
+def test_an_unrunnable_proxy_refuses_to_start_before_anything_is_forked(
+    entrypoint: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The negative end-to-end case: a clean exit with the intended code.
+
+    ``run`` must return :data:`EXIT_PROXY_UNAVAILABLE` without verifying a
+    bundle, without forking, and without installing a signal handler -- because
+    a container that is not going to serve should cost a second, not a
+    ninety-second cold start that ends with nothing listening.
+    """
+    monkeypatch.setenv("PORT", "19081")
+    monkeypatch.setattr(entrypoint, "PROXY_BINARY", str(tmp_path / "absent"))
+
+    def _never(*_: object, **__: object) -> None:  # pragma: no cover - must not run
+        raise AssertionError("nothing may be started when the proxy is unavailable")
+
+    monkeypatch.setattr(entrypoint, "verify_bundle", _never)
+    monkeypatch.setattr(entrypoint.os, "fork", _never)
+    monkeypatch.setattr(entrypoint.Supervisor, "__init__", _never)
+
+    assert entrypoint.run() == entrypoint.EXIT_PROXY_UNAVAILABLE
+
+
+def test_a_child_that_cannot_be_executed_is_described_as_such(
+    entrypoint: Any,
+) -> None:
+    """``exited with code 127`` was the whole of the original diagnosis.
+
+    A dedicated code for "could not be executed at all" keeps that number, and
+    its ambiguity, out of the deployment log entirely.
+    """
+    child = entrypoint.Child("proxy", [entrypoint.PROXY_BINARY])
+    child.status = entrypoint.CHILD_EXEC_FAILED << 8
+    assert "could not be executed" in child.describe_exit()
+    assert entrypoint.CHILD_EXEC_FAILED != 127
+
+
+def test_the_supervisor_still_distinguishes_every_failure_mode(
+    entrypoint: Any,
+) -> None:
+    """Six now, and the new one does not collide with the five that existed."""
+    codes = {
+        entrypoint.EXIT_OK,
+        entrypoint.EXIT_STARTUP_FAILED,
+        entrypoint.EXIT_BAD_PORT,
+        entrypoint.EXIT_BUNDLE_UNVERIFIED,
+        entrypoint.EXIT_CHILD_DIED,
+        entrypoint.EXIT_PROXY_UNAVAILABLE,
+    }
+    assert len(codes) == 6
 
 
 def test_the_supervisor_verifies_the_bundle_before_starting_anything(
