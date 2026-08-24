@@ -14,6 +14,15 @@ preparation job, the read-only serving state and the frozen scientific decisions
 are all unchanged, and deliberately so: a deployment that rebuilt the system
 differently would be publishing something the local verification never ran.
 
+**A single VPS is one of two prepared targets.**
+[`render-deployment.md`](render-deployment.md) describes the other: a single
+Render free web service running the same application as one container, adapted
+for a platform with no persistent disk and no private network between services.
+Neither replaces the other, and neither is deployed. Where the two overlap —
+the routing policy, the security headers, the CSP audit, the per-rule
+availability measurement — this document is the reference and that one links
+back to it.
+
 ---
 
 ## 1. The architecture
@@ -829,6 +838,7 @@ Check `docker system df`; it is usually build cache. `docker builder prune`.
 | Document | What it covers |
 |---|---|
 | [docker.md](docker.md) | The local containerized demonstration this builds on |
+| [render-deployment.md](render-deployment.md) | The other prepared target: one container on a Render free web service |
 | [api.md](api.md) | The serving contract, endpoints, limits, error codes |
 | [dashboard.md](dashboard.md) | The analyst console and its views |
 | [live-replay.md](live-replay.md) | The synthetic replay catalog and its limitations |

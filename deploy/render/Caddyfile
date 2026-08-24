@@ -1,0 +1,136 @@
+# The public boundary of the single-container Render deployment.
+#
+# This file is the whole of what the internet can reach. Everything behind it --
+# the detection service, the frozen serving bundle baked into the image -- is
+# bound to 127.0.0.1 inside one container's network namespace, so the only way in
+# is a route named here.
+#
+# It is the Render sibling of `deploy/caddy/Caddyfile`, and it deliberately keeps
+# the same policy: the console is public, the API is not. What differs is only
+# what the platform forces:
+#
+#   * the upstreams are loopback ports rather than Compose service names, because
+#     Render's free tier gives one container and no private network between two
+#     free services;
+#   * the listener is `:{$PORT}` rather than a site address, because Render
+#     assigns the port and terminates TLS at its own edge;
+#   * `auto_https off`, because there is no certificate for this process to
+#     obtain -- the public hostname is Render's and so is its certificate.
+#
+# WHY THE API IS NOT PUBLIC
+#
+# The dashboard's API client runs server-side, inside this container. A browser
+# never talks to the detection service, so proxying it would add public attack
+# surface that no part of the demonstration uses. `/api/v1/detect`,
+# `/api/v1/explain`, the replay controls and the system endpoints are all
+# reachable only from 127.0.0.1, which in this container means only from the
+# console process.
+#
+# The one exception is `/healthz`, below, and it exists because Render needs a
+# health check rather than because a viewer needs an API.
+{
+	# The admin API is off. Caddy binds it to loopback by default, but an
+	# unauthenticated endpoint that can rewrite the entire routing policy has no
+	# reason to be listening inside a container that reloads by redeploying.
+	admin off
+
+	# Render terminates TLS at its edge and forwards plain HTTP to $PORT. There is
+	# no hostname here for Caddy to obtain a certificate for, and leaving ACME
+	# enabled would mean a process trying, and failing, to solve a challenge for
+	# an address it does not own.
+	auto_https off
+}
+
+# ---------------------------------------------------------------------------
+# Response hardening, applied to every route.
+#
+# Kept identical in substance to the VPS deployment's snippet: the two files
+# front the same console, and a header offered on one deployment and not the
+# other would be a difference nobody decided.
+# ---------------------------------------------------------------------------
+(hardening) {
+	header {
+		# The proxy does not advertise what it is.
+		-Server
+
+		# A response typed text/plain is not to be executed as script because it
+		# happens to parse as one.
+		X-Content-Type-Options "nosniff"
+
+		# A full URL from this deployment is not sent to third-party origins.
+		Referrer-Policy "strict-origin-when-cross-origin"
+
+		# This console reads no sensor and no device. Denying them costs nothing
+		# and means a future dependency cannot quietly start asking.
+		Permissions-Policy "accelerometer=(), autoplay=(), camera=(), display-capture=(), encrypted-media=(), fullscreen=(self), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), midi=(), payment=(), usb=()"
+
+		# Framing is refused twice: the modern directive and the legacy header,
+		# because the browsers that honour only one of them are still out there.
+		X-Frame-Options "DENY"
+
+		# A CSP restricted to `frame-ancestors`, and restricted on purpose.
+		# Streamlit's client is a bundled single-page application that evaluates
+		# generated code and installs inline styles; a `script-src` or `style-src`
+		# policy tight enough to be worth having breaks the console outright, and
+		# one loose enough to keep it working ('unsafe-inline' 'unsafe-eval')
+		# claims a protection it does not provide. See docs/deployment.md for the
+		# audit behind this; docs/render-deployment.md does not repeat it.
+		Content-Security-Policy "frame-ancestors 'none'"
+
+		# HSTS is off by default even though Render serves this deployment over
+		# HTTPS, and that is a deliberate choice rather than an oversight. A free
+		# service lives at a `*.onrender.com` subdomain that the operator does not
+		# own; pinning a max-age there is a promise about somebody else's name.
+		# An operator who has attached a custom domain sets PAD_HSTS.
+		Strict-Transport-Security "{$PAD_HSTS:max-age=0}"
+	}
+
+	# Matched to the API's own ceiling (APISettings.max_request_bytes defaults to
+	# 1 MiB) rather than chosen independently. The service enforces its own limit
+	# regardless -- a ceiling that lives only in a proxy is not a ceiling when the
+	# service is run any other way.
+	request_body {
+		max_size 1MB
+	}
+}
+
+# ---------------------------------------------------------------------------
+# The one public listener.
+#
+# `{$PORT}` has no default on purpose. Render always sets it, and the entrypoint
+# validates it before this process is started; a default here would let a
+# misconfigured container come up quietly on a port nobody asked for.
+# ---------------------------------------------------------------------------
+:{$PORT} {
+	import hardening
+
+	log {
+		output stdout
+		format json
+	}
+
+	# Compression skips websocket upgrades, so the Streamlit stream is unaffected.
+	encode zstd gzip
+
+	# The health check, and the only API route the internet can reach.
+	#
+	# `/health` is liveness: it reports that the process is answering, and reads
+	# no artifact, no model and no filesystem. Its body is a status and the
+	# package version, both of which the console already shows on its own page.
+	# `/ready` is deliberately NOT proxied -- it names which scientific component
+	# is unavailable and why, which is diagnostic detail for an operator reading
+	# logs rather than for an anonymous caller.
+	@health path /healthz
+	handle @health {
+		rewrite * /health
+		reverse_proxy 127.0.0.1:8000
+	}
+
+	# Everything else to the console. Caddy proxies the `/_stcore/stream`
+	# websocket upgrade without further configuration and passes the original Host
+	# header through, which is what keeps Streamlit's own origin and XSRF checks
+	# satisfied behind two proxies -- Render's edge and this one.
+	handle {
+		reverse_proxy 127.0.0.1:8501
+	}
+}

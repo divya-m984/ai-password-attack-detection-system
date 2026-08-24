@@ -279,6 +279,10 @@ def test_the_dockerignore_re_excludes_local_and_generated_content(
     assert pattern in dockerignore
 
 
+#: Everything either deployment's build may read, enumerated. The last three
+#: entries are used only by ``Dockerfile.render``; the VPS image copies none of
+#: them, and ``test_the_dockerfile_copies_only_from_the_admitted_allowlist``
+#: below checks that this widening did not widen what the VPS image takes.
 ADMITTED_CONTEXT = frozenset(
     {
         "pyproject.toml",
@@ -288,11 +292,14 @@ ADMITTED_CONTEXT = frozenset(
         "configs",
         ".streamlit",
         "scripts/prepare_demo_bundle.py",
+        "scripts/verify_serving_bundle.py",
+        "scripts/render_entrypoint.py",
+        "deploy/render/Caddyfile",
     }
 )
 
 
-def test_the_dockerignore_admits_exactly_the_expected_seven_paths(
+def test_the_dockerignore_admits_exactly_the_expected_paths(
     dockerignore: list[str],
 ) -> None:
     """The whole build context, enumerated.

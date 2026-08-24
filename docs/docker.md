@@ -556,6 +556,7 @@ cannot fire on any live request.
 ## Related documents
 
 * [deployment.md](deployment.md) — putting this stack behind a public boundary
+* [render-deployment.md](render-deployment.md) — the same application as one container on a Render free web service
 * [api.md](api.md) — the detection service, its startup, and the serving bundle
 * [dashboard.md](dashboard.md) — the analyst console
 * [live-replay.md](live-replay.md) — the synthetic replay demonstration

@@ -353,7 +353,7 @@ promotes, or rethresholds on any finding.
 
 ---
 
-## Phase 6 status — Serving layer, analyst console, live replay, containers, deployment perimeter (Milestones 1–5A)
+## Phase 6 status — Serving layer, analyst console, live replay, containers, deployment perimeter, Render adapter (Milestones 1–5B)
 
 Phase 6 turns the finished engine into something runnable. Milestone 1 added the
 HTTP serving layer; Milestone 2 added the SOC analyst console on top of it;
@@ -712,10 +712,63 @@ internet → 80/443 → proxy (Caddy) → dashboard → api → frozen serving b
 
 Full reference: **[docs/deployment.md](docs/deployment.md)**.
 
+### Milestone 5B — the Render free-tier adapter
+
+A **second** deployment target, and it does not replace the first. The Compose
+deployment above is untouched; this adapts the same application to a **Render
+free web service**, where there is no persistent disk and no private network
+between two free services.
+
+```
+internet → Render edge (TLS) → $PORT → caddy ─┬→ 127.0.0.1:8501  console
+                                              └→ 127.0.0.1:8000  api → baked bundle
+```
+
+- **One service, not two.** Two free services would double instance-hour
+  consumption against a shared allowance, give a viewer two independent cold
+  starts, and — because free services get no private network — force the
+  detection API to be *publicly exposed* so the console could call it. One
+  container keeps the API on loopback, which is the same routing policy the VPS
+  deployment enforces with a proxy.
+- **The bundle is baked at build time, and that deviation is stated rather than
+  glossed.** `Dockerfile` argues an image must not ship a trained model; Render
+  Free removes the remedy that argument relies on, because there is no volume for
+  a preparation job to write into and preparing at container start would mean
+  fitting models on every cold start. So a discarded build stage runs the *same*
+  tracked pipeline script over the *same* tracked configurations, verification
+  fails the **build** rather than the deployment, and the result is copied
+  root-owned into a runtime layer that cannot write it.
+- **Proved identical, not asserted identical.** Every fingerprint the serving
+  manifest carries — champion lock, model content, calibration, threshold,
+  feature catalog, fusion selection, and the STACKED state
+  `134f66ce…f96272a` — matches the Compose preparation's, and all three bundle
+  payload files are byte-for-byte the same. A slow test runs both preparations
+  and compares them.
+- **A supervisor, not a shell.** `scripts/render_entrypoint.py` is PID 1,
+  standard library only, and blocks in `select` on a signal self-pipe with no
+  timeout — no busy loop, no systemd, no supervisord. It starts the proxy *last*,
+  so nothing listens on the public port until both processes behind it are
+  serving. Any child exiting stops the container; SIGTERM stops all three in
+  reverse order and the API's lifespan completes.
+- **`$PORT` is read, never guessed.** Missing, empty, non-numeric, zero and
+  out-of-range values are all refused with exit code 2, and `10000` appears
+  nowhere in the image, the supervisor, or the routing policy.
+- **Measured under the real ceiling.** In a read-only container limited to
+  512 MiB with no swap: **198.3 MiB peak** (38.7 %), **zero OOM events**, and a
+  **92.2 s cold start at 0.1 CPU**. Every verdict was identical at 0.1 and
+  0.5 CPU — throttling changes how long a demonstration takes, not what the
+  detector decides.
+- **Nothing persists, and nothing needs to.** The container runs with no volume
+  and no bind mount, and a restart preserves the champion while clearing replay
+  history — which the console already says it will.
+
+Full reference: **[docs/render-deployment.md](docs/render-deployment.md)**.
+
 ### What Phase 6 does not claim yet
 
-The service and the console run locally, in containers, and now have a verified
-public perimeter. **Neither is deployed.** Neither is authenticated, and neither
+The service and the console run locally, in containers, have a verified public
+perimeter, and have an adapter for a Render free service. **Nothing is deployed:
+no server exists, and no Render service exists.** Neither is authenticated, and neither
 is rate-limited: rate limiting was deliberately deferred rather than built on a
 third-party proxy module that would replace a pinned official image with one this
 project has to patch itself, and [docs/deployment.md](docs/deployment.md) §15
@@ -823,14 +876,18 @@ Real data (CSV / JSONL)
 ```
 .
 ├── Dockerfile              builder + runtime base + api/dashboard targets
+├── Dockerfile.render       build -> prepare -> verify -> prune -> one runtime image
 ├── compose.yaml            prepare -> api -> dashboard  (local)
 ├── compose.deploy.yaml     + proxy, ports un-published  (server overlay)
+├── render.yaml             Render blueprint: one free web service, nothing else
 ├── .dockerignore           exclude everything, re-admit what the build needs
 ├── .env.deploy.example     deployment template: hostname, ports, routing policy
 ├── deploy/
-│   └── caddy/
-│       ├── Caddyfile           default policy: the console only
-│       └── Caddyfile.api-docs  optional: + the API's read-only surface
+│   ├── caddy/
+│   │   ├── Caddyfile           default policy: the console only
+│   │   └── Caddyfile.api-docs  optional: + the API's read-only surface
+│   └── render/
+│       └── Caddyfile           single-container policy: console + /healthz
 ├── configs/
 │   ├── data/
 │   │   ├── synthetic-testing.yaml     small dataset for CI
@@ -855,6 +912,7 @@ Real data (CSV / JSONL)
 │   ├── data-dictionary.md
 │   ├── dataset-splitting.md
 │   ├── deployment.md           the public perimeter, and how to stand one up
+│   ├── render-deployment.md    the single-container Render free-tier adapter
 │   ├── docker.md               the local containerized demonstration
 │   ├── feature-catalog.md      generated from the catalog
 │   ├── feature-contract.md
@@ -867,6 +925,8 @@ Real data (CSV / JSONL)
 ├── scripts/
 │   ├── verify.sh
 │   ├── prepare_demo_bundle.py  the offline pipeline the container runs once
+│   ├── verify_serving_bundle.py verifies a prepared bundle; decides nothing
+│   ├── render_entrypoint.py    PID 1 for the single-container deployment
 │   ├── start_demo.sh           thin wrapper around `docker compose up`
 │   ├── stop_demo.sh            thin wrapper around `docker compose down`
 │   └── deploy/
@@ -969,7 +1029,9 @@ docker compose --env-file .env.deploy \
   -f compose.yaml -f compose.deploy.yaml up -d --build
 ```
 
-See **[docs/deployment.md](docs/deployment.md)**. Nothing is deployed today.
+See **[docs/deployment.md](docs/deployment.md)** for the single-VPS perimeter and
+**[docs/render-deployment.md](docs/render-deployment.md)** for the Render
+free-tier adapter. Nothing is deployed today.
 
 ---
 
@@ -1390,6 +1452,7 @@ See [docs/privacy-model.md](docs/privacy-model.md) and
 | [docs/live-replay.md](docs/live-replay.md) | The synthetic replay demonstration: scenarios, determinism, run lifecycle, bounds |
 | [docs/docker.md](docs/docker.md) | The local containerized demonstration: images, the preparation job, volumes, security model |
 | [docs/deployment.md](docs/deployment.md) | The public perimeter: proxy, routing policy, TLS, firewall, update/rollback, per-rule availability |
+| [docs/render-deployment.md](docs/render-deployment.md) | The Render free-tier adapter: one service, build-time bundle, supervision, `$PORT`, memory |
 
 ---
 

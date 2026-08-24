@@ -20,6 +20,18 @@
 !.streamlit
 !scripts/prepare_demo_bundle.py
 
+# --- and, for Dockerfile.render only, the single-container deployment ------
+#
+# The VPS image copies none of these; they are admitted so the Render build has
+# a supervisor to run as PID 1, a verifier to fail the build on an unverifiable
+# bundle, and a proxy configuration it cannot bind-mount because Render has no
+# bind mounts. Named individually rather than admitting `scripts/` or `deploy/`
+# wholesale, so a future file in either directory is still outside the context
+# until somebody names it here.
+!scripts/verify_serving_bundle.py
+!scripts/render_entrypoint.py
+!deploy/render/Caddyfile
+
 # --- and nothing generated, cached, local, or private, even under those ----
 #
 # The re-admissions above are directories, so their contents come with them.

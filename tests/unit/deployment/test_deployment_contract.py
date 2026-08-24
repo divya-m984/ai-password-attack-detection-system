@@ -759,12 +759,25 @@ def test_the_check_yaml_hook_is_narrowed_and_not_disarmed() -> None:
     assert not re.search(r"^\s*\S+:\s*!", BASE_COMPOSE.read_text("utf-8"), re.MULTILINE)
 
 
-def test_the_deployment_directory_never_enters_the_application_build_context() -> None:
-    """``.dockerignore`` is an allowlist, and ``deploy/`` is not on it.
+def test_the_vps_routing_policy_never_enters_a_build_context() -> None:
+    """``.dockerignore`` is an allowlist, and ``deploy/caddy/`` is not on it.
 
-    The routing policy is mounted into the proxy at run time from the checkout.
-    Baking it into the application image would put a public routing decision
-    inside an artifact whose provenance is meant to be scientific only.
+    This deployment's routing policy is bind-mounted into the proxy at run time
+    from the checkout, and an operator picks between the two policies by editing
+    an untracked environment file. Baking either into an image would make the
+    choice a rebuild, and would put a public routing decision inside an artifact
+    whose provenance is meant to be scientific only.
+
+    ``deploy/render/Caddyfile`` **is** admitted, and the difference is not a
+    weakening of this rule but a platform that removes its premise: Render Free
+    offers no bind mount, so the single-container deployment has nowhere else to
+    read a routing policy from. That image publishes one route and has no second
+    policy to choose between, which is why the argument above does not apply to
+    it. ``tests/unit/deployment/test_render_contract.py`` pins its routing.
+
+    Neither directory's *contents* are admitted wholesale either: the entry is
+    one named file, so a policy added beside it stays outside every build
+    context until somebody names it too.
     """
     admitted = {
         line.strip().removeprefix("!")
@@ -772,7 +785,10 @@ def test_the_deployment_directory_never_enters_the_application_build_context() -
         if line.strip().startswith("!")
     }
     assert "deploy" not in admitted
-    assert not any(entry.startswith("deploy/") for entry in admitted)
+    assert not any(entry.startswith("deploy/caddy") for entry in admitted)
+    assert admitted & {entry for entry in admitted if entry.startswith("deploy/")} == {
+        "deploy/render/Caddyfile"
+    }
     assert "scripts/prepare_demo_bundle.py" in admitted
     assert not any(entry.startswith("scripts/deploy") for entry in admitted)
 
