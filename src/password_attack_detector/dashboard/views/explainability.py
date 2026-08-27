@@ -62,11 +62,14 @@ def render(
     client: DashboardAPIClient, status: Connectivity, session: DashboardSession
 ) -> None:
     """Render the explainability view."""
-    st.markdown(section_title("Model attribution"), unsafe_allow_html=True)
-    st.caption(
-        "Computed by the service from the frozen model's own published arrays. "
-        "Nothing is fitted, no operating point is read or moved, and no "
-        "approximation is published in place of an exact decomposition."
+    st.markdown(section_title("Explainability"), unsafe_allow_html=True)
+    st.markdown(
+        '<div class="pad-intro">'
+        "See which factors most influenced the model's decision for a "
+        "given authentication window. The explanation is computed from "
+        "the frozen model's own parameters."
+        "</div>",
+        unsafe_allow_html=True,
     )
 
     if not require_backend(status):
@@ -156,24 +159,25 @@ def _render_explanation(document: ExplanationDocument) -> None:
         f"features; no feature *value* is disclosed."
     )
 
-    if document.reconstruction_residual is not None:
-        st.markdown(
-            f"**Reconstruction residual** `{document.reconstruction_residual:.3e}`"
-        )
-        st.caption(
-            "decision value - (baseline + sum of the full decomposition), "
-            "checked by the service against its declared tolerance before this "
-            "document was built. An attribution that does not add up is refused "
-            "rather than published with a caveat."
-        )
+    with st.expander("Advanced verification"):
+        if document.reconstruction_residual is not None:
+            st.markdown(
+                f"**Reconstruction residual** `{document.reconstruction_residual:.3e}`"
+            )
+            st.caption(
+                "decision value - (baseline + sum of the full decomposition), "
+                "checked by the service against its declared tolerance before this "
+                "document was built. An attribution that does not add up is refused "
+                "rather than published with a caveat."
+            )
 
 
 def _render_method_documentation() -> None:
     """Render what the exact methods are, and what attribution does not claim."""
-    st.markdown(section_title("Method"), unsafe_allow_html=True)
+    st.markdown(section_title("Explanation methods"), unsafe_allow_html=True)
     for name, description in _METHODS.items():
         st.markdown(f"**{escape_text(name)}**  \n{escape_text(description)}")
-    st.markdown(section_title("What this does not say"), unsafe_allow_html=True)
+    st.markdown(section_title("Important caveats"), unsafe_allow_html=True)
     st.markdown(
         '<div class="pad-note">'
         "A contribution describes how a fitted function decomposes over the "

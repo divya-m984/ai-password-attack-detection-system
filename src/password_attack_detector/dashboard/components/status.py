@@ -29,7 +29,6 @@ from password_attack_detector.dashboard.contracts import (
     ReadinessDocument,
 )
 from password_attack_detector.dashboard.formatting import (
-    escape_text,
     format_component_state,
     format_detail,
     format_reason_code,
@@ -40,6 +39,7 @@ __all__ = [
     "Connectivity",
     "connectivity",
     "render_component_table",
+    "render_header_status",
     "render_problem",
     "require_backend",
 ]
@@ -165,23 +165,19 @@ def render_component_table(readiness: ReadinessDocument) -> None:
 
 
 def render_header_status(status: Connectivity) -> str:
-    """Return the header's connectivity badges as one HTML fragment."""
+    """Return the header's connectivity badges as one HTML fragment.
+
+    Rendered in sentence case rather than shouted. These two badges are on every
+    screen at all times; ``ONLINE READY`` reads as an alarm, and the state they
+    report is the unremarkable one.
+    """
     if not status.online:
         return (
-            badge("API offline", color="#f85149")
+            badge("Offline", color="#f85149", caps=False)
             + " "
-            + badge("System unknown", color="#8b949e")
+            + badge("Unknown", color="#8b949e", caps=False)
         )
-    online = badge("API online", color="#3fb950")
+    online = badge("Online", color="#3fb950", caps=False)
     if status.ready:
-        return f"{online} {badge('System ready', color='#3fb950')}"
-    return f"{online} {badge('System not ready', color='#f0883e')}"
-
-
-def render_version_caption(status: Connectivity, api_url: str) -> None:
-    """Render the small line naming the service and where it was reached."""
-    version = status.health.version if status.health is not None else "unknown"
-    st.caption(
-        f"Service {escape_text(version)} · {escape_text(api_url)} · "
-        f"dashboard session only"
-    )
+        return f"{online} {badge('Ready', color='#3fb950', caps=False)}"
+    return f"{online} {badge('Not ready', color='#f0883e', caps=False)}"

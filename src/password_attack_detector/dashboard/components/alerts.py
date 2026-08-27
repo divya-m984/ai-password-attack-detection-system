@@ -53,6 +53,7 @@ _MUTED = "#8b949e"
 def render_anchor_result(anchor: AnchorDetection) -> None:
     """Render one anchor's three-layer verdict, then the overall assessment."""
     st.markdown(section_title("Detection result"), unsafe_allow_html=True)
+    st.markdown("")
     st.markdown(
         f'<span class="pad-mono">anchor {escape_text(anchor.anchor_event_id)} · '
         f"{escape_text(format_timestamp(anchor.anchor_event_time))}</span>",
@@ -71,7 +72,7 @@ def render_anchor_result(anchor: AnchorDetection) -> None:
 def _render_rule_layer(anchor: AnchorDetection) -> None:
     """Render the Phase 4 rule verdict."""
     rule = anchor.rule
-    st.markdown("**RULE DETECTION**")
+    st.markdown("**Rule detection**")
     st.markdown(
         badge(format_verdict(rule.flagged), color=_flag_color(rule.flagged)),
         unsafe_allow_html=True,
@@ -112,7 +113,7 @@ def _render_rule_layer(anchor: AnchorDetection) -> None:
 def _render_ml_layer(anchor: AnchorDetection) -> None:
     """Render the frozen champion's verdict."""
     ml = anchor.ml
-    st.markdown("**ML DETECTION**")
+    st.markdown("**ML detection**")
     if not ml.available:
         st.markdown(badge("unavailable", color="#f85149"), unsafe_allow_html=True)
         st.caption(format_reason_code(ml.unavailable_reason))
@@ -142,7 +143,7 @@ def _render_ml_layer(anchor: AnchorDetection) -> None:
 def _render_hybrid_layer(anchor: AnchorDetection) -> None:
     """Render the fused verdict, or why there is not one."""
     hybrid = anchor.hybrid
-    st.markdown("**HYBRID DETECTION**")
+    st.markdown("**Hybrid detection**")
     if not hybrid.available:
         st.markdown(badge("unavailable", color=_MUTED), unsafe_allow_html=True)
         st.caption(format_reason_code(hybrid.unavailable_reason))
@@ -171,7 +172,7 @@ def render_final_assessment(anchor: AnchorDetection) -> None:
     it is the fusion strategy's job, it has already been done on the server, and
     a second opinion rendered here would be the dashboard detecting.
     """
-    st.markdown(section_title("Final security assessment"), unsafe_allow_html=True)
+    st.markdown(section_title("Security assessment"), unsafe_allow_html=True)
     severity = anchor.severity
     color = SEVERITY_COLORS.get(severity, _MUTED)
     st.markdown(badge(f"severity: {severity}", color=color), unsafe_allow_html=True)

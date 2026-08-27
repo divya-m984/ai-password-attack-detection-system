@@ -362,9 +362,9 @@ def _text(app: AppTest) -> str:
 
 
 def test_the_page_is_in_the_navigation() -> None:
-    """Ten views since this milestone, and the label is stable."""
+    """Eleven views since the UI polish, and the label is stable."""
     assert PAGE in PAGES
-    assert len(PAGES) == 10
+    assert len(PAGES) == 11
 
 
 @pytest.mark.usefixtures("wired")
@@ -385,7 +385,11 @@ def test_the_page_offers_the_catalog_and_the_pace_vocabulary() -> None:
     assert "Scenario" in labels
     assert "Pace" in labels
     pace = next(item for item in app.selectbox if item.label == "Pace")
-    assert list(pace.options) == list(PACES)
+    # The control reads ``Normal``; the value on the wire is ``normal``. The
+    # capitalisation is a ``format_func`` over the service's own vocabulary, so
+    # the pace this page can express is still exactly the pace it can send.
+    assert list(pace.options) == [item.capitalize() for item in PACES]
+    assert pace.value in PACES
 
 
 def test_starting_requires_an_explicit_press(wired: DashboardAPIClient) -> None:
@@ -465,7 +469,7 @@ def test_a_completed_run_renders_a_summary_derived_from_its_records(
     assert session.replay.run is not None
     assert session.replay.run.terminal
     text = _text(app)
-    assert "Demo run summary" in text
+    assert "Replay summary" in text
     summary = session.replay.run.summary
     assert summary.detection_count == len(session.replay.records)
     assert summary.detection_count == session.replay.run.event_count
@@ -533,7 +537,7 @@ def test_the_replay_run_appears_on_the_pages_that_integrate_it(
     _settle(app, wired)
 
     for page, marker in (
-        ("Security Alerts", "Server-side demo replay run"),
+        ("Alerts", "Server-side demo replay run"),
         ("Authentication Events", "Server-side demo replay run"),
         ("Overview", "Attached demo replay run"),
     ):
@@ -556,7 +560,7 @@ def test_analytics_never_merges_the_two_sources_silently(
     next(item for item in app.button if "Start" in str(item.label)).click().run()
     _settle(app, wired)
 
-    app.sidebar.radio[0].set_value("Attack Analytics").run()
+    app.sidebar.radio[0].set_value("Analytics").run()
     assert not app.exception
     sources = [item for item in app.radio if item.label == "Data source"]
     assert sources, "the source selector is offered once there are two sources"

@@ -90,6 +90,16 @@ def _render(page: str) -> AppTest:
     return app
 
 
+def _raw_html(app: AppTest) -> list[str]:
+    """Return every block the page emitted as HTML rather than as Markdown.
+
+    These are the blocks rendered with ``unsafe_allow_html``, which Streamlit
+    passes through without running the Markdown parser over them -- so anything
+    in one that *looks* like Markdown reaches the viewer as punctuation.
+    """
+    return [str(item.value) for item in app.markdown if "<div" in str(item.value)]
+
+
 def _text(app: AppTest) -> str:
     """Return every rendered string, for the sweeps below."""
     parts: list[str] = []
@@ -121,28 +131,58 @@ def test_every_view_renders_without_an_exception(page: str, wired: None) -> None
     assert not app.exception, [str(item.value) for item in app.exception]
 
 
-def test_the_header_reports_the_api_online_and_the_system_ready(
+def test_the_overview_shows_system_readiness_and_no_offline_state(
     wired: None,
 ) -> None:
     """The two facts an analyst checks before believing anything else."""
     app = _render("Overview")
     rendered = _text(app)
-    assert "API online" in rendered
-    assert "System ready" in rendered
-    assert "API offline" not in rendered
+    assert "System" in rendered
+    assert "Ready" in rendered
+    assert "Not ready" not in rendered
 
 
 def test_the_overview_reports_the_real_layers_and_strategy(wired: None) -> None:
     """Operational values come from the API, never from a constant."""
     rendered = _text(_render("Overview"))
-    assert "Stacked (fitted meta-learner)" in rendered
-    assert "rules, model, hybrid" in rendered
+    assert "layers active" in rendered
+    assert "Stacked" in rendered
 
 
 def test_the_overview_invents_no_global_event_total(wired: None) -> None:
     """With no session activity there is nothing to count, and nothing is."""
     rendered = _text(_render("Overview"))
-    assert "No detection activity in this dashboard session." in rendered
+    assert "No activity in this browser session yet." in rendered
+
+
+def test_the_overview_states_the_product_name_once(wired: None) -> None:
+    """One product heading per screen.
+
+    The global header carries the name; the landing page renders directly below
+    it and adds none of its own. Two ``pad-title`` blocks means the page has
+    grown a second masthead saying almost the same words as the first.
+    """
+    app = _render("Overview")
+    titles = [block for block in _raw_html(app) if 'class="pad-title"' in block]
+    assert len(titles) == 1, titles
+
+
+def test_the_overview_prose_renders_no_literal_markdown(wired: None) -> None:
+    """Emphasis in a raw-HTML block would reach the viewer as asterisks.
+
+    Every default block this page emits with ``unsafe_allow_html`` is swept,
+    not only the one the bug was in: the trap is a property of the rendering
+    mode rather than of that one constant.
+    """
+    for block in _raw_html(_render("Overview")):
+        assert "**" not in block, block
+
+
+def test_the_console_navigates_through_exactly_one_control(wired: None) -> None:
+    """The sidebar groups are drawn, not wired: one widget holds one page."""
+    app = _render("Overview")
+    assert len(app.sidebar.radio) == 1
+    assert list(app.sidebar.radio[0].options) == list(PAGES)
 
 
 def test_the_system_view_reports_the_frozen_model_and_rules(wired: None) -> None:
@@ -152,7 +192,9 @@ def test_the_system_view_reports_the_frozen_model_and_rules(wired: None) -> None
     rendered = _text(app)
     # The loaded stacker's identity is published as a digest, in a code block.
     assert any(len(str(item.value)) == 64 for item in app.code)
-    assert "0.5.0" in rendered or "Package version" in rendered
+    # The system table is a dataframe; check section titles are present.
+    assert "System health" in rendered
+    assert "Model details" in rendered
 
 
 def test_the_comparison_view_names_the_served_stacked_state(wired: None) -> None:
@@ -169,14 +211,14 @@ def test_the_drift_view_loads_no_report_and_fabricates_no_figure(
     app = _render("Drift Monitoring")
     assert not app.exception
     rendered = _text(app)
-    assert "No serving drift report loaded" in rendered
+    assert "No drift report" in rendered
     assert "PSI >= 0.10" in rendered.replace("≥", ">=")
     assert "PSI >= 0.25" in rendered.replace("≥", ">=")
 
 
 def test_the_session_pages_start_empty_and_say_so(wired: None) -> None:
     """No seeded data, on any of the three session-backed views."""
-    for page in ("Security Alerts", "Attack Analytics", "Authentication Events"):
+    for page in ("Alerts", "Analytics", "Authentication Events"):
         rendered = _text(_render(page))
         assert "session" in rendered.lower()
         assert "12,503" not in rendered
@@ -197,8 +239,8 @@ def test_every_view_survives_the_api_being_down(page: str, offline: None) -> Non
 def test_the_header_reports_the_api_offline(offline: None) -> None:
     """The badge is the first thing a viewer looks at, so it must be right."""
     rendered = _text(_render("Overview"))
-    assert "API offline" in rendered
-    assert "API online" not in rendered
+    assert "Offline" in rendered
+    assert "Online" not in rendered
 
 
 def test_an_offline_page_shows_no_traceback(offline: None) -> None:
@@ -240,7 +282,7 @@ def test_an_offline_detection_console_disables_submission(offline: None) -> None
 def test_the_drift_view_needs_no_backend_at_all(offline: None) -> None:
     """It documents a contract; there is no live figure for the API to supply."""
     rendered = _text(_render("Drift Monitoring"))
-    assert "No serving drift report loaded" in rendered
+    assert "No drift report" in rendered
 
 
 # ---------------------------------------------------------------------------
@@ -261,7 +303,7 @@ def test_the_console_recovers_when_the_api_comes_back(
     monkeypatch.setenv("PAD_DASHBOARD_REQUEST_TIMEOUT_SECONDS", "2")
     down = AppTest.from_file(APP, default_timeout=120)
     down.run()
-    assert "API offline" in _text(down)
+    assert "Offline" in _text(down)
 
     original = DashboardAPIClient.__init__
 
@@ -280,8 +322,8 @@ def test_the_console_recovers_when_the_api_comes_back(
     up = AppTest.from_file(APP, default_timeout=120)
     up.run()
     rendered = _text(up)
-    assert "API online" in rendered
-    assert "System ready" in rendered
+    assert "Online" in rendered
+    assert "Ready" in rendered
 
 
 # ---------------------------------------------------------------------------
@@ -309,10 +351,10 @@ def test_a_template_submits_through_the_api_and_populates_the_session(
     rendered = _text(app)
     assert "Detection #1 complete." in rendered
     # The three layers, kept apart on the page as they are in the response.
-    assert "RULE DETECTION" in rendered
-    assert "ML DETECTION" in rendered
-    assert "HYBRID DETECTION" in rendered
-    assert "Final security assessment" in rendered
+    assert "Rule detection" in rendered
+    assert "ML detection" in rendered
+    assert "Hybrid detection" in rendered
+    assert "Security assessment" in rendered
 
 
 def test_a_submitted_detection_reaches_the_alerts_and_analytics_views(
@@ -325,11 +367,11 @@ def test_a_submitted_detection_reaches_the_alerts_and_analytics_views(
     next(item for item in app.button if item.key == "scenario-spraying").click().run()
     next(item for item in app.button if item.label == "Run detection").click().run()
 
-    app.sidebar.radio[0].set_value("Security Alerts").run()
+    app.sidebar.radio[0].set_value("Alerts").run()
     assert not app.exception
     assert "No detection activity in this dashboard session." not in _text(app)
 
-    app.sidebar.radio[0].set_value("Attack Analytics").run()
+    app.sidebar.radio[0].set_value("Analytics").run()
     assert not app.exception
     # The caption names its source since Milestone 3: with a replay run also
     # possible, "1 detection(s)" alone would no longer say whose.
@@ -359,7 +401,7 @@ def test_a_batch_submission_records_one_alert_per_anchor(wired: None) -> None:
     assert [item.sequence for item in history] == list(range(1, events + 1))
     assert f"Scored {events} anchors in one window" in _text(app)
 
-    app.sidebar.radio[0].set_value("Attack Analytics").run()
+    app.sidebar.radio[0].set_value("Analytics").run()
     text = _text(app)
     assert f"{events} detection(s)." in text
     assert "This dashboard session (manual submissions)" in text

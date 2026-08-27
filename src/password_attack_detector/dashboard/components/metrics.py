@@ -21,6 +21,8 @@ from password_attack_detector.dashboard.contracts import (
 from password_attack_detector.dashboard.formatting import (
     SEVERITY_COLORS,
     format_fusion_strategy,
+    format_fusion_strategy_short,
+    format_model_family,
 )
 from password_attack_detector.dashboard.state import DetectionRecord
 from password_attack_detector.dashboard.theme import card
@@ -44,7 +46,7 @@ def render_posture_cards(
     with columns[0]:
         st.markdown(
             card(
-                "API",
+                "System",
                 "Online" if status.online else "Offline",
                 accent=_GREEN if status.online else _RED,
             ),
@@ -68,32 +70,28 @@ def render_posture_cards(
     with columns[2]:
         st.markdown(
             card(
-                "Detection layers",
-                f"{len(layers)} of 3" if system is not None else "—",
+                "Detection",
+                f"{len(layers)} layers active" if system is not None else "—",
                 accent=_ACCENT,
-                note=", ".join(layers) if layers else "none reported",
             ),
             unsafe_allow_html=True,
         )
     with columns[3]:
         st.markdown(
             card(
-                "Fusion strategy",
-                format_fusion_strategy(
+                "Hybrid strategy",
+                format_fusion_strategy_short(
                     None if system is None else system.fusion_strategy
                 ),
                 accent=_fusion_accent(system),
-                note=_fusion_note(system),
             ),
             unsafe_allow_html=True,
         )
     with columns[4]:
         st.markdown(
             card(
-                "Enabled rules",
-                "—"
-                if system is None
-                else f"{system.enabled_rule_count} of {system.registered_rule_count}",
+                "Rules",
+                "—" if system is None else f"{system.enabled_rule_count} configured",
                 accent=_ACCENT,
             ),
             unsafe_allow_html=True,
@@ -102,16 +100,11 @@ def render_posture_cards(
         available = model is not None and model.available
         st.markdown(
             card(
-                "Champion model",
-                (model.model_family or "—")
+                "Model",
+                format_model_family(model.model_family)
                 if available and model is not None
                 else "Unavailable",
                 accent=_ACCENT if available else _RED,
-                note=(
-                    (model.task or "")
-                    if available and model is not None
-                    else "no frozen champion loaded"
-                ),
             ),
             unsafe_allow_html=True,
         )
@@ -170,13 +163,13 @@ def render_session_cards(history: Sequence[DetectionRecord]) -> None:
     worst = _worst_severity(history)
     with columns[0]:
         st.markdown(
-            card("Session detections", str(len(history)), accent=_ACCENT),
+            card("Detections", str(len(history)), accent=_ACCENT),
             unsafe_allow_html=True,
         )
     with columns[1]:
         st.markdown(
             card(
-                "With a flag raised",
+                "Flagged",
                 str(len(flagged)),
                 accent=_AMBER if flagged else _GREEN,
             ),
@@ -185,7 +178,7 @@ def render_session_cards(history: Sequence[DetectionRecord]) -> None:
     with columns[2]:
         st.markdown(
             card(
-                "Highest severity seen",
+                "Highest severity",
                 worst or "—",
                 accent=SEVERITY_COLORS.get(worst or "none", _MUTED),
             ),
@@ -195,10 +188,11 @@ def render_session_cards(history: Sequence[DetectionRecord]) -> None:
         strategies = {item.hybrid_strategy for item in history if item.hybrid_strategy}
         st.markdown(
             card(
-                "Hybrid strategy seen",
-                format_fusion_strategy(next(iter(strategies))) if strategies else "—",
+                "Strategy",
+                format_fusion_strategy_short(next(iter(strategies)))
+                if strategies
+                else "—",
                 accent=_ACCENT if strategies else _MUTED,
-                note="as reported per detection",
             ),
             unsafe_allow_html=True,
         )

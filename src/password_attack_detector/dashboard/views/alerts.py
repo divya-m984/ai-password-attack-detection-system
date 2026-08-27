@@ -34,7 +34,7 @@ def render(
     client: DashboardAPIClient, status: Connectivity, session: DashboardSession
 ) -> None:
     """Render this session's alert history."""
-    st.markdown(section_title("Current dashboard session"), unsafe_allow_html=True)
+    st.markdown(section_title("Session alerts"), unsafe_allow_html=True)
     st.info(
         "These are the detections performed from **this browser session**. "
         "There is no persistent alert store yet, so nothing here survives a "
@@ -48,22 +48,22 @@ def render(
             "No detection activity in this dashboard session. Submit a window "
             "on the **Detection Console** to populate this page."
         )
+        st.markdown("")
+        st.caption("Run a **Live Replay** to see detections here.")
         # The manual history is empty and the demo run's is a different thing
         # entirely, so the page carries on to it rather than returning: a viewer
         # who has just watched a replay should not be told there is nothing here.
         _render_replay_alerts(session)
         return
 
-    st.markdown(section_title("Session results"), unsafe_allow_html=True)
+    st.markdown(section_title("Detection results"), unsafe_allow_html=True)
     only_flagged = st.checkbox(
         "Show only results where a layer raised a flag", value=False
     )
     history = session.flagged_history if only_flagged else tuple(session.history)
     render_alert_history(history)
 
-    st.markdown(
-        section_title("Highest severity in this session"), unsafe_allow_html=True
-    )
+    st.markdown(section_title("Highest severity"), unsafe_allow_html=True)
     ranked = sorted(session.history, key=lambda item: -severity_rank(item.severity))
     for item in ranked[:3]:
         color = SEVERITY_COLORS.get(item.severity, "#8b949e")

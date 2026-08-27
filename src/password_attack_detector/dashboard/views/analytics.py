@@ -39,7 +39,7 @@ def render(
     client: DashboardAPIClient, status: Connectivity, session: DashboardSession
 ) -> None:
     """Render the analytics view."""
-    st.markdown(section_title("Current dashboard session"), unsafe_allow_html=True)
+    st.markdown(section_title("Session analytics"), unsafe_allow_html=True)
     st.info(
         "Every figure below is computed from detections this console has "
         "actually seen — windows submitted from this browser session, or the "
@@ -65,27 +65,27 @@ def render(
 
     left, right = st.columns(2)
     with left:
-        st.markdown(section_title("Detections by severity"), unsafe_allow_html=True)
+        st.markdown(section_title("Severity distribution"), unsafe_allow_html=True)
         render_severity_chart(history)
         st.caption("Phase 4 ordinal severity, in the scale's own order.")
     with right:
-        st.markdown(section_title("Triggered rules"), unsafe_allow_html=True)
+        st.markdown(section_title("Most triggered rules"), unsafe_allow_html=True)
         render_rule_frequency_chart(history)
         st.caption("How often each rule fired across these windows.")
 
     lower_left, lower_right = st.columns(2)
     with lower_left:
-        st.markdown(section_title("Flags raised, by layer"), unsafe_allow_html=True)
+        st.markdown(section_title("Flags by detection layer"), unsafe_allow_html=True)
         render_layer_agreement_chart(history)
         st.caption(
             "Three independent counts. Not a stacked total: the layers are not "
             "parts of one quantity."
         )
     with lower_right:
-        st.markdown(section_title("Activity over sequence"), unsafe_allow_html=True)
+        st.markdown(section_title("Detection activity"), unsafe_allow_html=True)
         render_session_timeline(history)
 
-    st.markdown(section_title("Scenarios observed"), unsafe_allow_html=True)
+    st.markdown(section_title("Scenarios"), unsafe_allow_html=True)
     counts: dict[str, int] = {}
     for item in history:
         counts[item.scenario] = counts.get(item.scenario, 0) + 1

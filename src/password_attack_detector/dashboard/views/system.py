@@ -72,7 +72,7 @@ def _render_system(
     status: Connectivity,
 ) -> None:
     """Render service versions, enabled layers, and component readiness."""
-    st.markdown(section_title("System"), unsafe_allow_html=True)
+    st.markdown(section_title("System health"), unsafe_allow_html=True)
     rows: list[dict[str, str]] = []
     if version is not None:
         rows += [
@@ -127,21 +127,22 @@ def _render_system(
             )
     if rows:
         st.dataframe(rows, width="stretch", hide_index=True)
-    if system is not None and system.stacked_state_fingerprint:
-        st.markdown("**Loaded stacked state fingerprint**")
-        st.code(system.stacked_state_fingerprint, language="text")
-        st.caption(
-            "An identity for the fitted meta-learner this process loaded, so an "
-            "operator can confirm which stacker is live. Its parameters are not "
-            "published."
-        )
+    with st.expander("Scientific lineage"):
+        if system is not None and system.stacked_state_fingerprint:
+            st.markdown("**Loaded stacked state fingerprint**")
+            st.code(system.stacked_state_fingerprint, language="text")
+            st.caption(
+                "An identity for the fitted meta-learner this process loaded, so an "
+                "operator can confirm which stacker is live. Its parameters are not "
+                "published."
+            )
     if status.readiness is not None:
         render_component_table(status.readiness)
 
 
 def _render_model(model: ModelInfoDocument | None) -> None:
     """Render the frozen champion's identity, operating point, and lineage."""
-    st.markdown(section_title("Model"), unsafe_allow_html=True)
+    st.markdown(section_title("Model details"), unsafe_allow_html=True)
     if model is None:
         st.caption("Model information could not be read.")
         return
@@ -152,55 +153,59 @@ def _render_model(model: ModelInfoDocument | None) -> None:
             icon="⚠️",
         )
         return
-    st.dataframe(
-        [
-            {"Field": "Family", "Value": model.model_family or "—"},
-            {"Field": "Catalog model id", "Value": model.catalog_model_id or "—"},
-            {"Field": "Model id", "Value": model.model_id or "—"},
-            {"Field": "Task", "Value": model.task or "—"},
-            {"Field": "Score kind", "Value": model.score_kind or "—"},
-            {
-                "Field": "Calibrated",
-                "Value": "yes" if model.calibrated else "no",
-            },
-            {
-                "Field": "Decision threshold",
-                "Value": (
-                    "—"
-                    if model.decision_threshold is None
-                    else f"{model.decision_threshold:.6f}"
-                ),
-            },
-            {"Field": "Champion scope key", "Value": model.champion_scope_key or "—"},
-            {"Field": "Freeze record id", "Value": model.freeze_record_id or "—"},
-            {"Field": "Training run id", "Value": model.training_run_id or "—"},
-            {
-                "Field": "Validation selection id",
-                "Value": model.validation_selection_id or "—",
-            },
-            {
-                "Field": "Required feature schema",
-                "Value": model.required_feature_schema_version or "—",
-            },
-            {
-                "Field": "Category head",
-                "Value": "available" if model.category_head_available else "none",
-            },
-        ],
-        width="stretch",
-        hide_index=True,
-    )
-    st.caption(
-        "The threshold is published for transparency and is frozen. It cannot "
-        "be changed through the API and there is no control for it on this "
-        "console. No model parameter, artifact path, or environment value is "
-        "published, so none can be shown."
-    )
+    with st.expander("Full model identity"):
+        st.dataframe(
+            [
+                {"Field": "Family", "Value": model.model_family or "—"},
+                {"Field": "Catalog model id", "Value": model.catalog_model_id or "—"},
+                {"Field": "Model id", "Value": model.model_id or "—"},
+                {"Field": "Task", "Value": model.task or "—"},
+                {"Field": "Score kind", "Value": model.score_kind or "—"},
+                {
+                    "Field": "Calibrated",
+                    "Value": "yes" if model.calibrated else "no",
+                },
+                {
+                    "Field": "Decision threshold",
+                    "Value": (
+                        "—"
+                        if model.decision_threshold is None
+                        else f"{model.decision_threshold:.6f}"
+                    ),
+                },
+                {
+                    "Field": "Champion scope key",
+                    "Value": model.champion_scope_key or "—",
+                },
+                {"Field": "Freeze record id", "Value": model.freeze_record_id or "—"},
+                {"Field": "Training run id", "Value": model.training_run_id or "—"},
+                {
+                    "Field": "Validation selection id",
+                    "Value": model.validation_selection_id or "—",
+                },
+                {
+                    "Field": "Required feature schema",
+                    "Value": model.required_feature_schema_version or "—",
+                },
+                {
+                    "Field": "Category head",
+                    "Value": "available" if model.category_head_available else "none",
+                },
+            ],
+            width="stretch",
+            hide_index=True,
+        )
+        st.caption(
+            "The threshold is published for transparency and is frozen. It cannot "
+            "be changed through the API and there is no control for it on this "
+            "console. No model parameter, artifact path, or environment value is "
+            "published, so none can be shown."
+        )
 
 
 def _render_rules(rules: RuleCatalogDocument | None) -> None:
     """Render the full public rule catalog."""
-    st.markdown(section_title("Rules"), unsafe_allow_html=True)
+    st.markdown(section_title("Detection rules"), unsafe_allow_html=True)
     if rules is None:
         st.caption("The rule catalog could not be read.")
         return

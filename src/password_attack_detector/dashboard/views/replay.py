@@ -53,7 +53,7 @@ from password_attack_detector.dashboard.contracts import (
 from password_attack_detector.dashboard.formatting import (
     SEVERITY_COLORS,
     escape_text,
-    format_fusion_strategy,
+    format_fusion_strategy_short,
     format_reason_code,
     format_risk_score,
     format_timestamp,
@@ -108,6 +108,11 @@ _STATE_COLORS: Final[dict[str, str]] = {
 }
 
 
+def _pace_label(pace: str) -> str:
+    """Return a pace as a word for the control, the value left untouched."""
+    return pace.capitalize()
+
+
 def poll_interval(replay: ReplaySession) -> float | None:
     """Return how often to poll, or ``None`` when polling should stop.
 
@@ -126,12 +131,13 @@ def render(
 ) -> None:
     """Render the Live Replay page."""
     st.markdown(section_title("Live replay"), unsafe_allow_html=True)
-    st.info(
-        "Replays a **built-in synthetic scenario** through the same detection "
-        "path as the Detection Console: one fabricated event at a time, into "
-        "the running service, scored by the frozen rules, model and hybrid. "
-        "Nothing here contacts an external system, and no scenario can be "
-        "uploaded or edited.",
+    st.markdown(
+        '<div class="pad-intro">'
+        "Watch a synthetic scenario go through the real detection path, "
+        "step by step. Choose a scenario, start the replay, and see rules, "
+        "ML and hybrid fusion respond to each event."
+        "</div>",
+        unsafe_allow_html=True,
     )
     if not require_backend(status, needs_ready=False):
         return
@@ -210,6 +216,10 @@ def _render_controls(
             index=PACES.index(replay.selected_pace)
             if replay.selected_pace in PACES
             else PACES.index("normal"),
+            # Display only. The option *values* stay the service's own
+            # vocabulary -- ``normal`` is what goes on the wire -- and it is
+            # the label under the cursor that reads ``Normal``.
+            format_func=_pace_label,
             disabled=running,
             help=(
                 "Presentation timing only. The scenario's event times and every "
@@ -426,7 +436,7 @@ def _render_status_cards(run: ReplayRunDocument, replay: ReplaySession) -> None:
     columns = st.columns(6)
     values = (
         ("Scenario", run.scenario_name or run.scenario_id, _BLUE, ""),
-        ("Pace", run.pace or "—", _MUTED, "presentation timing only"),
+        ("Pace", run.pace or "—", _MUTED, ""),
         (
             "Status",
             run.state,
@@ -434,22 +444,22 @@ def _render_status_cards(run: ReplayRunDocument, replay: ReplaySession) -> None:
             format_reason_code(run.failure_reason) if run.failure_reason else "",
         ),
         (
-            "Events emitted",
+            "Progress",
             f"{run.emitted_count} / {run.event_count}",
             _BLUE,
-            "of this scenario's own timeline",
+            "",
         ),
         (
-            "Fusion strategy",
-            format_fusion_strategy(strategy) if strategy else "—",
+            "Fusion",
+            format_fusion_strategy_short(strategy) if strategy else "—",
             _GREEN if strategy else _MUTED,
-            "frozen; the service chose it, not this page",
+            "",
         ),
         (
-            "Current severity",
+            "Severity",
             severity or "—",
             SEVERITY_COLORS.get(severity or "", _MUTED),
-            "the most recent scored step",
+            "",
         ),
     )
     for column, (label, value, accent, note) in zip(columns, values, strict=True):
@@ -463,7 +473,7 @@ def _render_status_cards(run: ReplayRunDocument, replay: ReplaySession) -> None:
 
 def _render_timeline(replay: ReplaySession) -> None:
     """Render the run's timeline: the latest steps in colour, then the table."""
-    st.markdown(section_title("Replay timeline"), unsafe_allow_html=True)
+    st.markdown(section_title("Timeline"), unsafe_allow_html=True)
     if not replay.records:
         st.caption(
             "No steps scored yet. The first record appears as soon as the "
@@ -525,7 +535,7 @@ def _verdict_cell(flagged: bool | None) -> str:
 
 def _render_chart(replay: ReplaySession) -> None:
     """Render the layer activity chart, from the run's own records."""
-    st.markdown(section_title("Layer activity across the run"), unsafe_allow_html=True)
+    st.markdown(section_title("Detection activity"), unsafe_allow_html=True)
     render_replay_activity_chart(replay.detection_records())
     st.caption(
         "Cumulative flags per layer against the run's step number. Three "
@@ -538,7 +548,7 @@ def _render_summary(
     run: ReplayRunDocument, scenarios: Sequence[ScenarioDocument]
 ) -> None:
     """Render the finished run's summary, as the service computed it."""
-    st.markdown(section_title("Demo run summary"), unsafe_allow_html=True)
+    st.markdown(section_title("Replay summary"), unsafe_allow_html=True)
     summary = run.summary
     st.markdown(
         f"{badge(run.state, color=_STATE_COLORS.get(run.state, _MUTED))} "
@@ -548,19 +558,15 @@ def _render_summary(
     )
 
     rows = [
-        {"Measure": "Events emitted", "Value": str(run.emitted_count)},
-        {
-            "Measure": "Detection windows processed",
-            "Value": str(summary.detection_count),
-        },
-        {"Measure": "Rule-flagged steps", "Value": str(summary.rule_flagged_count)},
-        {"Measure": "Model-flagged steps", "Value": str(summary.ml_flagged_count)},
-        {"Measure": "Hybrid-flagged steps", "Value": str(summary.hybrid_flagged_count)},
+        {"Measure": "Events processed", "Value": str(run.emitted_count)},
+        {"Measure": "Rule detections", "Value": str(summary.rule_flagged_count)},
+        {"Measure": "ML detections", "Value": str(summary.ml_flagged_count)},
+        {"Measure": "Hybrid detections", "Value": str(summary.hybrid_flagged_count)},
         {"Measure": "Highest severity", "Value": summary.highest_severity or "—"},
         {
-            "Measure": "Frozen fusion strategy",
+            "Measure": "Fusion",
             "Value": ", ".join(
-                format_fusion_strategy(item) for item in summary.fusion_strategies
+                format_fusion_strategy_short(item) for item in summary.fusion_strategies
             )
             or "—",
         },

@@ -33,6 +33,8 @@ __all__ = [
     "escape_text",
     "format_component_state",
     "format_fusion_strategy",
+    "format_fusion_strategy_short",
+    "format_model_family",
     "format_model_score",
     "format_reason_code",
     "format_risk_score",
@@ -138,6 +140,33 @@ def format_fusion_strategy(strategy: str | None) -> str:
         "and_gate": "AND gate",
         "stacked": "Stacked (fitted meta-learner)",
     }.get(strategy, strategy)
+
+
+def format_fusion_strategy_short(strategy: str | None) -> str:
+    """Return a fusion strategy as a concise human-readable label for cards."""
+    if strategy is None:
+        return _ABSENT
+    return {
+        "or_gate": "OR Gate",
+        "and_gate": "AND Gate",
+        "stacked": "Stacked",
+    }.get(strategy, strategy)
+
+
+def format_model_family(family: str | None) -> str:
+    """Return a model family as a human-readable label for cards.
+
+    Converts internal identifiers like ``logistic_regression`` to title-cased
+    prose like ``Logistic Regression`` for prominent display.  The internal
+    value is unchanged in technical details.
+    """
+    if not family:
+        return _ABSENT
+    return {
+        "logistic_regression": "Logistic Regression",
+        "random_forest": "Random Forest",
+        "gradient_boosting": "Gradient Boosting",
+    }.get(family, family.replace("_", " ").title())
 
 
 def format_component_state(state: str) -> str:

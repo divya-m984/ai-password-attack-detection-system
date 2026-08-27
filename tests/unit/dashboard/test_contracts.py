@@ -14,6 +14,7 @@ side.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import pytest
@@ -31,7 +32,11 @@ from password_attack_detector.api.schemas import (
     VersionResponse,
 )
 from password_attack_detector.dashboard import contracts
-from password_attack_detector.dashboard.components.header import PAGES
+from password_attack_detector.dashboard.components.header import (
+    ADVANCED_PAGES,
+    PAGES,
+    PRIMARY_PAGES,
+)
 from password_attack_detector.dashboard.scenarios import (
     AUTHENTICATION_METHODS,
     AUTHENTICATION_OUTCOMES,
@@ -247,24 +252,75 @@ def test_every_navigation_label_has_a_view() -> None:
     assert list(VIEWS) == list(PAGES)
 
 
-def test_the_navigation_offers_the_ten_declared_areas() -> None:
+def test_the_navigation_offers_the_eleven_declared_areas() -> None:
     """The labels are stable: documentation and demo scripts refer to them.
 
-    Ten since Milestone 3. "Live Replay" sits beside the Detection Console
-    deliberately: the two are the same act at two scales.
+    Eleven since the UI polish pass. Primary views first, then advanced,
+    then About System.
     """
     assert PAGES == (
         "Overview",
-        "Detection Console",
         "Live Replay",
-        "Authentication Events",
-        "Security Alerts",
-        "Attack Analytics",
-        "Rule vs ML vs Hybrid",
+        "Alerts",
+        "Analytics",
         "Explainability",
         "Drift Monitoring",
+        "Detection Console",
+        "Authentication Events",
+        "Rule vs ML vs Hybrid",
         "System & Model",
+        "About System",
     )
+
+
+def test_the_navigation_groups_partition_the_navigation() -> None:
+    """Primary, advanced and About are the whole of it, in that order."""
+    assert (*PRIMARY_PAGES, *ADVANCED_PAGES, "About System") == PAGES
+    assert not set(PRIMARY_PAGES) & set(ADVANCED_PAGES)
+
+
+def test_the_sidebar_group_headings_sit_on_the_group_boundaries() -> None:
+    """The stylesheet draws the headings; the ordinals must match the groups.
+
+    The grouping is CSS over one radio rather than three radios, which keeps
+    navigation to a single value -- and makes the position of each heading a
+    number in a stylesheet. That number is the thing that can silently rot when
+    a view is added, so it is asserted against the groups it is meant to sit on
+    rather than trusted.
+    """
+    from password_attack_detector.dashboard.theme import STYLESHEET
+
+    found = {
+        heading: int(ordinal)
+        for ordinal, heading in re.findall(
+            r'nth-child\((\d+)\)::before \{\s*content: "([A-Z]+)";',
+            STYLESHEET,
+        )
+    }
+    assert found == {
+        "PRIMARY": 1,
+        "ADVANCED": len(PRIMARY_PAGES) + 1,
+        "ABOUT": len(PRIMARY_PAGES) + len(ADVANCED_PAGES) + 1,
+    }
+    # And the last group is the single About page, so nothing falls below it.
+    assert len(PAGES) == len(PRIMARY_PAGES) + len(ADVANCED_PAGES) + 1
+
+
+def test_the_overview_prose_carries_no_literal_markdown_markers() -> None:
+    """The intro block is raw HTML, so Markdown emphasis would render literally.
+
+    ``st.markdown(..., unsafe_allow_html=True)`` on a block that is already HTML
+    does not run the Markdown parser over it: ``**rule engine**`` reaches the
+    page as four asterisks around the words. This is the constant that bug was
+    in, and this is the assertion that keeps it out.
+    """
+    from password_attack_detector.dashboard.views.overview import (
+        _WHAT_THIS_SYSTEM_DOES,
+    )
+
+    assert "**" not in _WHAT_THIS_SYSTEM_DOES
+    assert "__" not in _WHAT_THIS_SYSTEM_DOES
+    assert "<strong>" in _WHAT_THIS_SYSTEM_DOES
 
 
 def test_every_view_is_callable_with_the_one_signature() -> None:

@@ -42,6 +42,7 @@ from password_attack_detector.dashboard.config import (
 from password_attack_detector.dashboard.state import DashboardSession
 from password_attack_detector.dashboard.theme import STYLESHEET
 from password_attack_detector.dashboard.views import (
+    about,
     alerts,
     analytics,
     comparison,
@@ -71,15 +72,16 @@ View = Callable[[DashboardAPIClient, Connectivity, DashboardSession], None]
 #: a test asserts the two agree, so a renamed label cannot leave a blank page.
 VIEWS: Final[dict[str, View]] = {
     "Overview": overview.render,
-    "Detection Console": detection.render,
     "Live Replay": replay.render,
-    "Authentication Events": events.render,
-    "Security Alerts": alerts.render,
-    "Attack Analytics": analytics.render,
-    "Rule vs ML vs Hybrid": comparison.render,
+    "Alerts": alerts.render,
+    "Analytics": analytics.render,
     "Explainability": explainability.render,
     "Drift Monitoring": drift.render,
+    "Detection Console": detection.render,
+    "Authentication Events": events.render,
+    "Rule vs ML vs Hybrid": comparison.render,
     "System & Model": system.render,
+    "About System": about.render,
 }
 
 

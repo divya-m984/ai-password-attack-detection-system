@@ -47,12 +47,17 @@ def render(
     client: DashboardAPIClient, status: Connectivity, session: DashboardSession
 ) -> None:
     """Render the drift monitoring view."""
-    st.markdown(section_title("Serving drift status"), unsafe_allow_html=True)
+    st.markdown(section_title("Drift monitoring"), unsafe_allow_html=True)
     st.info(
-        "**No serving drift report loaded.** The serving API publishes no drift "
-        "endpoint in this milestone, so there is no live figure to display and "
-        "none is estimated here.",
+        "No drift report is available for this demo session.",
         icon="📉",
+    )
+    st.markdown(
+        '<div class="pad-intro">'
+        "Drift monitoring checks whether live authentication patterns are "
+        "moving away from the data used to establish the model baseline."
+        "</div>",
+        unsafe_allow_html=True,
     )
     st.caption(
         "Drift is computed offline by the `ml drift` command against a "
@@ -92,7 +97,7 @@ def render(
             unsafe_allow_html=True,
         )
 
-    st.markdown(section_title("What is monitored"), unsafe_allow_html=True)
+    st.markdown(section_title("How drift is measured"), unsafe_allow_html=True)
     st.markdown(
         """
 A drift check compares the distribution of each **transformed model input**
@@ -114,7 +119,7 @@ Population Stability Index per column.
         """.strip()
     )
 
-    st.markdown(section_title("Why nothing is shown above"), unsafe_allow_html=True)
+    st.markdown(section_title("Why no live figure is shown"), unsafe_allow_html=True)
     st.markdown(
         '<div class="pad-note">'
         "This console will not derive a drift figure from the windows submitted "

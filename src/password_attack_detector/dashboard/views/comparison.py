@@ -72,19 +72,19 @@ def render(
 
     left, right = st.columns([0.45, 0.55])
     with left:
-        st.markdown(section_title("Detection architecture"), unsafe_allow_html=True)
+        st.markdown(section_title("How detection works"), unsafe_allow_html=True)
         st.markdown(_DIAGRAM, unsafe_allow_html=True)
         st.caption(
             "Every stage runs on the server. This console renders what the "
             "pipeline returned and computes no part of it."
         )
     with right:
-        st.markdown(section_title("Layers in this deployment"), unsafe_allow_html=True)
+        st.markdown(section_title("Detection layers"), unsafe_allow_html=True)
         _render_layer_table(system, session)
 
     _render_hybrid_panel(system)
 
-    st.markdown(section_title("Flags raised in this session"), unsafe_allow_html=True)
+    st.markdown(section_title("Session flag comparison"), unsafe_allow_html=True)
     if not session.history:
         st.caption(
             "No detection activity in this dashboard session. This chart "
@@ -110,28 +110,19 @@ def _render_layer_table(
             "Layer": "Rule-based",
             "Available": _available(system, "rule"),
             "Flagged (session)": counts["rule"],
-            "Role": (
-                "Deterministic, auditable conditions over point-in-time "
-                "behaviour. Every flag names the rules that fired."
-            ),
+            "Role": "Known suspicious patterns matched against authentication behaviour",
         },
         {
             "Layer": "ML-based",
             "Available": _available(system, "ml"),
             "Flagged (session)": counts["ml"],
-            "Role": (
-                "A frozen champion applied at a frozen operating point. Catches "
-                "shapes no rule was written for."
-            ),
+            "Role": "Patterns learned from historical data, applied at a frozen operating point",
         },
         {
             "Layer": "Hybrid fusion",
             "Available": _available(system, "hybrid"),
             "Flagged (session)": counts["hybrid"],
-            "Role": (
-                "The strategy validation selected before the locked evaluation. "
-                "This is what the deployment decides on."
-            ),
+            "Role": "Combines rule and ML signals into the final deployment decision",
         },
     ]
     st.dataframe(rows, width="stretch", hide_index=True)
@@ -151,7 +142,7 @@ def _available(system: SystemStatusDocument | None, layer: str) -> str:
 
 def _render_hybrid_panel(system: SystemStatusDocument | None) -> None:
     """Render what the hybrid arm is, in this deployment, and why."""
-    st.markdown(section_title("Active hybrid strategy"), unsafe_allow_html=True)
+    st.markdown(section_title("Hybrid strategy"), unsafe_allow_html=True)
     if system is None:
         st.caption("The system status could not be read.")
         return

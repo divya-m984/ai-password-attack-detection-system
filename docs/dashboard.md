@@ -89,16 +89,37 @@ src/password_attack_detector/dashboard/
 │   └── replay.py     where replay data appears on a page that is not Live Replay
 └── views/
     ├── overview.py        Overview
-    ├── detection.py       Detection Console
     ├── replay.py          Live Replay
-    ├── events.py          Authentication Events
-    ├── alerts.py          Security Alerts
-    ├── analytics.py       Attack Analytics
-    ├── comparison.py      Rule vs ML vs Hybrid
+    ├── alerts.py          Alerts
+    ├── analytics.py       Analytics
     ├── explainability.py  Explainability
     ├── drift.py           Drift Monitoring
-    └── system.py          System & Model
+    ├── detection.py       Detection Console (advanced)
+    ├── events.py          Authentication Events (advanced)
+    ├── comparison.py      Rule vs ML vs Hybrid (advanced)
+    ├── system.py          System & Model (advanced)
+    └── about.py           About System
 ```
+
+### Navigation architecture
+
+Navigation is split into three groups:
+
+**Primary** -- the views a non-technical viewer uses: Overview, Live Replay,
+Alerts, Analytics, Explainability, Drift Monitoring.
+
+**Advanced** -- technical and debugging views: Detection Console, Authentication
+Events, Rule vs ML vs Hybrid, System & Model.
+
+**About** -- a static project summary.
+
+All eleven views dispatch through a single Streamlit radio widget, keeping the
+dispatch deterministic and testable. The groups are *visual*: the stylesheet
+draws a `PRIMARY` / `ADVANCED` / `ABOUT` heading above the first option of each
+group. Splitting the control into three radios would mean three selections and a
+fourth piece of state deciding which one is the live answer, and that ambiguity
+is precisely what a navigation must not have. The heading positions are ordinals
+in the stylesheet, so a test pins them to `PRIMARY_PAGES` and `ADVANCED_PAGES`.
 
 ### Why `views/` and not `pages/`
 
@@ -110,7 +131,7 @@ a second navigation beside the real one, listing the same views under filenames
 and calling their render functions with no arguments.
 
 Every view exposes one `render(client, status, session)` function. One signature
-for all ten, so no view acquires its own way of reaching the backend; a test
+for all eleven, so no view acquires its own way of reaching the backend; a test
 asserts the signature and asserts that the dispatch table's keys are exactly the
 navigation labels.
 
@@ -199,35 +220,49 @@ report, and the report is exactly what the page needs to show.
 
 ## 5. The ten views
 
-| View | What it shows | Backend needed |
-| --- | --- | --- |
-| **Overview** | Posture cards, readiness, architecture, champion, rule summary, session activity, attached demo run | yes |
-| **Detection Console** | Templates, event builder, window, JSON preview, submit, result | yes to submit |
-| **Live Replay** | A server-side synthetic scenario, replayed step by step | yes |
-| **Authentication Events** | The window composed in this session, and a demo run's emitted steps | no |
-| **Security Alerts** | This session's detection results, and a demo run's flagged steps | no |
-| **Attack Analytics** | Charts over this session's results, a demo run's, or both — behind a source selector | no |
-| **Rule vs ML vs Hybrid** | The three layers, the architecture diagram, the active strategy | yes |
-| **Explainability** | Per-anchor model attribution via `POST /api/v1/explain` | yes |
-| **Drift Monitoring** | The drift contract and its thresholds | no |
-| **System & Model** | `/version`, `/system/status`, `/model/info`, `/rules` | yes |
+| View | Group | What it shows | Backend needed |
+| --- | --- | --- | --- |
+| **Overview** | Primary | Status cards, CTA, session activity, technical details in expander | yes |
+| **Live Replay** | Primary | A server-side synthetic scenario, replayed step by step | yes |
+| **Alerts** | Primary | This session's detection results, and a demo run's flagged steps | no |
+| **Analytics** | Primary | Charts over this session's results, a demo run's, or both | no |
+| **Explainability** | Primary | Per-anchor model attribution via `POST /api/v1/explain` | yes |
+| **Drift Monitoring** | Primary | The drift contract and its thresholds | no |
+| **Detection Console** | Advanced | Templates, event builder, window, JSON preview, submit, result | yes to submit |
+| **Authentication Events** | Advanced | The window composed in this session, and a demo run's emitted steps | no |
+| **Rule vs ML vs Hybrid** | Advanced | The three layers, the architecture diagram, the active strategy | yes |
+| **System & Model** | Advanced | `/version`, `/system/status`, `/model/info`, `/rules` | yes |
+| **About System** | About | Project summary, architecture, capabilities, limitations | no |
 
 Navigation labels are stable: the documentation, the tests, and any demo script
 refer to a view by its label.
 
 ### Overview
 
-Behaves like a SOC landing page, with every operational value read live from the
-API — API status, readiness, active layers, the frozen fusion strategy, the
-enabled rule count, the champion family.
+A calm landing page designed for a first-time viewer. The hierarchy is:
+
+1. **Six status cards** — System, Detection, Fusion, Rules, Model, Demo — in
+   human-readable language (e.g. "Logistic Regression", "Stacked", "3 layers
+   active").
+2. **Primary CTA** — "Start a live demo" navigates to Live Replay.
+3. **What this system does** — one paragraph explaining three-layer detection.
+4. **Recent activity** — session cards, or "No activity in this browser session
+   yet."
+5. **Advanced system details** — component table, architecture, model identity,
+   rule catalog, all inside an expander.
+
+The page renders **no heading of its own**. The product name and its one-line
+description are the global header's, the page sits directly beneath it, and a
+second near-identical title would say the same thing twice on one screen. A test
+asserts exactly one `pad-title` block is present when the Overview is rendered.
+
+Its prose blocks are emitted as HTML rather than Markdown, and Streamlit does not
+run the Markdown parser over a block given to it as raw HTML — so `**emphasis**`
+in one reaches the viewer as four asterisks. Emphasis there is `<strong>`, and a
+test sweeps every raw-HTML block the default Overview emits for a literal `**`.
 
 It deliberately shows **no global event or alert total**. There is no persistent
 event store and no alert database yet, so any such figure would be invented.
-Where a console would normally put "12,503 events today", this page puts the
-session's own count, labelled as the session's own count, and with no session
-activity it says:
-
-> No detection activity in this dashboard session.
 
 ### Detection Console
 
