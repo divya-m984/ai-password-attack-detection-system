@@ -242,7 +242,7 @@ def test_the_runtime_and_packaging_versions_agree() -> None:
     project = tomllib.loads(
         (_repo_root() / "pyproject.toml").read_text(encoding="utf-8")
     )["project"]
-    assert project["version"] == __version__ == "0.5.0"
+    assert project["version"] == __version__ == "0.6.0"
 
 
 def test_the_cli_reports_the_release_version() -> None:

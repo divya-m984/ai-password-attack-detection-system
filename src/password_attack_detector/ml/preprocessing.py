@@ -68,6 +68,7 @@ __all__ = [
     "FittedPreprocessor",
     "NumericImputation",
     "ScalingStatistic",
+    "TransformableFrame",
     "TransformedMatrix",
     "fit_preprocessor",
 ]
@@ -134,18 +135,21 @@ def _quantize(value: float) -> float:
 
 
 @runtime_checkable
-class FeatureFrame(Protocol):
-    """The rows preprocessing is allowed to see.
+class TransformableFrame(Protocol):
+    """The rows a **fitted** preprocessor may be applied to.
 
     Deliberately narrower than
     :class:`~password_attack_detector.ml.dataset.SplitDataset`, which satisfies
     it structurally.  Nothing here exposes a label, a campaign, or supervised
     eligibility, so this module cannot read one even by accident -- the boundary
     is in the type, not in a reviewer's memory.
-    """
 
-    @property
-    def split(self) -> MLSplit: ...
+    It carries **no split** either, and that absence is the point.  Applying a
+    frozen state changes no fitted statistic, so it does not need to know which
+    experimental population the rows came from -- and live serving traffic came
+    from none.  A live batch is therefore transformable without having to claim
+    a split it does not belong to.
+    """
 
     @property
     def feature_names(self) -> tuple[str, ...]: ...
@@ -155,6 +159,19 @@ class FeatureFrame(Protocol):
 
     @property
     def feature_matrix(self) -> tuple[tuple[Any, ...], ...]: ...
+
+
+@runtime_checkable
+class FeatureFrame(TransformableFrame, Protocol):
+    """The rows preprocessing may be **fitted** on.
+
+    A transformable frame that also knows which split it is, because fitting is
+    the operation that must refuse every split but one -- see
+    :data:`~password_attack_detector.ml.enums.FIT_ELIGIBLE_SPLITS`.
+    """
+
+    @property
+    def split(self) -> MLSplit: ...
 
 
 # ---------------------------------------------------------------------------
@@ -453,14 +470,15 @@ class FittedPreprocessor(BaseModel):
 
     # -- transform ----------------------------------------------------------
 
-    def transform(self, frame: FeatureFrame) -> TransformedMatrix:
+    def transform(self, frame: TransformableFrame) -> TransformedMatrix:
         """Return *frame* encoded by this frozen state.
 
-        Accepts any split: transforming validation, test, or holdout rows is the
-        normal case, and none of it changes a fitted statistic -- there is no
-        assignment to ``self`` anywhere below.  What it does check is that the
-        frame is the shape this state was fitted for: the same raw features, in
-        the same order, canonically sorted.
+        Accepts any split, and accepts a frame that names none: transforming
+        validation, test, holdout, or live serving rows is the normal case, and
+        none of it changes a fitted statistic -- there is no assignment to
+        ``self`` anywhere below.  What it does check is that the frame is the
+        shape this state was fitted for: the same raw features, in the same
+        order, canonically sorted.
 
         Raises:
             ModelTrainingError: on a feature-order mismatch, a missing or extra

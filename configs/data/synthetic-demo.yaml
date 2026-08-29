@@ -1,0 +1,102 @@
+# Synthetic dataset configuration for the containerized demonstration.
+#
+# This is the event stream the one-shot `prepare` service generates before the
+# API starts. It exists because a container image cannot ship a frozen champion:
+# `artifacts/` and `models/` are untracked, a trained model is not a source
+# artifact, and a serving process must never fit anything at startup. So the
+# deployment builds its own scientific state, offline, from a tracked and seeded
+# configuration -- this one.
+#
+# SIZED FOR A DEMONSTRATION, NOT FOR RESEARCH. Four hours of traffic at 700
+# events per hour comes to roughly four thousand events, chosen so the whole
+# pipeline -- generate, build features, train, select, freeze, predict, detect,
+# evaluate, materialize -- completes in under a minute on a laptop and the
+# published state stays a few megabytes. It is not a substitute for
+# configs/data/synthetic-ml-development.yaml,
+# whose 30-day span exists precisely because a demonstration-sized evaluation
+# window cannot support a per-scenario metric. Nothing measured on this dataset
+# should be quoted as a performance figure, and docs/docker.md says so.
+#
+# What it *is* sufficient for is the thing the container has to prove: that a
+# real champion is frozen, a real hybrid is selected, and the live/replay path
+# runs the genuine detection stack rather than a demonstration stand-in.
+#
+# This generates synthetic traffic only. No real authentication data, no real
+# credential, and no traffic against any real service is involved at any point.
+
+generator_version: "1.0.0"
+
+# Distinct from every other tracked configuration's seed (42 testing, 1337
+# development, 4242 ML development), so a demonstration dataset is never
+# mistaken for one of those populations.
+seed: 606
+
+start_time: "2024-01-01T00:00:00+00:00"
+duration_hours: 4
+
+# A small population: the point is campaign structure, not entity diversity.
+num_users: 24
+num_sources: 12
+num_devices: 40
+num_applications: 3
+
+events_per_hour: 700
+
+# Every scenario the generator offers, including the novel-anomaly holdout --
+# which is routed out of every supervised split and reported apart from every
+# supervised metric, so enabling it costs the trained model nothing and gives
+# the deployment's evidence the same shape a real run produces.
+enabled_scenarios:
+  normal: true
+  brute_force: true
+  password_spraying: true
+  credential_stuffing: true
+  distributed_brute_force: true
+  account_takeover_indicator: true
+  impossible_travel: true
+  bot_activity: true
+  novel_anomaly_holdout: true
+
+# Many whole campaigns per attack category, and that count is the answer to a
+# structural property of the generator rather than a preference.
+#
+# Campaign start offsets are drawn uniformly from the *first part* of the span:
+# 50% of it for bot activity, 60% for spraying, stuffing and distributed brute
+# force, 70% for brute force and takeover indicators, 80% for impossible travel.
+# The tail of any generated stream is therefore benign by construction, and a
+# chronological split has to be told where the attacks actually are -- which is
+# what the 35/20/45 fractions in configs/features/feature-demo.yaml do.
+#
+# Within that attack-bearing region, support comes from *count*. Enough
+# campaigns per category that each of train, validation and test receives
+# several whole ones, so the validation split can be halved on campaign
+# boundaries with positives on both sides.
+#
+# Campaign placement is still a function of the seed, and the split's boundary
+# policy excludes any campaign that straddles a boundary, so this is an
+# intention rather than a guarantee. What the realised support turns out to be
+# is something the prepare run reports; no number here should be read as a
+# promise.
+campaign_parameters:
+  brute_force:
+    attempts_per_campaign: 10
+    num_campaigns: 24
+  password_spraying:
+    passwords_per_round: 4
+    num_campaigns: 20
+  credential_stuffing:
+    credentials_per_batch: 6
+    num_campaigns: 16
+  distributed_brute_force:
+    attempts_per_source: 3
+    num_sources: 4
+    num_campaigns: 12
+  account_takeover_indicator:
+    num_campaigns: 16
+  impossible_travel:
+    num_campaigns: 12
+  bot_activity:
+    events_per_campaign: 12
+    num_campaigns: 12
+  novel_anomaly_holdout:
+    num_campaigns: 4

@@ -383,6 +383,49 @@ def evaluate(
     return invoke("ml", "evaluate", *flat)
 
 
+def materialize(
+    workspace: Path,
+    output_root: Path,
+    detection_dir: Path,
+    *,
+    validation_prediction: str,
+    **replace: str,
+) -> Result:
+    """Run ``deploy materialize`` over the frozen champion and its lineage.
+
+    Notice what is absent from the argument map: there is no ``--prediction`` for
+    a TEST publication and no risk file scoped to TEST anchors. The
+    reconstruction reproduces a decision that was frozen before TEST was opened,
+    and the fixture cannot hand it a TEST quantity even by mistake.
+
+    ``--rule-config`` is absent too, and deliberately: :func:`evaluate` does not
+    pass one either, so the frozen selection was made against the *default*
+    detection configuration's fingerprint. Passing the workspace's rules here
+    would be a genuinely different upstream input, and the materializer would
+    correctly refuse -- which is what
+    ``test_a_changed_rule_configuration_is_refused`` asserts on purpose.
+    """
+    from password_attack_detector.detection.serialization import RISK_FILE
+
+    arguments = {
+        "--features": str(workspace / "processed" / "feature_snapshots.parquet"),
+        "--labels": str(workspace / "processed" / "feature_labels.parquet"),
+        "--splits": str(workspace / "processed" / "feature_splits.parquet"),
+        "--campaign-labels": str(workspace / "labels.parquet"),
+        "--allowlist": str(workspace / "allowlist.yaml"),
+        "--feature-config": str(workspace / "features.yaml"),
+        "--config": ML_CONFIG,
+        "--risk-assessments": str(detection_dir / RISK_FILE),
+        "--validation-prediction": validation_prediction,
+        "--output-root": str(output_root),
+    }
+    arguments.update(replace)
+    flat: list[str] = []
+    for option, value in arguments.items():
+        flat += [option, value]
+    return invoke("deploy", "materialize", *flat)
+
+
 def rule_config() -> dict[str, object]:
     """A Phase 4 configuration whose rules read the CI catalog's own windows.
 

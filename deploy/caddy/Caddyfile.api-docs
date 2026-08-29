@@ -1,0 +1,87 @@
+# The public boundary, with the API's *read-only* surface exposed as well.
+#
+# Selected deliberately, never by default:
+#
+#     PAD_PROXY_CADDYFILE=./deploy/caddy/Caddyfile.api-docs
+#
+# Use this when the point of the deployment is to show the API contract -- a
+# viva, a demonstration, a review -- and you want Swagger reachable from a
+# browser instead of from an SSH session.
+#
+# WHAT THIS ADDS, AND WHAT IT STILL REFUSES
+#
+# Added: the interactive documents, the schema, the health and version reports,
+# the public-safe system/model/rule descriptions, and the replay scenario
+# catalog. Every one of them is a GET that reads state the service already
+# publishes, and none of them accepts a body.
+#
+# Still refused, through this proxy, in both files:
+#
+#   POST /api/v1/detect          scoring
+#   POST /api/v1/detect/batch    scoring
+#   POST /api/v1/explain         scoring
+#   POST /api/v1/demo/runs       starts work on the server
+#   POST /api/v1/demo/runs/*/stop
+#   GET  /api/v1/demo/runs*      one process's demonstration history
+#
+# Scoring is bounded (1 MiB body, 500 events, no path input, no credential
+# field, no scientific override) but it is not free: every request builds a
+# point-in-time feature window and runs a rule pass and a model pass. Until this
+# deployment has rate limiting -- deferred, see docs/deployment.md -- an
+# unauthenticated public POST that costs CPU is a denial-of-service surface on a
+# 2 GiB demonstration VM, and the demonstration does not need it: the dashboard
+# reaches those endpoints over the internal network, so replay and live scoring
+# work fully through the console either way.
+#
+# The consequence is worth stating plainly rather than discovering: Swagger's
+# "Try it out" button will return 404 for the scoring endpoints through this
+# proxy. That is this file refusing the route, not the service failing.
+{
+	admin off
+	# email you@example.org
+}
+
+(hardening) {
+	header {
+		-Server
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Permissions-Policy "accelerometer=(), autoplay=(), camera=(), display-capture=(), encrypted-media=(), fullscreen=(self), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), midi=(), payment=(), usb=()"
+		X-Frame-Options "DENY"
+		Content-Security-Policy "frame-ancestors 'none'"
+		Strict-Transport-Security "{$PAD_HSTS:max-age=0}"
+	}
+	request_body {
+		max_size 1MB
+	}
+}
+
+{$PAD_SITE_ADDRESS::80} {
+	import hardening
+
+	log {
+		output stdout
+		format json
+	}
+
+	encode zstd gzip
+
+	# --- the API's read-only surface, by exact path or explicit prefix --------
+	#
+	# `handle` blocks are mutually exclusive and matched in order, so a path that
+	# is not named below falls through to the console. The list is one `path`
+	# matcher because Caddy ORs the arguments of a single matcher and ANDs
+	# separate ones -- written as several lines this would match nothing at all.
+	# Every entry is an exact path except the two document trees, so no sibling
+	# endpoint is admitted by a path that merely starts the same way.
+	@readonly_api path /docs /docs/* /redoc /redoc/* /openapi.json /health /ready /version /api/v1/system/status /api/v1/model/info /api/v1/rules /api/v1/demo/scenarios
+
+	handle @readonly_api {
+		reverse_proxy api:8000
+	}
+
+	# --- everything else is the console --------------------------------------
+	handle {
+		reverse_proxy dashboard:8501
+	}
+}

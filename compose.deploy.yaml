@@ -1,0 +1,196 @@
+# The deployment perimeter. An overlay on compose.yaml, never a replacement.
+#
+#     docker compose -f compose.yaml -f compose.deploy.yaml up -d --build
+#
+# `docker compose up --build` on its own is unchanged and still gives you the
+# local two-port demonstration on 127.0.0.1. This file is what turns that into
+# something a single Linux VPS can face the internet with, and it does exactly
+# four things:
+#
+#   1. Un-publishes the API and the console. Both keep their ports; neither is
+#      reachable from outside the Compose network any more.
+#   2. Adds `proxy` -- one small reverse proxy, the only public listener.
+#   3. Bounds the Docker logs, so a public demo cannot fill a 25 GB disk.
+#   4. Retunes the memory ceilings for a 2 GiB machine, from what M4 measured.
+#
+# WHAT IT DELIBERATELY DOES NOT DO
+#
+# It does not restate a single scientific decision, and it cannot: the merged
+# configuration declares no variable naming a model, a threshold, a champion, a
+# calibrator, or a fusion strategy, and tests/unit/deployment assert that of the
+# merge rather than of either file alone. It does not change the ordering --
+# `prepare` still runs to completion before the API starts. It does not make the
+# serving state writable; it is still mounted read-only into the API and still
+# absent from every other container. It does not bind-mount the source tree, use
+# host networking, mount the Docker socket, or grant a privileged container.
+#
+# Every value below that varies by deployment comes from `.env.deploy`, which is
+# untracked. `.env.deploy.example` is the tracked template and holds no secret,
+# no hostname, and no scientific control.
+
+# ---------------------------------------------------------------------------
+# Docker's default json-file driver keeps every byte a container ever wrote. On
+# a public demonstration that is a disk-exhaustion bug with a slow fuse, so the
+# ceiling is stated: 10 MiB a file, three files, per container. Recent logs stay
+# readable through `docker compose logs`; ancient ones stop being the reason the
+# machine filled up.
+# ---------------------------------------------------------------------------
+x-bounded-logs: &bounded-logs
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+services:
+  # -------------------------------------------------------------------------
+  # The preparation job. Unchanged in every way that matters -- same image, same
+  # command, same one-shot semantics, same `restart: "no"` -- and given a tighter
+  # ceiling because it is the only thing running while it runs.
+  # -------------------------------------------------------------------------
+  prepare:
+    <<: *bounded-logs
+    deploy:
+      resources:
+        limits:
+          # 340 MiB observed peak on the M4 measurement. On a 2 GiB machine a
+          # 2 GiB ceiling is not a ceiling, so it comes down to 1 GiB: still
+          # threefold headroom over anything measured, and still low enough that
+          # a runaway is stopped by Docker rather than by the host OOM killer
+          # picking a victim.
+          memory: 1g
+
+  # -------------------------------------------------------------------------
+  # The detection service. No longer published to the host.
+  # -------------------------------------------------------------------------
+  api:
+    <<: *bounded-logs
+    # `!reset` rather than an empty list: Compose *appends* sequence values when
+    # it merges files, so an override cannot un-publish a port by restating a
+    # shorter list. This removes the key outright. After the merge the service
+    # has no `ports` at all -- it is reachable as `api:8000` from the Compose
+    # network and from nowhere else. `docker compose config` proves it, and the
+    # deployment tests read that output rather than this comment.
+    ports: !reset null
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          # 105 MiB idle, 121 MiB observed peak under replay.
+          memory: 768m
+
+  # -------------------------------------------------------------------------
+  # The analyst console. No longer published to the host either: the proxy
+  # reaches it as `dashboard:8501` across the Compose network.
+  # -------------------------------------------------------------------------
+  dashboard:
+    <<: *bounded-logs
+    ports: !reset null
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          # 51 MiB idle, 65 MiB observed peak.
+          memory: 384m
+
+  # -------------------------------------------------------------------------
+  # The public boundary, and the only thing on this machine that listens to the
+  # internet.
+  # -------------------------------------------------------------------------
+  proxy:
+    # Pinned by tag and by digest, for the same reason the application base is:
+    # the tag says what it is to a human, the digest is what actually gets
+    # pulled. caddy:2.10-alpine -- Caddy v2.10.2.
+    image: caddy:2.10-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d
+    container_name: pad-demo-proxy
+    init: true
+    networks:
+      - demo
+    depends_on:
+      dashboard:
+        # The console is what `/` routes to, so a proxy that started first would
+        # answer 502 for as long as Streamlit took to boot.
+        condition: service_healthy
+    environment:
+      # The site address, and the whole of the difference between the two
+      # documented modes:
+      #
+      #   :80                  IP-only smoke test, plain HTTP, no ACME
+      #   demo.example.org     hostname mode, automatic HTTPS over ACME
+      #
+      # No hostname is invented here. The default is the IP-only mode, which
+      # works on a fresh droplet with no DNS record in existence yet.
+      PAD_SITE_ADDRESS: "${PAD_SITE_ADDRESS:-:80}"
+      # Sent on every response. `max-age=0` -- the default -- is the correct
+      # instruction from an HTTP-only deployment: it tells a browser to forget
+      # any pin it holds rather than to trust one that cannot be honoured.
+      # Hostname mode sets a real max-age. See `.env.deploy.example`.
+      PAD_HSTS: "${PAD_HSTS:-max-age=0}"
+    volumes:
+      # One file, read-only, chosen by an environment variable with a safe
+      # default. The alternative -- a Caddyfile baked into a purpose-built image
+      # -- would make changing a public route a rebuild; this way the routing
+      # policy is a reviewed file in the repository that the container may read
+      # and cannot write.
+      #
+      # Both admissible values are tracked files in deploy/caddy/. The default
+      # publishes the console only; `Caddyfile.api-docs` additionally publishes
+      # the API's read-only surface, and choosing it is a deliberate edit to an
+      # untracked deployment file.
+      - ${PAD_PROXY_CADDYFILE:-./deploy/caddy/Caddyfile}:/etc/caddy/Caddyfile:ro
+      # Caddy's certificate store and its own state. Named volumes, so a restart
+      # does not re-issue a certificate and walk into a rate limit. Nothing
+      # scientific is here and nothing scientific may be: the API's serving-state
+      # volume is not mounted into this container at all.
+      - caddy-data:/data
+      - caddy-config:/config
+    ports:
+      # The only published ports in the deployment.
+      #
+      # Written as a whole publish specification rather than a bare port so one
+      # variable can also carry a bind address: `80` publishes on every
+      # interface, which is what a public demonstration wants, and
+      # `127.0.0.1:8080` is what the local topology test uses to exercise this
+      # exact configuration without taking a privileged port or reaching the LAN.
+      - "${PAD_PROXY_HTTP_PUBLISH:-80}:80"
+      - "${PAD_PROXY_HTTPS_PUBLISH:-443}:443"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      # The one capability granted anywhere in this deployment, and the reason is
+      # arithmetic: binding a port below 1024 requires it, and 80 and 443 are
+      # below 1024. Everything else is dropped, the root filesystem is read-only,
+      # and no new privilege can be acquired -- so this is a process that may
+      # bind two low ports and do nothing else a root process could normally do.
+      - NET_BIND_SERVICE
+    read_only: true
+    tmpfs:
+      - /tmp:mode=1777,size=32m
+    healthcheck:
+      # Caddy's Alpine image ships wget in busybox, so no package is installed to
+      # ask this question. The proxy is healthy when it answers its own site --
+      # which, in the default routing policy, means the console answered too.
+      test: ["CMD", "wget", "--quiet", "--spider", "--tries=1", "http://127.0.0.1:80/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    restart: unless-stopped
+    <<: *bounded-logs
+    deploy:
+      resources:
+        limits:
+          # Measured on the local topology run rather than assumed: 14.5 MiB
+          # idle, 22.4 MiB sampled while three replays and a page load went
+          # through it. 128 MiB is a wide margin around a small Go binary
+          # holding a few connections and a certificate store.
+          memory: 128m
+
+volumes:
+  # Caddy's own state. Reproducible in the sense that a lost certificate is
+  # re-issued on the next start; worth keeping only so that a restart does not
+  # ask an ACME provider for a new one every time.
+  caddy-data:
+  caddy-config:

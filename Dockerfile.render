@@ -1,0 +1,320 @@
+# The single-image Render deployment.
+#
+#     docker build -f Dockerfile.render -t pad-render:0.6.0 .
+#     docker run --rm -e PORT=10000 -p 10000:10000 pad-render:0.6.0
+#
+# The VPS deployment (`Dockerfile` + `compose.yaml` + `compose.deploy.yaml`) is
+# unchanged and remains the reference architecture. This file exists because
+# Render's free tier removes the two things that architecture rests on: there is
+# no persistent disk for a preparation job to write into, and no private network
+# between two free services for a console to reach an API across. So the same
+# three processes are built into one image and supervised inside one container.
+#
+# ---------------------------------------------------------------------------
+# THE ONE DEVIATION, STATED PLAINLY
+# ---------------------------------------------------------------------------
+#
+# `Dockerfile` says, at length, that a container image must not ship a trained
+# model, because an image carrying a frozen champion makes the image the
+# provenance of a scientific decision. This file does exactly that, and the
+# reason is not that the objection was wrong.
+#
+# On a VPS the objection has a remedy: a one-shot `prepare` job runs the real
+# pipeline into a named volume, and the API mounts it read-only. The provenance
+# is the job, and the job is separate from the service. Render Free has nowhere
+# for that volume to live -- every filesystem is ephemeral, and a preparation
+# step at container start would mean fitting models on 0.1 CPU on every cold
+# start, which is precisely the "train at startup" this project refuses.
+#
+# So the preparation moves to *build* time, into a stage that is not the runtime
+# image, and the guarantee is preserved by a different mechanism:
+#
+#   * the `prepare` stage below runs the identical tracked script, over the
+#     identical tracked configurations, that `compose.yaml` runs;
+#   * the `verify` step that follows it fails the BUILD if the bundle does not
+#     verify, so an unverifiable bundle never becomes an image;
+#   * the runtime stage receives the result through `COPY --from=`, owned by
+#     root and never writable by the account that serves it;
+#   * the entrypoint verifies it again before starting anything, and the API
+#     verifies it a third time, on its own terms, at startup;
+#   * `tests/integration/test_render_container.py` asserts the bundle this image
+#     carries is fingerprint-for-fingerprint the bundle the Compose preparation
+#     job produces.
+#
+# What is given up is that the image is now *a* provenance record. What is kept
+# is that it is a faithful one, and that nothing at runtime can alter it.
+#
+# ---------------------------------------------------------------------------
+# WHAT IS DELIBERATELY NOT HERE
+# ---------------------------------------------------------------------------
+#
+# * No dataset, no feature snapshots, no rule-engine output, no evaluation
+#   reports. They are inputs to the preparation, not to serving, and the prune
+#   step below removes them before the runtime layer is built.
+# * No compiler, no build toolchain, no package-manager cache, no development
+#   dependency, no source tree, no test.
+# * No credential, token, key, or `.env`. The service accepts no credential
+#   material, so a secret in an image layer would be one with nowhere to go.
+# * No Docker, no Compose, no Docker-in-Docker. One container, three processes.
+
+# ---------------------------------------------------------------------------
+# Bases -- pinned by digest as well as by tag, and pinned to the SAME digest the
+# VPS deployment uses. `tests/unit/deployment/test_render_contract.py` asserts
+# that equality, so the two deployments cannot drift onto different interpreters
+# without somebody noticing.
+# ---------------------------------------------------------------------------
+ARG PYTHON_IMAGE=python:3.12-slim@sha256:c3d81d25b3154142b0b42eb1e61300024426268edeb5b5a26dd7ddf64d9daf28
+
+# The same Caddy the VPS deployment runs, and the same digest. Only the static
+# binary is taken from it; the image itself is never run here.
+ARG CADDY_IMAGE=caddy:2.10-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d
+
+# The version that digest contains, stated separately so the build can *prove*
+# it rather than trust the tag. A digest pins the bytes; this pins what the
+# bytes are supposed to be, and the runtime stage below fails the build if the
+# binary disagrees.
+ARG CADDY_VERSION=2.10.2
+
+# Where the proxy binary lands in the runtime image, and the single place that
+# location is written down. `scripts/render_entrypoint.py` spawns the proxy from
+# exactly this absolute path -- never through PATH -- and
+# `tests/unit/deployment/test_render_contract.py` asserts the two files agree on
+# the string, so the image and its supervisor cannot drift apart in silence.
+ARG CADDY_BINARY=/usr/local/bin/caddy
+
+FROM ${CADDY_IMAGE} AS caddybin
+
+# ---------------------------------------------------------------------------
+# Builder: resolve and install exactly what uv.lock names.
+#
+# Identical to `Dockerfile`'s builder, including the pinned uv version. An
+# installer that resolved differently between the two deployments would make
+# "the same system, deployed two ways" a claim about the lockfile only.
+# ---------------------------------------------------------------------------
+FROM ${PYTHON_IMAGE} AS builder
+
+ARG UV_VERSION=0.12.5
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    UV_NO_CACHE=1 \
+    UV_LINK_MODE=copy \
+    UV_PYTHON_DOWNLOADS=never \
+    UV_COMPILE_BYTECODE=1
+
+RUN pip install --no-cache-dir "uv==${UV_VERSION}"
+
+WORKDIR /app
+
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-dev --no-install-project
+
+COPY README.md ./
+COPY src ./src
+RUN uv sync --frozen --no-dev --no-editable
+
+# ---------------------------------------------------------------------------
+# Prepare: run the real pipeline, verify what it produced, then throw away
+# everything serving does not read.
+#
+# This stage is discarded. Nothing in it reaches the runtime image except the
+# pruned state root, so the dataset, the feature snapshots and the training
+# scratch exist only inside a build cache layer.
+#
+# Deliberately NOT given the runtime stage's environment. No thread-count
+# limits, no allocator tuning, nothing: the preparation must run under exactly
+# the conditions `compose.yaml`'s `prepare` service runs under, because a
+# difference here would be a difference in what gets fitted, and the whole point
+# of this stage is that it does not produce a different system.
+# ---------------------------------------------------------------------------
+FROM ${PYTHON_IMAGE} AS prepare
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PATH="/app/.venv/bin:${PATH}"
+
+WORKDIR /app
+
+COPY --from=builder /app/.venv /app/.venv
+COPY configs ./configs
+COPY scripts/prepare_demo_bundle.py ./scripts/prepare_demo_bundle.py
+COPY scripts/verify_serving_bundle.py ./scripts/verify_serving_bundle.py
+
+# The real pipeline: generate, build features, train every enabled family,
+# select a champion on validation evidence, freeze it, predict, run the rules,
+# evaluate under lock, and materialize the serving bundle. No shortcut, no
+# stand-in, and no option anywhere in it that could name a model, a threshold or
+# a fusion strategy.
+RUN python /app/scripts/prepare_demo_bundle.py --state-root /srv/state
+
+# Fails the build, not the deployment. `load_serving_bundle` recomputes every
+# seal and checks every declared payload against its digest.
+RUN python /app/scripts/verify_serving_bundle.py --state-root /srv/state
+
+# Prune to what serving actually reads: the artifact root and the reviewed
+# feature allowlist. `dataset/` and `processed/` are the pipeline's inputs,
+# `detection/` is the rule engine's offline output, and `reports/` is evidence
+# for a human -- none of the four is opened by the API.
+#
+# `artifacts/` is kept whole rather than reduced to the bundle. The champion
+# loader verifies against the experiment ledger and the run that produced it,
+# and the fusion layer reads the locked evaluation receipt; a "bundle only"
+# image would serve a champion whose provenance could no longer be checked.
+RUN rm -rf /srv/state/dataset /srv/state/processed /srv/state/detection /srv/state/reports \
+ && find /srv/state -name '__pycache__' -type d -prune -exec rm -rf {} + \
+ && python /app/scripts/verify_serving_bundle.py --state-root /srv/state
+
+# ---------------------------------------------------------------------------
+# Runtime: the venv, the reviewed configurations, the proxy binary, the
+# supervisor, and the prepared state. No source tree, no toolchain, no tests.
+# ---------------------------------------------------------------------------
+FROM ${PYTHON_IMAGE} AS runtime
+
+ARG APP_UID=10001
+ARG APP_GID=10001
+
+# Re-declared so this stage can use the global defaults above. An ARG that is
+# not re-declared inside a stage expands to the empty string there, which for a
+# COPY destination would silently place the proxy binary somewhere nobody named.
+ARG CADDY_VERSION
+ARG CADDY_BINARY
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PATH="/app/.venv/bin:${PATH}" \
+    HOME=/home/pad
+
+RUN groupadd --gid "${APP_GID}" pad \
+ && useradd --uid "${APP_UID}" --gid "${APP_GID}" --create-home --shell /usr/sbin/nologin pad
+
+WORKDIR /app
+
+COPY --from=builder --chown=root:root /app/.venv /app/.venv
+
+# Owned by root and readable by everyone: the runtime account reads these and
+# cannot edit them, so a compromised process cannot restate a scientific
+# decision by rewriting the file that declares it.
+COPY --chown=root:root configs ./configs
+COPY --chown=root:root .streamlit ./.streamlit
+COPY --chown=root:root scripts/verify_serving_bundle.py ./scripts/verify_serving_bundle.py
+COPY --chown=root:root scripts/render_entrypoint.py ./scripts/render_entrypoint.py
+COPY --chown=root:root deploy/render/Caddyfile /etc/caddy/Caddyfile
+
+# The proxy: one statically-linked binary out of the official image, rather than
+# the image itself. Nothing else from it is wanted -- not its entrypoint, not
+# its default configuration, not its root-owned data directory.
+#
+# No Caddy state or configuration directory is created. `auto_https off` means
+# there is no certificate to persist, and the two XDG variables set below point
+# whatever else it wants at /tmp.
+COPY --from=caddybin --chown=root:root /usr/bin/caddy ${CADDY_BINARY}
+
+# The frozen scientific state, root-owned. The account that serves it can read
+# it and cannot write it, on a platform that offers no read-only mount.
+COPY --from=prepare --chown=root:root /srv/state /srv/state
+
+# Four build-time proofs about the proxy. Every one of them would otherwise
+# surface the way the first real deployment of this image surfaced: an API that
+# starts, a console that starts, and then `proxy exited with code 127` with
+# nothing listening on the public port and no reason given.
+#
+#   1. the binary is at the exact absolute path the supervisor execs, is a
+#      regular file, is owned by root, and is mode 0755. The mode is *set* here
+#      rather than inherited: `COPY --chown` restates ownership but carries the
+#      source image's mode through unexamined, and a build that lost the
+#      executable bit in transit would produce an image that looks correct in a
+#      layer listing and cannot start;
+#   2. it runs as the unprivileged account that will actually spawn it. Testing
+#      this as root would prove nothing -- root may execute a file whose
+#      executable bits are all clear;
+#   3. it is the reviewed version. The digest pins the bytes; this pins what the
+#      bytes are;
+#   4. the Caddyfile adapts and validates. PORT is supplied only so the listener
+#      address parses -- the value is not baked anywhere and is not the port the
+#      container will use.
+#
+# Proof 2 is also the self-containment test, and is why no assumption is made
+# about an Alpine binary on a Debian base: Caddy is built with CGO disabled and
+# statically linked, so it needs no musl loader here -- but a binary that turned
+# out to be dynamically linked would fail `exec` with ENOENT at this line rather
+# than on a public URL. `tests/integration/test_render_container.py` goes
+# further and reads the ELF program headers to assert there is no interpreter
+# to be missing in the first place.
+RUN set -eu \
+ && test -f "${CADDY_BINARY}" \
+ && chown root:root "${CADDY_BINARY}" \
+ && chmod 0755 "${CADDY_BINARY}" \
+ && test "$(stat -c '%U:%G %a' "${CADDY_BINARY}")" = "root:root 755" \
+ && "${CADDY_BINARY}" version \
+ && setpriv --reuid="${APP_UID}" --regid="${APP_GID}" --clear-groups \
+      "${CADDY_BINARY}" version | grep -q "^v${CADDY_VERSION} " \
+ && PORT=10000 XDG_DATA_HOME=/tmp/caddy XDG_CONFIG_HOME=/tmp/caddy \
+    "${CADDY_BINARY}" validate --config /etc/caddy/Caddyfile --adapter caddyfile
+
+# ---------------------------------------------------------------------------
+# Serving configuration.
+#
+# Baked into the image rather than declared in `render.yaml`, and that is the
+# security property: an environment variable set in a blueprint can be edited in
+# a dashboard by anyone with access to it, while these are part of the immutable
+# artifact. `render.yaml` therefore declares no `envVars` at all, and a test
+# asserts it stays that way.
+#
+# Every one of these is a location or a facility switch. There is deliberately
+# no variable here that names a model, a threshold, a calibration, or a fusion
+# strategy -- `APISettings` refuses to declare such a field, and would fail at
+# import if one appeared.
+# ---------------------------------------------------------------------------
+ENV PAD_API_HOST=127.0.0.1 \
+    PAD_API_PORT=8000 \
+    PAD_API_LOG_LEVEL=INFO \
+    PAD_API_ENVIRONMENT=production \
+    PAD_API_DOCS_ENABLED=false \
+    PAD_API_ARTIFACT_ROOT=/srv/state/artifacts \
+    PAD_API_ALLOWLIST_PATH=/srv/state/allowlist.yaml \
+    PAD_API_FEATURE_CONFIG_PATH=/app/configs/features/feature-demo.yaml \
+    PAD_API_ML_CONFIG_PATH=/app/configs/ml/model-demo.yaml \
+    PAD_API_DETECTION_CONFIG_PATH=/app/configs/detection/rules-demo.yaml \
+    PAD_API_REPLAY_ENABLED=true \
+    PAD_API_REPLAY_REQUIRED=false
+
+# Loopback, and never the public Render URL. The console's API client runs
+# inside this container; routing its calls out through Render's edge and back
+# would double the latency, put internal traffic on the public internet, and
+# require the API to be publicly proxied -- which is exactly what the routing
+# policy refuses.
+#
+# The timeout is larger than the VPS deployment's 10s because the target is a
+# 0.1 CPU instance: a replay step that takes 300ms on a laptop can take several
+# seconds here, and a console that gave up on it would report the API as down.
+ENV PAD_DASHBOARD_API_URL=http://127.0.0.1:8000 \
+    PAD_DASHBOARD_REQUEST_TIMEOUT_SECONDS=30.0 \
+    PAD_DASHBOARD_REFRESH_SECONDS=30
+
+# Streamlit's own settings. `.streamlit/config.toml` already binds loopback, and
+# these restate it in the environment so the binding survives a working
+# directory this file did not choose.
+ENV STREAMLIT_SERVER_ADDRESS=127.0.0.1 \
+    STREAMLIT_SERVER_PORT=8501 \
+    STREAMLIT_SERVER_HEADLESS=true \
+    STREAMLIT_BROWSER_GATHER_USAGE_STATS=false
+
+# Caddy stores its own state under the XDG directories. Pointed at /tmp because
+# the only writable place this container is guaranteed is a temporary one, and
+# nothing Caddy puts there needs to outlive the process: with `auto_https off`
+# there is no certificate to persist.
+ENV XDG_DATA_HOME=/tmp/caddy \
+    XDG_CONFIG_HOME=/tmp/caddy
+
+USER pad:pad
+
+# Render assigns the public port and passes it as PORT. It is not EXPOSEd with a
+# literal here, because any literal would be a guess: the entrypoint reads PORT
+# and refuses to start without it.
+
+# Exec form, so the supervisor is PID 1 and receives SIGTERM directly. A shell
+# at PID 1 would not forward it, and the three processes behind it would be
+# killed rather than stopped.
+CMD ["python", "/app/scripts/render_entrypoint.py"]

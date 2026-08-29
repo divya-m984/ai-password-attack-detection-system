@@ -1,0 +1,115 @@
+# The public boundary. Default policy: the dashboard is public, the API is not.
+#
+# This file is the whole of what the internet can reach. Everything behind it --
+# the detection service, the frozen serving bundle, the preparation job's output
+# -- sits on a Compose network with no published port, so the only way in is a
+# route named here.
+#
+# WHY THE API IS NOT PUBLIC BY DEFAULT
+#
+# The dashboard's API client runs server-side, in the dashboard container. A
+# browser never talks to the detection service, so publishing it would add a
+# public attack surface that no part of the demonstration uses. The smallest
+# useful public surface for this deployment is therefore one route.
+#
+# An operator who wants Swagger for a demonstration selects the sibling file
+# `Caddyfile.api-docs` through PAD_PROXY_CADDYFILE. That is a deliberate edit to
+# a deployment environment file, which is the point: exposure should be a
+# decision somebody made, not a default nobody noticed.
+#
+# TWO DEPLOYMENT MODES, ONE FILE
+#
+#   PAD_SITE_ADDRESS=:80                 IP-only smoke test, plain HTTP
+#   PAD_SITE_ADDRESS=demo.example.org    hostname mode, automatic HTTPS
+#
+# In hostname mode Caddy obtains and renews a certificate itself over ACME, so
+# no certificate or private key is ever stored in this repository. Nothing here
+# names a real hostname; the value comes from `.env.deploy`, which is untracked.
+{
+	# The admin API is off. Caddy binds it to loopback inside this container by
+	# default and it is not published, so this is defence in depth rather than a
+	# fix -- but an unauthenticated endpoint that can rewrite the whole routing
+	# policy has no reason to be listening at all in a deployment that reloads by
+	# restarting the container.
+	admin off
+
+	# Uncomment and set an address to receive certificate-expiry notices from the
+	# ACME provider. Optional: Caddy obtains Let's Encrypt certificates without
+	# one. Deliberately not wired to an environment variable -- an address here
+	# would end up in a tracked example file.
+	# email you@example.org
+}
+
+# ---------------------------------------------------------------------------
+# Response hardening, applied to every route.
+#
+# Imported rather than repeated, so the two Caddyfiles in this directory cannot
+# drift into offering different headers on different routes.
+# ---------------------------------------------------------------------------
+(hardening) {
+	header {
+		# The proxy does not advertise what it is.
+		-Server
+
+		# A response typed text/plain is not to be executed as script because it
+		# happens to parse as one.
+		X-Content-Type-Options "nosniff"
+
+		# A full URL from this deployment is not sent to third-party origins.
+		Referrer-Policy "strict-origin-when-cross-origin"
+
+		# This console reads no sensor and no device. Denying them costs nothing
+		# and means a future dependency cannot quietly start asking.
+		Permissions-Policy "accelerometer=(), autoplay=(), camera=(), display-capture=(), encrypted-media=(), fullscreen=(self), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), midi=(), payment=(), usb=()"
+
+		# Framing is refused twice: the modern directive and the legacy header,
+		# because the browsers that honour only one of them are still out there.
+		X-Frame-Options "DENY"
+
+		# A CSP restricted to `frame-ancestors`, and restricted on purpose.
+		# Streamlit's client is a bundled single-page application that evaluates
+		# generated code and installs inline styles; a `script-src` or `style-src`
+		# policy tight enough to be worth having breaks the console outright, and
+		# one loose enough to keep it working ('unsafe-inline' 'unsafe-eval')
+		# claims a protection it does not provide. `frame-ancestors` is the part
+		# of a CSP that is both meaningful here and compatible, so it is the part
+		# that is set. See docs/deployment.md for the audit behind this.
+		Content-Security-Policy "frame-ancestors 'none'"
+
+		# HSTS, and only where there is TLS to pin. The default `max-age=0` is not
+		# an omission: it tells a browser to forget any pin it holds for this
+		# origin, which is the correct instruction from an HTTP-only deployment.
+		# Hostname mode sets PAD_HSTS to a real max-age. See `.env.deploy.example`.
+		Strict-Transport-Security "{$PAD_HSTS:max-age=0}"
+	}
+
+	# Matched to the API's own ceiling (APISettings.max_request_bytes defaults to
+	# 1 MiB) rather than chosen independently, so a body this proxy accepts is one
+	# the service behind it would also accept. The service enforces its own limit
+	# regardless -- a ceiling that lives only in a proxy is not a ceiling when the
+	# service is run any other way.
+	request_body {
+		max_size 1MB
+	}
+}
+
+# ---------------------------------------------------------------------------
+# The one public site.
+# ---------------------------------------------------------------------------
+{$PAD_SITE_ADDRESS::80} {
+	import hardening
+
+	log {
+		output stdout
+		format json
+	}
+
+	# Compression skips websocket upgrades, so the Streamlit stream is unaffected.
+	encode zstd gzip
+
+	# Everything to the console. Caddy proxies the `/_stcore/stream` websocket
+	# upgrade without further configuration, and passes the original Host header
+	# through, which is what keeps Streamlit's own origin and XSRF checks
+	# satisfied behind a proxy.
+	reverse_proxy dashboard:8501
+}

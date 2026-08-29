@@ -1,0 +1,56 @@
+# Rule-based detection configuration for the containerized demonstration.
+#
+# This file is byte-for-byte equivalent, once parsed, to the configuration the
+# serving integration suite runs against -- `rule_config()` in
+# tests/integration/ml_workspace.py -- and
+# tests/unit/deployment/test_container_contract.py asserts that equality so the
+# two cannot drift apart.
+#
+# Why it has to match. The live/replay scenario catalog in
+# src/password_attack_detector/replay/scenarios.py publishes, per scenario, the
+# rule identifiers a run is expected to trigger, and those expectations are
+# asserted against the integration fixture's configuration. A container serving
+# a *different* rule configuration would still be honest about what it computed
+# and dishonest about what it documented. So the demonstration deployment runs
+# the configuration the published expectations were established under.
+#
+# What this file does, and all it does: it points six rules at the 5-minute
+# window ladder that configs/features/feature-demo.yaml declares. Their default
+# parameters reach for 15-minute and 1-hour windows, which that ladder does not
+# publish, and a rule whose window is absent reports insufficient data rather
+# than firing. Nothing here is a threshold chosen to make a demonstration
+# livelier: every value is a *window*, and every rule stays enabled -- including
+# the three not listed, which run on their catalog defaults.
+#
+# NOT A RESEARCH CONFIGURATION. configs/detection/rules-development.yaml is
+# sized for the 168-hour development stream and is the one to read for real
+# thresholds.
+#
+# No expression, callable, import path, or credential may appear in this file:
+# it is read with yaml.safe_load and validated against the declared parameter
+# contract, and a key that looks like a secret is rejected outright.
+
+rules:
+  PAD-BF-001:
+    parameters:
+      window: "5m"
+      cardinality_window: "5m"
+  PAD-BOT-001:
+    parameters:
+      dispersion_window: "5m"
+      cardinality_window: "5m"
+  PAD-CS-001:
+    parameters:
+      window: "5m"
+      cardinality_window: "5m"
+  PAD-DBF-001:
+    parameters:
+      window: "5m"
+      cardinality_window: "5m"
+  PAD-MFA-001:
+    parameters:
+      window: "5m"
+  PAD-PS-001:
+    parameters:
+      window: "5m"
+      cardinality_window: "5m"

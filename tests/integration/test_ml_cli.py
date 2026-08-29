@@ -306,24 +306,25 @@ def test_every_phase_group_is_still_registered() -> None:
         assert group in result.stdout
 
 
-def test_the_package_version_is_the_phase_5_release() -> None:
+def test_the_package_version_is_the_current_release() -> None:
     """The phase release bumps the version, and every authority agrees on it.
 
-    Milestones 1 through 9 deliberately left it alone; Milestone 10 moves it to
-    0.5.0 together with the governance documentation that makes the bump
-    meaningful. The runtime constant and the packaging metadata are checked
+    Phase 5's Milestones 1 through 9 deliberately left it alone; Milestone 10
+    moved it to 0.5.0 together with the governance documentation that made the
+    bump meaningful, and the Phase 6 release milestone moved it to 0.6.0 on the
+    same terms. The runtime constant and the packaging metadata are checked
     against each other rather than each against a literal, because two literals
     can agree with a test and disagree with each other.
     """
     from password_attack_detector import __version__
 
-    assert __version__ == "0.5.0"
+    assert __version__ == "0.6.0"
 
     project = tomllib.loads(
         (_repo_root() / "pyproject.toml").read_text(encoding="utf-8")
     )["project"]
     assert isinstance(project, dict)
-    assert project["version"] == "0.5.0"
+    assert project["version"] == "0.6.0"
     assert project["version"] == __version__
 
 

@@ -1,0 +1,68 @@
+# What may enter the build context.
+#
+# Written as "exclude everything, then re-admit what the build needs", rather
+# than as a list of things to keep out. A denylist is only as good as the last
+# person to remember to extend it; this way a new top-level file or directory is
+# excluded until somebody names it here on purpose.
+#
+# tests/unit/deployment/test_container_contract.py asserts both halves: that the
+# things below stay out, and that everything the Dockerfile COPYs is admitted.
+
+# --- exclude everything ---------------------------------------------------
+*
+
+# --- what the image is built from -----------------------------------------
+!pyproject.toml
+!uv.lock
+!README.md
+!src
+!configs
+!.streamlit
+!scripts/prepare_demo_bundle.py
+
+# --- and, for Dockerfile.render only, the single-container deployment ------
+#
+# The VPS image copies none of these; they are admitted so the Render build has
+# a supervisor to run as PID 1, a verifier to fail the build on an unverifiable
+# bundle, and a proxy configuration it cannot bind-mount because Render has no
+# bind mounts. Named individually rather than admitting `scripts/` or `deploy/`
+# wholesale, so a future file in either directory is still outside the context
+# until somebody names it here.
+!scripts/verify_serving_bundle.py
+!scripts/render_entrypoint.py
+!deploy/render/Caddyfile
+
+# --- and nothing generated, cached, local, or private, even under those ----
+#
+# The re-admissions above are directories, so their contents come with them.
+# These re-exclusions are what keep a stale build tree or a stray cache from
+# riding in on `!src` or `!configs`.
+**/__pycache__
+**/*.py[cod]
+**/*.egg-info
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+**/.ipynb_checkpoints
+**/.DS_Store
+**/Thumbs.db
+**/*.swp
+**/*.swo
+**/*~
+
+# Local secrets and Streamlit's secret store. Neither should exist in this
+# project -- the service accepts no credential material -- and an image is the
+# wrong place to discover that one does.
+**/.env
+**/.env.*
+**/secrets.toml
+
+# Scientific outputs. These are produced by the `prepare` service into a named
+# volume; an image carrying one would make the image the provenance of a frozen
+# decision, which is exactly what the serving bundle contract exists to prevent.
+**/*.parquet
+**/*.joblib
+**/*.pkl
+**/*.db
+**/*.sqlite
+**/*.sqlite3

@@ -5,6 +5,24 @@ repos:
       - id: trailing-whitespace
       - id: end-of-file-fixer
       - id: check-yaml
+        # `compose.deploy.yaml` uses Compose's `!reset` merge tag to REMOVE a
+        # published port rather than override it -- Compose appends sequences
+        # when it merges files, so a shorter `ports` list would be unioned with
+        # the longer one and 8000 would stay public. This hook loads YAML safely
+        # and refuses any tag it has no constructor for, so it would reject that
+        # file the moment it is committed.
+        #
+        # Excluded rather than switched to `--unsafe`: `--unsafe` is a global
+        # flag that would downgrade every other YAML file in the repository --
+        # including the configurations that declare what gets trained -- from
+        # "parses and constructs" to "is syntactically YAML-shaped".
+        #
+        # Nothing is lost. `tests/unit/deployment/test_deployment_contract.py`
+        # parses this file on every test run with a SafeLoader that understands
+        # the tag, and the deployment integration suite runs
+        # `docker compose config --quiet` over it, which is a stricter check than
+        # this hook: it validates the schema, not only the syntax.
+        exclude: ^compose\.deploy\.yaml$
       - id: check-toml
       - id: check-merge-conflict
       - id: detect-private-key

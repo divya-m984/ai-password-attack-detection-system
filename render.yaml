@@ -1,0 +1,79 @@
+# Render blueprint for the public demonstration.
+#
+# NOT DEPLOYED. This file describes a deployment that has not been created: no
+# Render service exists for this project, no Render account is referenced, and
+# nothing in this repository holds a Render credential. It is here so that the
+# deployment, when somebody chooses to create it, is a reviewed artifact rather
+# than a sequence of clicks nobody recorded.
+#
+# ---------------------------------------------------------------------------
+# ONE SERVICE, AND WHY
+# ---------------------------------------------------------------------------
+#
+# The obvious shape -- one free service for the API, one for the console -- is
+# wrong on Render's free tier for four separate reasons:
+#
+#   * it doubles instance-hour consumption against a shared monthly allowance,
+#     so the demonstration would be unavailable twice as often;
+#   * free services get no private network, so the console would have to reach
+#     the API over the public internet, which means the detection API would have
+#     to be publicly exposed to make the console work at all;
+#   * each service spins down independently after inactivity, so a viewer would
+#     hit two cold starts in sequence and frequently see a console that had
+#     woken up in front of an API that had not;
+#   * it doubles the public attack surface to gain nothing a viewer can see.
+#
+# So both processes run in one container behind one proxy, and the API keeps the
+# same private position it has in the VPS deployment: reachable from the console
+# and from nowhere else. See docs/render-deployment.md.
+#
+# ---------------------------------------------------------------------------
+# WHAT THIS BLUEPRINT DOES NOT DECLARE
+# ---------------------------------------------------------------------------
+#
+# No `disk`: the runtime needs no persistence. The scientific state is baked
+# into the image and read-only; replay history is process memory and is
+# documented as disappearing on restart.
+#
+# No `databases`, no `envVarGroups`, no `type: worker`, no `type: pserv`, no
+# `type: cron` -- nothing here needs any of them, and several are not available
+# on the free tier at all.
+#
+# No `envVars`. Every setting this deployment needs is baked into the image by
+# `Dockerfile.render`, which is deliberate: a blueprint variable can be edited
+# in a web dashboard afterwards, and the image cannot. There is therefore no
+# place in this file where a model, a threshold, a calibration or a fusion
+# strategy could be named -- and `tests/unit/deployment/test_render_contract.py`
+# asserts the section stays absent.
+#
+# No secret of any kind. The service accepts no credential material, so a
+# credential here would be one with nowhere to go and a file to leak out of.
+
+services:
+  - type: web
+    name: pad-demo
+    # Docker rather than a native Python runtime: the deployment's whole
+    # reproducibility argument rests on the pinned base image, the pinned uv,
+    # the locked dependency set, and the build-time preparation stage.
+    runtime: docker
+    plan: free
+    # Any free region works. Named rather than defaulted so two people deploying
+    # this blueprint get the same thing.
+    region: oregon
+    dockerfilePath: ./Dockerfile.render
+    dockerContext: .
+    # No dockerCommand: the image's own CMD starts the supervisor, and an
+    # override here would be a second place the process model is defined.
+
+    # The proxy does not bind the public port until the API and the console are
+    # both answering their own health endpoints, so this check cannot pass
+    # against a half-started container. `/healthz` is proxied to the API's
+    # liveness endpoint; `/ready`, which names unavailable scientific components,
+    # is deliberately not public.
+    healthCheckPath: /healthz
+
+    # Deploys are triggered deliberately, from the Render dashboard or the
+    # blueprint sync. A push to the default branch does not ship a new public
+    # demonstration on its own -- the same reasoning as the VPS deployment's
+    # refusal to add automatic git pulls at container startup.
+    autoDeploy: false

@@ -17,6 +17,8 @@ __all__ = [
     "ModelTrainingError",
     "PasswordAttackDetectorError",
     "PseudonymizationError",
+    "ReplayCapacityError",
+    "ReplayStateError",
     "RuleEvaluationError",
     "SplitConfigurationError",
 ]
@@ -126,4 +128,22 @@ class RuleEvaluationError(PasswordAttackDetectorError):
     Covers a rule declaring a feature the feature catalog does not provide, a
     rule reading a prohibited column, and a feature snapshot that does not
     supply a column the prepared rule requires.
+    """
+
+
+class ReplayCapacityError(PasswordAttackDetectorError):
+    """Raised when a demonstration replay run would exceed a configured bound.
+
+    The bounds are on active runs, retained runs, and records per run.  Reaching
+    one is refused rather than absorbed: silently evicting an active run to make
+    room would stop somebody's demonstration to start somebody else's.
+    """
+
+
+class ReplayStateError(PasswordAttackDetectorError):
+    """Raised when a replay run is asked to make a transition its lifecycle forbids.
+
+    Chiefly: resuming a run that has completed, stopped, or failed.  A finished
+    run stays finished, and a second execution of the same scenario is a new run
+    with its own identity.
     """
