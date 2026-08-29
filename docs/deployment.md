@@ -1,11 +1,13 @@
 # Public deployment on a single Linux VPS
 
-> **Nothing is deployed.** This project has no public URL, no server, and no
-> domain name. This document describes a deployment that has been *prepared and
-> verified locally* — the exact Compose topology below was brought up on a
-> development machine, exercised end to end, and torn down. Every hostname here
-> is `example.org`, which RFC 2606 reserves precisely so that documents like this
-> one cannot accidentally name somebody's machine.
+> **No VPS deployment of this project exists.** The project's public demo runs on
+> Render (<https://pad-demo.onrender.com>, see
+> [`render-deployment.md`](render-deployment.md)); this document describes the
+> *other* prepared target, which has no server and no domain name behind it. The
+> exact Compose topology below was brought up on a development machine, exercised
+> end to end, and torn down. Every hostname here is `example.org`, which RFC 2606
+> reserves precisely so that documents like this one cannot accidentally name
+> somebody's machine.
 
 `docs/docker.md` describes the local demonstration: `docker compose up --build`,
 two ports on loopback, one command. This document describes what is added on top
@@ -733,10 +735,14 @@ change: it bumps `BUNDLE_SCHEMA_VERSION`, extends the fingerprint chain, gives
 `deploy materialize` a feature-layer input, and adds a loader to the serving
 path.
 
-**It is recorded as an explicit v0.6.0 release blocker.** It is stated in the
-replay catalog's own published `limitations` for the two affected scenarios, in
-`docs/live-replay.md` §3, `docs/api.md` §12 and `docs/docker.md` §14, and it is
-pinned by `test_the_baseline_dependent_rules_never_fire_on_a_live_request`.
+**v0.6.0 ships with this stated, not fixed.** It was carried as an open item into
+the release milestone, which examined it and released on the reasoning above: the
+two available remedies each change a frozen scientific contract, and a packaging
+release must not do that. It is stated in the replay catalog's own published
+`limitations` for the two affected scenarios, in `docs/live-replay.md` §3,
+`docs/api.md` §12, `docs/docker.md` §14, the README's limitations section and
+`docs/phase6-acceptance.md`, and it is pinned by
+`test_the_baseline_dependent_rules_never_fire_on_a_live_request`.
 
 ---
 
@@ -788,7 +794,7 @@ $DC down --volumes       # also discard the serving state and Caddy's certificat
 ```
 
 To remove the deployment from a machine entirely: `down --volumes`, then
-`docker image rm pad-demo-api:0.5.0 pad-demo-dashboard:0.5.0`, then delete the
+`docker image rm pad-demo-api:0.6.0 pad-demo-dashboard:0.6.0`, then delete the
 checkout. Nothing of this project writes outside the checkout, the named volumes,
 and Docker's own storage.
 

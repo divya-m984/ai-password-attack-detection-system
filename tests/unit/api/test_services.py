@@ -345,9 +345,13 @@ def test_the_readiness_document_mirrors_the_runtime(rule_only: RuntimeState) -> 
 
 
 def test_the_version_document_reports_the_release() -> None:
-    """Milestone 1 ships against 0.5.0 and changes no contract version."""
+    """The version document reports the declared release, not a second literal.
+
+    Milestone 1 shipped against 0.5.0; the Phase 6 release milestone moved the
+    package to 0.6.0 and changed no contract version.
+    """
     document = version_document()
-    assert document.package_version == __version__ == "0.5.0"
+    assert document.package_version == __version__ == "0.6.0"
     assert document.api_schema_version == "1.0.0"
     assert document.event_schema_version == "1.0.0"
     assert document.detection_schema_version == "1.0.0"

@@ -649,10 +649,12 @@ class TestInstalledCLIEntrypoint:
         ):
             assert cmd in result.output
 
-    def test_version_shows_0_3_0(self) -> None:
+    def test_version_shows_the_declared_release(self) -> None:
+        from password_attack_detector import __version__
+
         result = runner.invoke(app, ["version"])
         assert result.exit_code == 0
-        assert "0.5.0" in result.output
+        assert __version__ in result.output
 
     def test_schema_json_format(self) -> None:
         result = runner.invoke(app, ["data", "schema", "--format", "json"])

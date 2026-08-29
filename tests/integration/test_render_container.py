@@ -5,7 +5,7 @@ produces, in one container, with a 512 MiB ceiling, no swap, a read-only root
 filesystem and no volume of any kind -- which is as close as a laptop gets to a
 Render Free web service.
 
-    docker build -f Dockerfile.render -t pad-render:0.5.0 .
+    docker build -f Dockerfile.render -t pad-render:0.6.0 .
     uv run pytest -m slow tests/integration/test_render_container.py --no-cov
 
 What this asserts that ``tests/unit/deployment/test_render_contract.py`` cannot:
@@ -55,8 +55,8 @@ pytestmark = pytest.mark.slow
 ROOT = Path(__file__).resolve().parents[2]
 
 #: The image under test, and the two the Compose reference preparation needs.
-RENDER_IMAGE = "pad-render:0.5.0"
-COMPOSE_IMAGE = "pad-demo-api:0.5.0"
+RENDER_IMAGE = "pad-render:0.6.0"
+COMPOSE_IMAGE = "pad-demo-api:0.6.0"
 
 #: The public port for the long-lived container. Deliberately not 10000: the
 #: whole point of the port contract is that the value is Render's to choose, so
@@ -479,9 +479,17 @@ def test_the_served_fingerprint_is_the_baked_fingerprint(
 
 
 def test_the_package_version_is_unchanged(served: str) -> None:
-    """A deployment adapter does not rename the system it deploys."""
+    """A deployment adapter does not rename the system it deploys.
+
+    Asserted against the packaged constant rather than a literal: the image is
+    built from this tree, so the served version and the declared version are the
+    same fact, and a literal here would only record when somebody last
+    remembered to edit it.
+    """
+    from password_attack_detector import __version__
+
     _, body, _ = _get(f"{served}/healthz")
-    assert json.loads(body)["version"] == "0.5.0"
+    assert json.loads(body)["version"] == __version__ == "0.6.0"
 
 
 # ---------------------------------------------------------------------------

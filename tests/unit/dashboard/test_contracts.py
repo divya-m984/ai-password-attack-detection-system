@@ -273,6 +273,48 @@ def test_the_navigation_offers_the_eleven_declared_areas() -> None:
     )
 
 
+def test_every_navigation_target_a_view_can_request_is_a_real_page() -> None:
+    """A call-to-action that navigates nowhere fails silently, which is the worst
+    way for it to fail.
+
+    The Overview's primary button navigates by writing a label into session state,
+    and the sidebar falls back to index 0 for a label it does not recognise. So a
+    renamed page turns "Start a live demo" into "reload the Overview", with no
+    error anywhere -- on the one control a first-time viewer is most likely to
+    press. The literals are read out of the source rather than restated, because
+    restating them is exactly the drift being guarded against.
+    """
+    import ast
+    from pathlib import Path
+
+    views = (
+        Path(__file__).resolve().parents[3]
+        / "src"
+        / "password_attack_detector"
+        / "dashboard"
+        / "views"
+    )
+    targets: set[str] = set()
+    for path in sorted(views.glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Assign):
+                continue
+            for target in node.targets:
+                if (
+                    isinstance(target, ast.Subscript)
+                    and isinstance(target.slice, ast.Constant)
+                    and target.slice.value == "_pad_nav_target"
+                    and isinstance(node.value, ast.Constant)
+                ):
+                    targets.add(str(node.value.value))
+
+    assert targets, "at least one view offers a navigation shortcut"
+    assert targets <= set(PAGES), sorted(targets - set(PAGES))
+    # And the one the Overview's primary call to action names, specifically.
+    assert "Live Replay" in targets
+
+
 def test_the_navigation_groups_partition_the_navigation() -> None:
     """Primary, advanced and About are the whole of it, in that order."""
     assert (*PRIMARY_PAGES, *ADVANCED_PAGES, "About System") == PAGES

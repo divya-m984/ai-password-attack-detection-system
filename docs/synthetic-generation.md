@@ -102,7 +102,11 @@ hash is independent of Parquet row ordering and byte encoding.
 - Attack scenarios are simplistic simulations. Real attacks have more variable
   timing, diversity, and evasion behaviour.
 - No feature engineering, rolling windows, or time-series features are computed
-  in Phase 2. These are planned for future phases.
+  here. That is the feature layer's job — see
+  [feature-contract.md](feature-contract.md) and
+  [temporal-semantics.md](temporal-semantics.md) — and keeping it out of
+  generation is what lets the same generated stream feed a point-in-time engine
+  without either one knowing about the other.
 - Reproducibility requires the same `uv.lock` environment. Different library
   versions may produce different output.
 - The novel-anomaly holdout class should not be treated as a regular supervised

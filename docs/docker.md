@@ -499,18 +499,26 @@ container side and the internal URL must stay as they are).
 machine. There is no TLS, no authentication, and no rate limiting, because there
 is no exposure to protect — the ports are bound to loopback.
 
-A **public** deployment has been prepared and verified locally but not performed:
+Two **public** targets exist on top of exactly this application.
 [deployment.md](deployment.md) adds a reverse proxy, TLS, security headers, log
-rotation and a firewall contract on top of exactly this stack. It still has no
-rate limiting, and says so — see its §15 for why that was deferred rather than
-built on a fragile dependency. This project has no public URL.
+rotation and a firewall contract on top of exactly this stack, and has been
+verified locally but never stood up on a server.
+[render-deployment.md](render-deployment.md) adapts the same application to a
+single Render free web service, and **that one is live** at
+<https://pad-demo.onrender.com>. Neither has rate limiting, and both say so —
+see [deployment.md](deployment.md) §15 for why that was deferred rather than
+built on a fragile dependency.
 
 **Demonstration scale.** See §4. The dataset is four hours long and no figure it
 produces is a performance claim.
 
 **Replay history is memory.** See §10.
 
-**Two rules cannot fire on any live request, and this is a v0.6.0 blocker.**
+**Two rules cannot fire on any live request. v0.6.0 ships with this stated, not
+fixed.** It was carried as an open item into the release milestone, examined
+there, and released as a documented limitation on the reasoning below: the only
+ways to close it change a frozen scientific contract, and neither belongs in a
+packaging release.
 `PAD-CS-001` (credential stuffing) and `PAD-ATO-001` (account takeover) gate on a
 fitted behavioural baseline. The serving path builds its feature engine without
 one, so `user_in_baseline` and `source_in_baseline` are `False` and every

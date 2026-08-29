@@ -4,11 +4,19 @@ How the demonstration is deployed to a **Render free web service**, why it is
 shaped as one container rather than two services, and what the free tier's
 limits mean for what a viewer sees.
 
-> **Nothing is deployed.** No Render service exists for this project, no Render
-> account is referenced anywhere in this repository, and no Render credential is
-> stored, requested, or used. `render.yaml` describes a deployment that has not
-> been created. Everything measured below was measured locally, in a container
-> constrained to the free tier's limits.
+> **This deployment is live at <https://pad-demo.onrender.com>.** It runs on
+> Render's free tier, which **spins a service down after inactivity**: the first
+> request after a quiet period pays a cold start of roughly one to two minutes.
+> Open the URL once before a presentation. No uptime or availability guarantee is
+> offered.
+>
+> No Render account, credential, API key, or deploy hook is referenced, stored,
+> requested, or used anywhere in this repository — the service is created and
+> redeployed by the repository owner from the Render dashboard against
+> `render.yaml`.
+>
+> **Everything measured below was measured locally**, in a container constrained
+> to the free tier's limits, not scraped from the running service.
 
 This is a **second** deployment target, not a replacement. The single-VPS Docker
 Compose deployment described in [`deployment.md`](deployment.md) is unchanged and
@@ -81,7 +89,7 @@ These are treated as hard deployment constraints, not as guidance:
 
 | Constraint | Value | Consequence for this deployment |
 |---|---|---|
-| Memory | 512 MB | Measured peak 191.9 MiB — see [§11](#11-memory) |
+| Memory | 512 MB | Measured peak 199.1 MiB — see [§11](#11-memory) |
 | CPU | 0.1 | Cold start ~92 s — see [§12](#12-cpu-and-cold-starts) |
 | Disk | none | The serving bundle is baked into the image |
 | Filesystem | ephemeral | Nothing scientific is written at runtime |
@@ -488,7 +496,7 @@ smaller here, since scoring and replay control are not publicly reachable at all
 API's `/health`, which reads no artifact, no model and no filesystem:
 
 ```json
-{"status": "ok", "service": "password-attack-detector", "version": "0.5.0"}
+{"status": "ok", "service": "password-attack-detector", "version": "0.6.0"}
 ```
 
 **What a 200 here proves.** The proxy is running and can reach the API, so two
@@ -546,10 +554,16 @@ explanation call.
 
 | Measurement | Value | Share of 512 MiB |
 |---|---|---|
-| Idle, all three processes serving | 175.0 MiB | 34.2 % |
-| **Peak recorded by the kernel (`memory.peak`)** | **191.9 MiB** | **37.5 %** |
+| Idle, all three processes serving | 191.9 MiB | 37.5 % |
+| **Peak recorded by the kernel (`memory.peak`)** | **199.1 MiB** | **38.9 %** |
 | OOM events / OOM kills (`memory.events`) | 0 / 0 | — |
-| Headroom below the limit | 320.1 MiB | 62.5 % |
+| Headroom below the limit | 312.9 MiB | 61.1 % |
+
+Re-measured against `pad-render:0.6.0` for the release, under the same protocol:
+a fresh container, idle reading taken once all three processes were serving, then
+the four named scenarios replayed at `instant` pace and `memory.peak` read again.
+The figures below in the correction table were taken at 0.5.0 on the same host
+and are kept because they are what the comparison they support was made against.
 
 **Re-measured after the proxy-executable correction** (§6.1), because that
 correction execs Caddy once at startup for its preflight and a new 44 MiB
@@ -569,9 +583,9 @@ proxy, and it has the wrong sign to be the preflight. The preflight's own
 subprocess exits before the API is started, so its 44 MiB mapping is returned
 to the kernel well before the high-water mark is set by anything else.
 
-The 191.9 MiB peak is taken after a full replay pass — all four scenarios below
-— driven by `docker exec python`, and that interpreter is inside the cgroup and
-charged to it. It is **below** the 198.3 MiB recorded before this correction, so
+The peak is taken after a full replay pass — all four scenarios below — driven by
+`docker exec python`, and that interpreter is inside the cgroup and charged to
+it. The pre-correction image recorded 198.3 MiB under the same treatment, so
 there is no memory regression to explain.
 
 Approximate per-process resident set at idle (shared pages counted once per
@@ -759,7 +773,9 @@ than `PAD-CS-001`, and its catalog entry says so.
 
 ## 17. Limitations
 
-- **Nothing is deployed.** No Render service exists.
+- **The public demo is <https://pad-demo.onrender.com>.** It offers no uptime,
+  availability, or performance guarantee, and it is a demonstration rather than a
+  service anything should depend on.
 - **All data is synthetic.** Every event a viewer sees is fabricated by a seeded
   generator from a tracked configuration. No real authentication record is
   processed, displayed, or stored.
@@ -811,7 +827,7 @@ volume, all capabilities dropped and `no-new-privileges`.
 | 21 | Explanation available; residual `-0.0` | pass |
 | 22 | Read-only rootfs refuses writes to `/srv/state`, `/app`, `/etc/caddy` | pass |
 | 23 | No volume and no bind mount | pass |
-| 24 | Peak memory (`memory.peak`) | 191.9 MiB |
+| 24 | Peak memory (`memory.peak`) | 199.1 MiB |
 | 25 | OOM kills (`memory.events`) | 0 |
 | 26 | Cold start at 0.1 CPU | 92.2 s |
 | 27 | Verdicts identical at 0.1 and 0.5 CPU | pass |

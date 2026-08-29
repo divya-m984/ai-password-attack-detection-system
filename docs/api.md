@@ -384,7 +384,7 @@ Process liveness only. Performs no artifact check, touches no model, and reads
 no file, so a probe hitting it every second costs one JSON serialisation.
 
 ```json
-{ "status": "ok", "service": "password-attack-detector", "version": "0.5.0" }
+{ "status": "ok", "service": "password-attack-detector", "version": "0.6.0" }
 ```
 
 ### `GET /ready`
@@ -397,7 +397,7 @@ lower-case reason code.
 {
   "status": "not_ready",
   "service": "password-attack-detector",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "components": [
     { "component": "feature_contract", "state": "ready",       "reason": null,                  "required": true },
     { "component": "rule_engine",      "state": "ready",       "reason": null,                  "required": true },
@@ -455,7 +455,7 @@ identically; nothing host-specific appears.
 ```json
 {
   "service": "password-attack-detector",
-  "package_version": "0.5.0",
+  "package_version": "0.6.0",
   "api_schema_version": "1.0.0",
   "event_schema_version": "1.0.0",
   "feature_schema_version": "1.0.0",
@@ -1076,8 +1076,10 @@ detail. Set `PAD_API_DOCS_ENABLED=false` to serve none of the three.
   catalog. There is no path for real traffic to enter one, no way to upload or
   parameterise a scenario beyond its pace, and no field on any replay request
   that names a host, a path, or a scientific parameter.
-* **Two rules cannot be demonstrated on live requests, and this is a v0.6.0
-  release blocker.** `PAD-CS-001` and `PAD-ATO-001` gate on a fitted behavioural
+* **Two rules cannot be demonstrated on live requests. v0.6.0 ships with this
+  stated, not fixed** — the release milestone examined it and concluded that
+  every way of closing it changes a frozen scientific contract, which a packaging
+  release must not do. `PAD-CS-001` and `PAD-ATO-001` gate on a fitted behavioural
   baseline, and the serving path computes point-in-time features from the
   supplied window alone with no baseline artifact loaded. Both report
   insufficient data on every request through this API, whether it arrives from a
@@ -1131,12 +1133,16 @@ detail. Set `PAD_API_DOCS_ENABLED=false` to serve none of the three.
 * **Synthetic evaluation only.** Every published figure about this system
   describes generated authentication traffic. It is not evidence of real-world
   detection effectiveness.
-* **Not deployed anywhere.** Milestone 4 packages the system into containers that
-  run on one machine — see [docker.md](docker.md). Milestone 5A prepares the
-  perimeter a public deployment would need — a reverse proxy, TLS, security
-  headers, a firewall contract, log rotation, update and rollback — and verifies
-  it locally; see [deployment.md](deployment.md). **Neither performs a
-  deployment.** This project has no public URL, no server, and no domain name.
+* **This API is not publicly reachable, by design.** The project's public demo
+  (<https://pad-demo.onrender.com>) exposes the Streamlit console and one
+  liveness route, `/healthz`. Every endpoint documented here — `/api/v1/detect`,
+  `/api/v1/detect/batch`, `/api/v1/explain`, `/api/v1/demo/*`, the system
+  endpoints, `/ready`, `/version`, `/docs` and `/openapi.json` — is bound to
+  `127.0.0.1` inside the deployment's container and answers only the console
+  process running beside it. Scoring is not exposed to anonymous callers, because
+  the deployment has no authentication and no rate limiting. See
+  [render-deployment.md](render-deployment.md) for the routing policy and
+  [deployment.md](deployment.md) for the VPS equivalent.
 
 * **Nothing the containerized demonstration measures is a performance claim.**
   Its champion is trained on four hours of synthetic traffic, sized so the

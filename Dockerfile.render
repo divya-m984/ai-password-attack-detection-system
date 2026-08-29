@@ -1,7 +1,7 @@
 # The single-image Render deployment.
 #
-#     docker build -f Dockerfile.render -t pad-render:0.5.0 .
-#     docker run --rm -e PORT=10000 -p 10000:10000 pad-render:0.5.0
+#     docker build -f Dockerfile.render -t pad-render:0.6.0 .
+#     docker run --rm -e PORT=10000 -p 10000:10000 pad-render:0.6.0
 #
 # The VPS deployment (`Dockerfile` + `compose.yaml` + `compose.deploy.yaml`) is
 # unchanged and remains the reference architecture. This file exists because

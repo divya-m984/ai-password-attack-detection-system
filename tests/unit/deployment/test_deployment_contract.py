@@ -181,9 +181,13 @@ def test_every_deployment_file_exists() -> None:
         assert path.is_file(), f"missing: {path.relative_to(ROOT)}"
 
 
-def test_the_package_version_is_unchanged() -> None:
-    """Preparing to deploy is not releasing. Nothing here bumps the version."""
-    assert __version__ == "0.5.0"
+def test_the_package_version_is_the_current_release() -> None:
+    """Preparing the perimeter did not bump the version; the release did.
+
+    M5A shipped against 0.5.0 deliberately. The Phase 6 release milestone moved
+    the package to 0.6.0, and this pin moves with it rather than being loosened.
+    """
+    assert __version__ == "0.6.0"
 
 
 def test_the_local_compose_file_still_publishes_to_loopback(

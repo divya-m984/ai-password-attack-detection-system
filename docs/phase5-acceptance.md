@@ -11,8 +11,8 @@ A requirement that names a pipeline artifact is established by supplying one. Th
 | Field | Value |
 | --- | --- |
 | Acceptance schema | 1.0.0 |
-| Package version | 0.5.0 |
-| Report fingerprint | `0d5af7b268677a8b18a067fab04146d704fa8c1ebe5064d289dc52e9237cc7ea` |
+| Package version | 0.6.0 |
+| Report fingerprint | `d4ded6ef81f8cc5427d1668f8f675f44915743b2fe9ddaca66f5e28a4d42bd5d` |
 | Requirements | 29 |
 | Pass | 19 |
 | Fail | 0 |
@@ -36,7 +36,7 @@ A requirement that names a pipeline artifact is established by supplying one. Th
 | `P5-M10-MONITORING-CARRIES-NO-OUTCOME` | M10 | Explanation and drift artifacts carry no outcome quantity | pass | neither the explanation report nor the drift report declares an outcome-dependent field, so neither can be read as evaluation |
 | `P5-M10-NO-AUTOMATIC-RETRAINING` | M10 | No drift finding triggers a fit, a promotion, or a threshold change | pass | the drift module imports no training, selection, freeze, threshold, or evaluation entry point, so there is no call it could make |
 | `P5-M10-REFERENCE-PROFILE-CAPTURED` | M10 | A reference profile was captured from the training population | inconclusive | no reference profile was supplied |
-| `P5-M10-VERSION-CONSISTENT` | M10 | The package declares one version everywhere | pass | the runtime package declares version 0.5.0 |
+| `P5-M10-VERSION-CONSISTENT` | M10 | The package declares one version everywhere | pass | the runtime package declares version 0.6.0 |
 | `P5-M2-LABEL-READER-BOUNDARY` | M2 | Exactly two modules may open a ground-truth table | pass | the label-reader allowlist is exactly {detection.evaluation, ml.dataset} |
 | `P5-M2-NO-TEST-PARTITION` | M2 | No fitted quantity may name test or the holdout as its source | pass | the validation-partition vocabulary has two members and neither is test or the novel-anomaly holdout |
 | `P5-M3-TRAIN-ONLY-FITTING` | M3 | Preprocessing and class weighting are fitted on training rows only | pass | exactly one split is fit-eligible, and it is train |

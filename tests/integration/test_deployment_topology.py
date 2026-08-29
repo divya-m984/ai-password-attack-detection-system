@@ -48,7 +48,7 @@ import pytest
 pytestmark = pytest.mark.slow
 
 ROOT = Path(__file__).resolve().parents[2]
-IMAGES = ("pad-demo-api:0.5.0", "pad-demo-dashboard:0.5.0")
+IMAGES = ("pad-demo-api:0.6.0", "pad-demo-dashboard:0.6.0")
 
 #: Where the proxy is published for this run. A loopback bind and an
 #: unprivileged, deliberately unusual port -- 8080 is the first thing anything

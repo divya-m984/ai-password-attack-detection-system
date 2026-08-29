@@ -650,11 +650,13 @@ Stop both servers afterwards.
   relies on in place of a rate limiter, together with not routing the replay
   control endpoints from the internet at all. [deployment.md](deployment.md) §15
   states that residual risk in full rather than implying it is covered.
-* **Containerised and perimeter-verified, not deployed.** Milestone 4 packages
-  the demonstration so one command starts it on one machine, with both ports
-  bound to that machine's loopback interface. Milestone 5A prepares and verifies
-  the public boundary a server would need. **Neither publishes anything.** This
-  project has no public URL, no server, and no domain name.
+* **Publicly deployed, and the replay controls are not part of what is public.**
+  The demonstration runs at <https://pad-demo.onrender.com> as one container on
+  Render Free. The console is public; `/api/v1/demo/*` — every route that starts,
+  stops, or reads a replay run — is bound to `127.0.0.1` inside that container and
+  is reachable only by the console process. A viewer drives a replay through the
+  Live Replay page, never by calling this API. See
+  [render-deployment.md](render-deployment.md).
 
 ---
 

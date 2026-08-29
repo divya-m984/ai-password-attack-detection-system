@@ -36,7 +36,7 @@ pytestmark = pytest.mark.slow
 ROOT = Path(__file__).resolve().parents[2]
 API = "http://127.0.0.1:8000"
 DASHBOARD = "http://127.0.0.1:8501"
-IMAGES = ("pad-demo-api:0.5.0", "pad-demo-dashboard:0.5.0")
+IMAGES = ("pad-demo-api:0.6.0", "pad-demo-dashboard:0.6.0")
 
 
 def _docker(

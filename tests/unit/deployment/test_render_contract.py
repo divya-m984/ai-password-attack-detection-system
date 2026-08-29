@@ -233,10 +233,14 @@ def test_the_vps_overlay_still_removes_the_published_ports() -> None:
     assert text.count("ports: !reset null") == 2
 
 
-def test_the_package_version_is_unchanged() -> None:
-    """M5B is a deployment adapter, and adapters do not rename the system."""
-    assert __version__ == "0.5.0"
-    assert 'version = "0.5.0"' in (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+def test_the_package_version_is_the_current_release() -> None:
+    """The adapter did not rename the system; the release milestone versioned it.
+
+    Both authorities are read, because two literals that agree with a test can
+    still disagree with each other.
+    """
+    assert __version__ == "0.6.0"
+    assert 'version = "0.6.0"' in (ROOT / "pyproject.toml").read_text(encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -1320,12 +1324,32 @@ def test_the_verifier_reads_the_scope_key_from_the_receipt() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_the_render_documentation_does_not_claim_a_live_deployment() -> None:
-    """Nothing is deployed. Saying otherwise in a document is how it stops being
-    obvious that nothing is deployed."""
-    text = RENDER_DOCS.read_text(encoding="utf-8").lower()
-    assert "not deployed" in text or "no render service" in text
-    assert "https://pad-demo.onrender.com" not in text
+def test_the_render_documentation_names_the_live_deployment() -> None:
+    """The service exists now, and the document has to say where and on what terms.
+
+    This assertion is the inverse of the one it replaces. Until the owner created
+    the service, this file asserted the documentation did *not* name a public URL
+    -- because a document claiming a deployment that did not exist is how it stops
+    being obvious that nothing was deployed. The deployment is real, so the risk
+    inverted with it: the failure mode now is a document that names a free-tier
+    demonstration without saying it sleeps.
+    """
+    text = RENDER_DOCS.read_text(encoding="utf-8")
+    assert "https://pad-demo.onrender.com" in text
+    lowered = text.lower()
+    assert "cold start" in lowered
+    assert "spins" in lowered or "spin down" in lowered
+
+
+def test_the_render_documentation_promises_no_availability() -> None:
+    """A demonstration on a free tier that sleeps guarantees nothing.
+
+    Checked as a positive statement rather than by hunting for forbidden words: a
+    document that simply never mentions availability reads as an omission, and an
+    absent promise is easy to infer as an implied one.
+    """
+    lowered = RENDER_DOCS.read_text(encoding="utf-8").lower()
+    assert "no uptime" in lowered or "no uptime, availability" in lowered
 
 
 def test_the_render_documentation_states_the_baseline_limitation() -> None:

@@ -155,6 +155,84 @@ def test_no_route_reads_anything_configurable_from_a_url(client: Any) -> None:
     assert parameterised == PARAMETERISED_ROUTES
 
 
+#: Every operation this service serves, pinned as an exact set.
+#:
+#: The project's other guards say what a route may *read*: no scientific
+#: parameter in a URL, no frozen quantity in a body, no writer of frozen state
+#: importable by the composition module. None of them says what routes *exist*,
+#: so "there is no training endpoint, no promotion endpoint, and nowhere to
+#: upload an artifact" was a true statement held up by nothing but review.
+#:
+#: Pinned as equality rather than as a forbidden-substring scan, because a scan
+#: only catches the names somebody thought of. Adding a route is then a visible
+#: edit to this set, made by the person adding it, with the release's security
+#: claims sitting next to their diff.
+SERVED_OPERATIONS = frozenset(
+    {
+        ("GET", "/health"),
+        ("GET", "/ready"),
+        ("GET", "/version"),
+        ("POST", "/api/v1/detect"),
+        ("POST", "/api/v1/detect/batch"),
+        ("POST", "/api/v1/explain"),
+        ("GET", "/api/v1/rules"),
+        ("GET", "/api/v1/model/info"),
+        ("GET", "/api/v1/system/status"),
+        ("GET", "/api/v1/demo/scenarios"),
+        ("GET", "/api/v1/demo/runs"),
+        ("POST", "/api/v1/demo/runs"),
+        ("GET", "/api/v1/demo/runs/{run_id}"),
+        ("POST", "/api/v1/demo/runs/{run_id}/stop"),
+        ("GET", "/api/v1/demo/runs/{run_id}/timeline"),
+    }
+)
+
+
+def test_the_served_operations_are_exactly_the_declared_ones(client: Any) -> None:
+    """Nothing to train with, promote with, freeze with, or upload to.
+
+    Read from the running application's own schema, so a router included but
+    never documented would still appear here.
+    """
+    schema = client.get("/openapi.json").json()
+    served = {
+        (method.upper(), path)
+        for path, operations in schema["paths"].items()
+        for method in operations
+    }
+    assert served == set(SERVED_OPERATIONS)
+
+
+def test_no_operation_can_write_frozen_state(client: Any) -> None:
+    """The same set again, read for what the verbs mean rather than as an equality.
+
+    Redundant with the pin above and deliberately so: the pin catches a route
+    that was added, and this catches one that was added *and* pasted into the
+    pin. Every mutating operation this service serves addresses a replay run,
+    which is bounded, in-memory, and cleared by a restart.
+    """
+    schema = client.get("/openapi.json").json()
+    for path, operations in schema["paths"].items():
+        for method in operations:
+            if method.upper() in {"GET", "HEAD", "OPTIONS"}:
+                continue
+            assert path.startswith(("/api/v1/detect", "/api/v1/explain")) or (
+                path.startswith("/api/v1/demo/runs")
+            ), (method, path)
+        lowered = path.lower()
+        for forbidden in (
+            "train",
+            "promote",
+            "freeze",
+            "upload",
+            "import",
+            "register",
+            "threshold",
+            "calibrat",
+        ):
+            assert forbidden not in lowered, (path, forbidden)
+
+
 def test_no_scientific_name_appears_anywhere_in_the_url_surface(client: Any) -> None:
     """Stated over the whole schema, so a new route cannot slip one in."""
     schema = client.get("/openapi.json").json()

@@ -1279,11 +1279,15 @@ def test_the_ml_layer_ships_exactly_the_declared_commands() -> None:
         assert "threshold" not in name
 
 
-def test_the_package_version_is_unchanged() -> None:
-    """Milestone 5 adds contracts, not a release."""
+def test_the_package_version_is_the_current_release() -> None:
+    """Milestone 5 added contracts, not a release; Phase 6 M6 cut 0.6.0.
+
+    The literal moved once, in the release milestone, and this test is one of
+    the places that had to be edited for it to move -- which is the point.
+    """
     from password_attack_detector import __version__
 
-    assert __version__ == "0.5.0"
+    assert __version__ == "0.6.0"
 
 
 # ---------------------------------------------------------------------------

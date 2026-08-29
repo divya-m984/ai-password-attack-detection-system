@@ -179,6 +179,33 @@ def test_the_api_client_is_the_only_module_that_imports_httpx() -> None:
     assert speakers == HTTP_CAPABLE
 
 
+#: Modules permitted to read the configured backend address at all. The client
+#: needs it to make a call; ``config`` declares it; ``app`` hands the settings to
+#: the client. Nothing that renders may touch it.
+API_URL_READERS = {"api_client", "config", "app"}
+
+
+@pytest.mark.parametrize("path", _modules(), ids=lambda item: item.name)
+def test_no_rendered_surface_reads_the_backend_address(path: Path) -> None:
+    """A page must not print where the backend lives.
+
+    On the public deployment the API is a loopback address, so rendering it puts
+    an internal endpoint on a public page -- and on a self-hosted one it could be
+    an internal hostname. Neither tells a viewer anything: the console already
+    reports *whether* the service is reachable, which is the part that matters.
+
+    Checked at the syntax-tree level rather than by sweeping a rendered page,
+    because a page that happens not to show the URL today is not the same
+    property as a page that cannot.
+    """
+    if path.stem in API_URL_READERS:
+        return
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute) and node.attr == "api_url":
+            raise AssertionError(f"{path.name} reads the configured API URL")
+
+
 @pytest.mark.parametrize("path", _modules(), ids=lambda item: item.name)
 def test_no_dashboard_module_spawns_a_process_or_reads_the_filesystem(
     path: Path,

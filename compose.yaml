@@ -64,7 +64,7 @@ services:
       context: .
       dockerfile: Dockerfile
       target: api
-    image: pad-demo-api:0.5.0
+    image: pad-demo-api:0.6.0
     container_name: pad-demo-prepare
     command:
       - python
@@ -104,7 +104,7 @@ services:
       context: .
       dockerfile: Dockerfile
       target: api
-    image: pad-demo-api:0.5.0
+    image: pad-demo-api:0.6.0
     container_name: pad-demo-api
     depends_on:
       prepare:
@@ -194,7 +194,7 @@ services:
       context: .
       dockerfile: Dockerfile
       target: dashboard
-    image: pad-demo-dashboard:0.5.0
+    image: pad-demo-dashboard:0.6.0
     container_name: pad-demo-dashboard
     depends_on:
       api:

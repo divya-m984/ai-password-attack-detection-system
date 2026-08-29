@@ -707,16 +707,23 @@ there should not be: the Phase 5 aggregate report is computed over a partition,
 and live requests are not one.
 
 **No authentication, no authorization, no multi-user state.** The console is a
-demonstration client. It is containerised as of Milestone 4 and has a verified
-public perimeter as of Milestone 5A, but it is **not deployed**, not
-authenticated, and not rate-limited. Anyone who can reach it can use it. Locally
-that means anyone on the machine, because both ports are published to loopback
-and no further. Behind the deployment perimeter it would mean anyone on the
-internet — which is why the API is not published there, why the session state is
+demonstration client, and it **is** publicly deployed — at
+<https://pad-demo.onrender.com>, see [render-deployment.md](render-deployment.md)
+— without being authenticated or rate-limited. Anyone who can reach it can use
+it. Locally that means anyone on the machine, because both ports are published to
+loopback and no further. On the public deployment it means anyone on the internet
+— which is why the API is **not** published there, why the session state is
 per-browser-tab and holds nothing, and why the abuse bounds in
 [deployment.md](deployment.md) §15 were audited before any of it was written
-down. Deliberately no authentication platform was added for that milestone: a
-half-built one on a demonstration is a larger surface than the one it closes.
+down. Deliberately no authentication platform was added: a half-built one on a
+demonstration is a larger surface than the one it closes.
+
+**Two rules cannot fire on any live request.** `PAD-CS-001` and `PAD-ATO-001`
+gate on a fitted behavioural baseline the serving path does not load, so every
+page that could show them shows their honest reason code instead. v0.6.0 ships
+with this stated rather than fixed — see
+[phase6-acceptance.md](phase6-acceptance.md) §14 for why every available remedy
+would change a frozen scientific contract.
 
 **No CORS policy on the API.** The console talks to the service from Python, not
 from the browser, so no browser origin needs to be allowed yet. That stays true

@@ -103,9 +103,30 @@ def test_the_deployment_files_exist() -> None:
     assert not (ROOT / "docker-compose.yaml").exists()
 
 
-def test_the_package_version_is_unchanged() -> None:
-    """Containerization is not a release. Nothing here bumps the version."""
-    assert __version__ == "0.5.0"
+def test_the_package_version_is_the_current_release() -> None:
+    """Containerization was not a release; the Phase 6 release milestone was.
+
+    The image tags in ``compose.yaml`` are asserted against this same constant
+    elsewhere in this file, so the tag and the package cannot drift apart.
+    """
+    assert __version__ == "0.6.0"
+
+
+def test_every_image_tag_is_the_package_version(
+    services: dict[str, dict[str, Any]],
+) -> None:
+    """A tag that drifts from the package turns provenance into guesswork.
+
+    Every service that names an image names one tagged with the version the
+    package declares, so ``docker image ls`` answers "which release is this?"
+    without anybody having to open the container.
+    """
+    tags = {service["image"] for service in services.values() if "image" in service}
+    assert tags, "at least one service builds a tagged image"
+    for tag in tags:
+        repository, _, version = tag.rpartition(":")
+        assert repository, f"{tag} carries a repository name"
+        assert version == __version__, tag
 
 
 # ---------------------------------------------------------------------------

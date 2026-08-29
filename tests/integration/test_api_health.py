@@ -142,9 +142,14 @@ def test_readiness_does_not_reload_artifacts(rule_only_client: Any) -> None:
 
 
 def test_version_reports_the_release(rule_only_client: Any) -> None:
-    """Milestone 1 ships against 0.5.0 and moves no contract version."""
+    """The served package version is the declared one, and it is the release.
+
+    Milestone 1 shipped against 0.5.0 and moved no contract version; the Phase 6
+    release milestone moved the package to 0.6.0 and still moves no contract
+    version -- the contract versions are asserted separately below.
+    """
     body = rule_only_client.get("/version").json()
-    assert body["package_version"] == __version__ == "0.5.0"
+    assert body["package_version"] == __version__ == "0.6.0"
     assert body["api_schema_version"] == "1.0.0"
     assert body["event_schema_version"] == "1.0.0"
     assert body["feature_schema_version"] == "1.0.0"
