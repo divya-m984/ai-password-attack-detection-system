@@ -1,10 +1,7 @@
-# Render blueprint for the public demonstration.
+# Public Render deployment blueprint for the live demo:
+# https://pad-demo.onrender.com
 #
-# NOT DEPLOYED. This file describes a deployment that has not been created: no
-# Render service exists for this project, no Render account is referenced, and
-# nothing in this repository holds a Render credential. It is here so that the
-# deployment, when somebody chooses to create it, is a reviewed artifact rather
-# than a sequence of clicks nobody recorded.
+# The service is deployed from the main branch using the v0.6.0 configuration.#
 #
 # ---------------------------------------------------------------------------
 # ONE SERVICE, AND WHY
